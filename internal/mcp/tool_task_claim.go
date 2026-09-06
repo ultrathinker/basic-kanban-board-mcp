@@ -75,7 +75,7 @@ func registerTaskClaim(s *gomcp.Server, svc service.Service) {
 		out := taskClaimOutput{
 			OK: true, Op: opTaskClaim,
 			Data: &taskClaimData{
-				Task:                  taskViewOut(&res.Task, includes),
+				Task:                  taskViewOut(&res.Task, service.FullProjection(includes)),
 				ClaimedBy:             res.ClaimedBy,
 				ClaimExpiresAt:        formatTimePtr(res.ClaimExpiresAt),
 				LeaseRemainingSeconds: res.RemainSeconds,

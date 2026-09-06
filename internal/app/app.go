@@ -1,8 +1,10 @@
 // Package app is the composition root: it turns a validated config.Config
 // into a runnable server by wiring the store, the auth manager, the events
-// bus, the (placeholder, until internal/service lands) service, and the
-// internal/web handler tree together, and owns the interface seams that let
-// packages built independently fit together without changing any of them.
+// bus, the service and the internal/web handler tree together. It also owns
+// the three process-level invariants the rest of the program assumes but
+// cannot enforce itself: exactly one serving process per data directory
+// (the ownership lock), one bounded admission boundary in front of the single
+// writer, and one lifecycle owner for background maintenance.
 package app
 
 import (
@@ -37,86 +39,33 @@ type Banner struct {
 	AdminToken string
 }
 
-// Option configures an optional seam on the App. The zero value (no options)
-// is a fully functional server: /mcp and /mcp/readonly answer 501 until
-// WithMCP or WithMCPFactory is supplied, and board/task operations answer
-// 503 until WithService or WithServiceFactory is supplied.
+// Option configures the wiring seams on New. Both factories are required: a
+// server whose board service or MCP endpoints are deliberately absent is a
+// configuration error, and New refuses it instead of serving 501s and 503s
+// that only fail when a user shows up.
 type Option func(*options)
 
-// ServiceFactory builds a service.Service from the freshly-opened store and
-// the in-process events bus. This is the seam cmd/kanban uses to wire the
-// real service.New(store, bus) without this package having to know the
-// concrete constructor (PLAN §4 — internal/app never imports internal/mcp
-// or internal/service's constructor; composition lives in cmd/kanban).
+// ServiceFactory builds a service.Service from the store view and the
+// in-process events bus that New opened. This is the seam cmd/kanban uses to
+// wire the real service.New(store, bus) without this package importing the
+// concrete constructor (PLAN §4 — composition lives in cmd/kanban).
 type ServiceFactory func(store.Store, service.EventPublisher) service.Service
 
-// MCPFactory builds the two MCP HTTP handlers from the freshly-built
-// service and the auth manager. Same shape as ServiceFactory: the
-// composition root owns the choice of mcp.NewHTTPHandler vs anything
-// else, and this package only declares the seam.
+// MCPFactory builds the two MCP HTTP handlers from the freshly-built service
+// and the auth manager. Same shape as ServiceFactory: the composition root
+// owns the choice of mcp.NewHTTPHandler vs anything else, and this package
+// only declares the seam.
 type MCPFactory func(svc service.Service, mgr *auth.Manager) (handler, readonly http.Handler)
 
 type options struct {
-	mcp            http.Handler
-	mcpReadonly    http.Handler
-	service        service.Service
 	serviceFactory ServiceFactory
 	mcpFactory     MCPFactory
 }
 
-// WithMCP mounts handler at /mcp and readonly at /mcp/readonly. Either may be
-// nil to leave that mount point on the built-in 501 stub. internal/mcp is a
-// parallel work stream (docs/tasks/G-mcp-tools.md); this package never
-// imports it — the caller (cmd/kanban's final wiring) does.
-//
-// WithMCP and WithMCPFactory are mutually exclusive: a caller using
-// WithMCPFactory has no pre-built handler to supply, and a caller using
-// WithMCP does not want this package to delay-mount it from the freshly
-// wired service. If both are set, WithMCPFactory wins because it is the
-// newer, more flexible seam (H3-brief).
-func WithMCP(handler, readonly http.Handler) Option {
-	return func(o *options) {
-		if handler != nil {
-			o.mcp = handler
-		}
-		if readonly != nil {
-			o.mcpReadonly = readonly
-		}
-	}
-}
-
-// WithMCPFactory installs a closure that runs inside New, after the store,
-// auth manager and service have been built, to mount /mcp and /mcp/readonly.
-// Use this instead of WithMCP when the handler factory needs the freshly-built
-// service (e.g. mcp.NewHTTPHandler(svc, mgr, version)).
-func WithMCPFactory(f MCPFactory) Option {
-	return func(o *options) {
-		if f != nil {
-			o.mcpFactory = f
-		}
-	}
-}
-
-// WithService overrides the placeholder service.Service. Pass the real
-// implementation here once internal/service (docs/tasks/F-service.md) has
-// one; until then New installs a stub that answers every call with
-// web.ErrServiceUnavailable.
-//
-// WithService and WithServiceFactory are mutually exclusive in the same
-// sense as WithMCP / WithMCPFactory: a factory takes precedence when set.
-func WithService(svc service.Service) Option {
-	return func(o *options) {
-		if svc != nil {
-			o.service = svc
-		}
-	}
-}
-
-// WithServiceFactory installs a closure that runs inside New after the
-// store and events bus are wired, returning the real service.Service. Use
-// this in production wiring — the caller does not have access to the store
-// until New has built it, so a factory is the only way to construct the
-// service from the actual infrastructure this package opened.
+// WithServiceFactory installs the closure that builds the service.Service
+// from the store and the bus New created. The store the factory receives is
+// the gated view: its writes pass the admission boundary, so every write in
+// the process — service, auth, web — shares one bounded queue.
 func WithServiceFactory(f ServiceFactory) Option {
 	return func(o *options) {
 		if f != nil {
@@ -125,52 +74,91 @@ func WithServiceFactory(f ServiceFactory) Option {
 	}
 }
 
-// App is a fully wired, runnable server.
+// WithMCPFactory installs a closure that runs inside New, after the service
+// and auth manager have been built, to mount /mcp and /mcp/readonly.
+func WithMCPFactory(f MCPFactory) Option {
+	return func(o *options) {
+		if f != nil {
+			o.mcpFactory = f
+		}
+	}
+}
+
+// App is a fully wired, runnable server. Ownership of the data directory is
+// held from New until teardown, so a second server against the same
+// directory is refused for the App's whole lifetime.
 type App struct {
 	cfg    config.Config
-	store  store.Store
+	store  store.Store // the raw store App itself closes
+	gate   *gatedStore // the only store view handed to service/auth/maintenance
 	auth   *auth.Manager
 	bus    *events.Bus
 	svc    service.Service
 	web    *web.Web
+	lock   *OwnerLock
 	banner Banner
 
 	httpServer *http.Server
 	shutdown   chan struct{}
 	shutOnce   sync.Once
+
+	maintInterval time.Duration
+	maintStop     chan struct{}
+	maintStopOnce sync.Once
+	maintWG       sync.WaitGroup
+	maintMu       sync.Mutex
+	maintRuns     int
+	maintLastAt   time.Time
+	maintLastErr  error
+
+	teardownOnce sync.Once
+	teardownErr  error
 }
 
-// New opens the store (running migrations under the store's startup lock),
-// bootstraps the admin token, builds the auth manager and events bus, wires
-// the (placeholder or supplied) service, parses the embedded templates and
-// builds the HTTP handler tree.
+// New opens the store under exclusive ownership of the data directory — the
+// ownership lock is taken BEFORE store.Open so migrations, which run inside
+// Open, can never race a second process — bootstraps the admin token, builds
+// the auth manager and events bus, runs the wiring factories, parses the
+// embedded templates and builds the HTTP handler tree. Every failure after
+// the lock is taken releases it, so a failed start never locks the next one
+// out.
 func New(ctx context.Context, cfg config.Config, opts ...Option) (*App, error) {
-	o := options{
-		mcp:         nil,
-		mcpReadonly: nil,
-	}
+	o := options{}
 	for _, fn := range opts {
 		fn(&o)
+	}
+	if o.serviceFactory == nil {
+		return nil, errors.New("app: no service factory supplied — pass app.WithServiceFactory so the server has a board service (see cmd/kanban/wire.go)")
+	}
+	if o.mcpFactory == nil {
+		return nil, errors.New("app: no MCP handler factory supplied — pass app.WithMCPFactory so /mcp and /mcp/readonly are mounted (see cmd/kanban/wire.go)")
 	}
 
 	if err := os.MkdirAll(cfg.DataDir, 0o755); err != nil {
 		return nil, fmt.Errorf("app: create data dir: %w", err)
 	}
-	st, err := store.Open(ctx, store.Config{Path: filepath.Join(cfg.DataDir, "kanban.db")})
+	lock, err := AcquireOwnerLock(cfg.DataDir)
 	if err != nil {
+		return nil, err
+	}
+	st, err := store.Open(ctx, store.Config{Path: databasePath(cfg.DataDir)})
+	if err != nil {
+		_ = lock.Release()
 		return nil, fmt.Errorf("app: open store: %w", err)
 	}
+	gate := newGatedStore(st, writerQueueDepth)
 
-	mgr := auth.NewManagerFromStore(st, cfg.TrustedProxies, cfg.BaseURL, cfg.InsecureHTTP, time.Now)
+	mgr := auth.NewManagerFromStore(gate, cfg.TrustedProxies, cfg.BaseURL, cfg.InsecureHTTP, time.Now)
 
 	// Bootstrap only creates a row when the token table is empty. store.Open
-	// already applied migrations before we get here, and the writer pool is
-	// a single connection, so there is no window where two concurrent
-	// `kanban serve` startups on the same data dir could both observe an
-	// empty table and double-mint an admin token.
+	// already applied every migration under the ownership lock taken above,
+	// so a second `kanban serve` cannot even reach this point against the
+	// same data dir — the bootstrap double-mint window is closed by
+	// ownership, not by luck.
 	adminSecret, err := mgr.Bootstrap(ctx, cfg.AdminToken)
 	if err != nil {
 		_ = st.Close()
+		_ = lock.Release()
 		return nil, fmt.Errorf("app: bootstrap admin token: %w", err)
 	}
 
@@ -181,21 +169,12 @@ func New(ctx context.Context, cfg config.Config, opts ...Option) (*App, error) {
 	history := &storeHistory{st: st}
 	bus := events.New(history, 64)
 
-	svc := o.service
-	if o.serviceFactory != nil {
-		// Factory wins over a pre-built service when both are supplied.
-		// events.Bus satisfies service.EventPublisher by structural
-		// typing (both expose Publish(domain.Event)), so the cast is
-		// implicit at the call site — no adapter needed.
-		svc = o.serviceFactory(st, bus)
-	}
-	if svc == nil {
-		svc = newUnwiredService()
-	}
+	svc := o.serviceFactory(gate, bus)
 
 	tpl, err := templates.New()
 	if err != nil {
 		_ = st.Close()
+		_ = lock.Release()
 		return nil, fmt.Errorf("app: parse templates: %w", err)
 	}
 
@@ -206,12 +185,16 @@ func New(ctx context.Context, cfg config.Config, opts ...Option) (*App, error) {
 	publicURL = strings.TrimRight(publicURL, "/")
 
 	a := &App{
-		cfg:      cfg,
-		store:    st,
-		auth:     mgr,
-		bus:      bus,
-		svc:      svc,
-		shutdown: make(chan struct{}),
+		cfg:           cfg,
+		store:         st,
+		gate:          gate,
+		auth:          mgr,
+		bus:           bus,
+		svc:           svc,
+		lock:          lock,
+		shutdown:      make(chan struct{}),
+		maintInterval: maintenanceInterval,
+		maintStop:     make(chan struct{}),
 		banner: Banner{
 			BoardURL:      publicURL,
 			AgentSetupURL: publicURL + "/agent-setup",
@@ -219,17 +202,7 @@ func New(ctx context.Context, cfg config.Config, opts ...Option) (*App, error) {
 		},
 	}
 
-	// MCP mount resolution: factory wins over a pre-built handler. If
-	// neither is set, web.New will substitute the 501 stub, which is
-	// exactly the behaviour every other stage expects.
-	var mcpHandler, mcpReadonlyHandler http.Handler
-	switch {
-	case o.mcpFactory != nil:
-		mcpHandler, mcpReadonlyHandler = o.mcpFactory(svc, mgr)
-	case o.mcp != nil || o.mcpReadonly != nil:
-		mcpHandler = o.mcp
-		mcpReadonlyHandler = o.mcpReadonly
-	}
+	mcpHandler, mcpReadonlyHandler := o.mcpFactory(svc, mgr)
 
 	a.web = web.New(web.Deps{
 		Service:            svc,
@@ -266,14 +239,20 @@ func (a *App) Handler() http.Handler { return a.httpServer.Handler }
 // Addr returns the configured listen address.
 func (a *App) Addr() string { return a.httpServer.Addr }
 
+// WriterStats snapshots the writer admission boundary. See gatedStore.
+func (a *App) WriterStats() WriterStats { return a.gate.stats() }
+
 // Run starts listening and serves until ctx is canceled, then drains
 // in-flight requests (including SSE clients, which select on the shutdown
-// channel handed to internal/web) and closes the store. It returns nil on a
-// clean shutdown.
+// channel handed to internal/web), stops the maintenance loop, closes the
+// store and releases ownership. It returns nil on a clean shutdown.
 func (a *App) Run(ctx context.Context) error {
 	ln, err := net.Listen("tcp", a.httpServer.Addr)
 	if err != nil {
-		return fmt.Errorf("app: listen %s: %w", a.httpServer.Addr, err)
+		// The App never served; tear down so the ownership lock and store do
+		// not outlive the failed run.
+		a.beginShutdown()
+		return errors.Join(fmt.Errorf("app: listen %s: %w", a.httpServer.Addr, err), a.teardown())
 	}
 	return a.serve(ctx, ln)
 }
@@ -281,6 +260,9 @@ func (a *App) Run(ctx context.Context) error {
 // serve is split out from Run so tests can pass a listener bound to an
 // ephemeral port (":0") without racing the real configured address.
 func (a *App) serve(ctx context.Context, ln net.Listener) error {
+	// Maintenance lives exactly as long as serving does: started before the
+	// first request can arrive, stopped before the store goes away.
+	a.startMaintenance(ctx)
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- a.httpServer.Serve(ln) }()
 
@@ -290,18 +272,19 @@ func (a *App) serve(ctx context.Context, ln net.Listener) error {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		shutErr := a.httpServer.Shutdown(shutdownCtx)
-		closeErr := a.store.Close()
+		a.stopMaintenance()
+		closeErr := a.teardown()
 		if shutErr != nil {
 			return fmt.Errorf("app: shutdown: %w", shutErr)
 		}
 		return closeErr
 	case err := <-serveErr:
 		a.beginShutdown()
-		closeErr := a.store.Close()
+		a.stopMaintenance()
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			return err
+			return errors.Join(err, a.teardown())
 		}
-		return closeErr
+		return a.teardown()
 	}
 }
 
@@ -312,9 +295,22 @@ func (a *App) beginShutdown() {
 	a.shutOnce.Do(func() { close(a.shutdown) })
 }
 
-// Close releases the store without going through Run/Shutdown. Used by
-// callers (and tests) that built an App only to inspect it.
+// teardown closes the store and releases the ownership lock, exactly once,
+// in that order: the store must stop writing before the claim that protects
+// those writes is dropped. A second call is a no-op returning the first
+// result.
+func (a *App) teardown() error {
+	a.teardownOnce.Do(func() {
+		a.teardownErr = errors.Join(a.store.Close(), a.lock.Release())
+	})
+	return a.teardownErr
+}
+
+// Close releases the store and the ownership lock without going through
+// Run/serve. Used by callers (and tests) that built an App only to inspect
+// it. Idempotent.
 func (a *App) Close() error {
 	a.beginShutdown()
-	return a.store.Close()
+	a.stopMaintenance()
+	return a.teardown()
 }

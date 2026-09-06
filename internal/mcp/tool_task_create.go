@@ -178,7 +178,7 @@ func registerTaskCreate(s *gomcp.Server, svc service.Service) {
 		includes := service.Includes{service.IncludeBody, service.IncludeAcceptance}
 		out := taskCreateOutput{
 			OK: true, Op: opTaskCreate,
-			Data: &taskCreateData{Tasks: taskViewOutList(res.Tasks, includes)},
+			Data: &taskCreateData{Tasks: taskViewOutList(res.Tasks, service.FullProjection(includes))},
 			Meta: &toolMeta{Count: len(res.Tasks), Replayed: res.Replayed},
 		}
 		return &gomcp.CallToolResult{Content: []gomcp.Content{&gomcp.TextContent{Text: jsonText(out)}}}, out, nil

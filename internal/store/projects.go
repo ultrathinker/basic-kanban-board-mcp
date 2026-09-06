@@ -24,7 +24,10 @@ func (r *projectRepo) Create(tx Tx, p *domain.Project) error {
 			"Set ID and Key before calling project Create.")
 	}
 	tw := tx.(*txWrap)
-	now := tx.Now().UTC()
+	now, err := tx.Now()
+	if err != nil {
+		return err
+	}
 	p.CreatedAt = now
 	p.UpdatedAt = now
 	if p.Version == 0 {
@@ -39,7 +42,7 @@ func (r *projectRepo) Create(tx Tx, p *domain.Project) error {
 	if p.EstimateUnit == "" {
 		p.EstimateUnit = "h"
 	}
-	_, err := tw.tx.ExecContext(tw.ctx(), `
+	_, err = tw.tx.ExecContext(tw.ctx(), `
 		INSERT INTO projects(
 			id, key, name, description, version, next_task_seq,
 			focus_task_id, estimate_unit, enforce_dependencies, strict_done,
@@ -69,7 +72,10 @@ func (r *projectRepo) Update(tx Tx, p *domain.Project, ifVersion *int) error {
 		return errors.New("store: project.Update: nil or missing id")
 	}
 	tw := tx.(*txWrap)
-	now := tx.Now().UTC()
+	now, err := tx.Now()
+	if err != nil {
+		return err
+	}
 	p.UpdatedAt = now
 	if ifVersion != nil {
 		var current int
@@ -200,7 +206,11 @@ func (r *projectRepo) SetFocus(tx Tx, projectID string, taskID *string) error {
 		return domain.Invalid("project_id", "project id is empty", "Pass the project UUID.")
 	}
 	tw := tx.(*txWrap)
-	now := formatTime(tx.Now().UTC())
+	ts, err := tx.Now()
+	if err != nil {
+		return err
+	}
+	now := formatTime(ts)
 	res, err := tw.tx.ExecContext(tw.ctx(), `
 		UPDATE projects SET focus_task_id = ?, version = version + 1, updated_at = ?
 		WHERE id = ?`, nullableIDPtr(taskID), now, projectID)
@@ -219,7 +229,11 @@ func (r *projectRepo) Archive(tx Tx, projectID string, archived bool) error {
 		return domain.Invalid("project_id", "project id is empty", "Pass the project UUID.")
 	}
 	tw := tx.(*txWrap)
-	now := formatTime(tx.Now().UTC())
+	ts, err := tx.Now()
+	if err != nil {
+		return err
+	}
+	now := formatTime(ts)
 	var arg any
 	if archived {
 		arg = now

@@ -34,6 +34,10 @@ func (s *svc) TaskNext(ctx context.Context, a Actor, in TaskNextInput) (*NextRes
 				"Only peek may scan every accessible project; pass project for claim/start.")
 		}
 	}
+	if in.Detail != "" && in.Detail != NextDetailSummary && in.Detail != NextDetailFull {
+		return nil, domain.Invalid("detail", "detail must be summary or full",
+			"Use one of: summary, full. Omit it for summary, and call task_get for a whole card.")
+	}
 	limit := in.Limit
 	if limit <= 0 {
 		limit = 3
@@ -42,21 +46,51 @@ func (s *svc) TaskNext(ctx context.Context, a Actor, in TaskNextInput) (*NextRes
 		limit = domain.MaxNextLimit
 	}
 	ctx = store.WithActor(ctx, a.Name)
+	proj := NewNextProjection(in.Include, in.Detail)
 
 	if action == NextPeek {
-		return s.taskNextPeek(ctx, a, in, limit)
+		return s.taskNextPeek(ctx, a, in, limit, proj)
 	}
-	return s.taskNextMutate(ctx, a, in, action, limit)
+	return s.taskNextMutate(ctx, a, in, action, limit, proj)
 }
 
-func (s *svc) taskNextPeek(ctx context.Context, a Actor, in TaskNextInput, limit int) (*NextResult, error) {
+// NewNextProjection decides task_next's response shaping once, up front, so
+// the decision travels with the result instead of being inferred again by
+// every layer that renders it.
+//
+// Neither tier returns an unbounded body: a candidate list exists to choose
+// from, and PLAN §6.2 caps it at domain.NextBodyTruncate even at its widest.
+// Metadata is absent from task_next's vocabulary by the same design — per-task
+// metadata never helps choose between candidates.
+func NewNextProjection(include Includes, detail NextDetail) Projection {
+	fields := make(Includes, 0, 4)
+	for _, w := range []Include{IncludeBody, IncludeAcceptance, IncludeNotes, IncludeLinks} {
+		if include.Has(w) {
+			fields = append(fields, w)
+		}
+	}
+	p := Projection{Fields: fields, AcceptanceTotals: map[string]int{}}
+	if detail == NextDetailFull {
+		p.Body, p.BodyLimitBytes = DetailBounded, domain.NextBodyTruncate
+		p.Acceptance, p.AcceptanceLimit = DetailBounded, domain.NextAcceptanceItems
+		return p
+	}
+	p.Body, p.BodyLimitBytes = DetailBounded, NextSummaryBodyBytes
+	p.Acceptance, p.AcceptanceLimit = DetailBounded, NextSummaryAcceptanceItems
+	return p
+}
+
+func (s *svc) taskNextPeek(ctx context.Context, a Actor, in TaskNextInput, limit int, proj Projection) (*NextResult, error) {
 	var result NextResult
 	err := s.store.Read(ctx, func(tx store.Tx) error {
 		projects, err := s.listProjectsForBoard(tx, a, in.ProjectKey)
 		if err != nil {
 			return err
 		}
-		now := tx.Now()
+		now, err := tx.Now()
+		if err != nil {
+			return err
+		}
 		cc := newColumnCache(s, tx)
 		pc := newProjectCache(s, tx)
 
@@ -73,7 +107,7 @@ func (s *svc) taskNextPeek(ctx context.Context, a Actor, in TaskNextInput, limit
 
 		views := make([]domain.TaskView, 0, len(merged.Ready))
 		for i := range merged.Ready {
-			tv, err := s.finalizeNextView(tx, cc, pc, &merged.Ready[i], now, in.Include)
+			tv, err := s.finalizeNextView(tx, &merged.Ready[i], &proj)
 			if err != nil {
 				return err
 			}
@@ -81,6 +115,7 @@ func (s *svc) taskNextPeek(ctx context.Context, a Actor, in TaskNextInput, limit
 		}
 		result = NextResult{
 			Tasks:      views,
+			Projection: proj,
 			WIPFull:    merged.WIPFull,
 			Reasons:    NextReasons(merged.Reasons),
 			BlockedTop: toServiceBlocked(merged.BlockedTop),
@@ -93,7 +128,7 @@ func (s *svc) taskNextPeek(ctx context.Context, a Actor, in TaskNextInput, limit
 	return &result, nil
 }
 
-func (s *svc) taskNextMutate(ctx context.Context, a Actor, in TaskNextInput, action NextAction, limit int) (*NextResult, error) {
+func (s *svc) taskNextMutate(ctx context.Context, a Actor, in TaskNextInput, action NextAction, limit int, proj Projection) (*NextResult, error) {
 	var result NextResult
 	var pending []domain.Event
 	err := s.store.Write(ctx, func(tx store.Tx) error {
@@ -101,7 +136,10 @@ func (s *svc) taskNextMutate(ctx context.Context, a Actor, in TaskNextInput, act
 		if err != nil {
 			return err
 		}
-		now := tx.Now()
+		now, err := tx.Now()
+		if err != nil {
+			return err
+		}
 		cc := newColumnCache(s, tx)
 		pc := newProjectCache(s, tx)
 		pc.prime(p)
@@ -153,7 +191,7 @@ func (s *svc) taskNextMutate(ctx context.Context, a Actor, in TaskNextInput, act
 
 		views := make([]domain.TaskView, 0, len(out.Ready))
 		for i := range out.Ready {
-			tv, err := s.finalizeNextView(tx, cc, pc, &out.Ready[i], now, in.Include)
+			tv, err := s.finalizeNextView(tx, &out.Ready[i], &proj)
 			if err != nil {
 				return err
 			}
@@ -161,6 +199,7 @@ func (s *svc) taskNextMutate(ctx context.Context, a Actor, in TaskNextInput, act
 		}
 		result = NextResult{
 			Tasks:      views,
+			Projection: proj,
 			WIPFull:    out.WIPFull,
 			Reasons:    NextReasons(out.Reasons),
 			BlockedTop: toServiceBlocked(out.BlockedTop),
@@ -313,22 +352,16 @@ func (s *svc) nextForProject(tx store.Tx, cc *columnCache, pc *projectCache, p *
 	}), nil
 }
 
-// finalizeNextView applies task_next's response shaping to an already
-// hydrated candidate: body truncated and acceptance capped unless the
-// caller's include widens them; metadata is never part of task_next's
-// include vocabulary, so it is always stripped.
-func (s *svc) finalizeNextView(tx store.Tx, cc *columnCache, pc *projectCache, tv *domain.TaskView, now time.Time, include Includes) (domain.TaskView, error) {
+// finalizeNextView applies the projection to an already hydrated candidate.
+// It is the only place task_next's shaping happens, and it records what it cut
+// back into the projection so the result can say so.
+//
+// The projection is passed by pointer because AcceptanceTotals accumulates
+// across candidates; everything else on it is read-only here.
+func (s *svc) finalizeNextView(tx store.Tx, tv *domain.TaskView, proj *Projection) (domain.TaskView, error) {
 	out := *tv
-	out.Metadata = nil
-	if include.Has(IncludeBody) {
-		// full body, nothing to do
-	} else {
-		out.Body = truncateBody(out.Body, domain.NextBodyTruncate)
-	}
-	if !include.Has(IncludeAcceptance) && len(out.Acceptance) > domain.NextAcceptanceItems {
-		out.Acceptance = out.Acceptance[:domain.NextAcceptanceItems]
-	}
-	if include.Has(IncludeNotes) {
+	proj.Apply(&out)
+	if proj.Has(IncludeNotes) {
 		notes, err := s.store.Notes().ListByTask(tx, out.ID, domain.MaxNotesPerRead, nil)
 		if err != nil {
 			return domain.TaskView{}, err

@@ -60,7 +60,10 @@ func (s *svc) TaskCreate(ctx context.Context, a Actor, in TaskCreateInput) (*Tas
 	var result TaskCreateResult
 	var pending []domain.Event
 	err := s.store.Write(ctx, func(tx store.Tx) error {
-		now := tx.Now()
+		now, err := tx.Now()
+		if err != nil {
+			return err
+		}
 		cc := newColumnCache(s, tx)
 		pc := newProjectCache(s, tx)
 
@@ -154,13 +157,13 @@ func (s *svc) TaskCreate(ctx context.Context, a Actor, in TaskCreateInput) (*Tas
 		// ----- Key allocation phase: assign ID + Key + Rank to each new item.
 		// Done in input order so refs can point forward to items that come
 		// later in the same batch.
-		refToKey := make(map[string]string, len(plans))
-		refToID := make(map[string]string, len(plans))
+		//
+		// The map holds the whole plan, not just the allocated id: resolving a
+		// ref now also has to compare the two items' projects, and the depth
+		// rule needs the referenced item's own Parent.
+		refToPlan := make(map[string]*createItemPlan, len(plans))
 		for _, p := range plans {
 			if p.isReplay {
-				if p.new.Ref != "" {
-					refToKey[p.new.Ref] = p.replayed.Key
-				}
 				continue
 			}
 			seq, err := s.store.Projects().NextTaskSeq(tx, p.project.ID)
@@ -193,8 +196,7 @@ func (s *svc) TaskCreate(ctx context.Context, a Actor, in TaskCreateInput) (*Tas
 			}
 			p.inserted = t
 			if p.new.Ref != "" {
-				refToKey[p.new.Ref] = t.Key
-				refToID[p.new.Ref] = t.ID
+				refToPlan[p.new.Ref] = p
 			}
 		}
 
@@ -206,7 +208,7 @@ func (s *svc) TaskCreate(ctx context.Context, a Actor, in TaskCreateInput) (*Tas
 				continue
 			}
 			if p.new.Parent != "" {
-				pid, err := s.resolveNewParent(tx, p.new.Parent, refToKey, refToID, plans)
+				pid, err := s.resolveNewParent(tx, a, p, p.new.Parent, refToPlan)
 				if err != nil {
 					return err
 				}
@@ -215,7 +217,7 @@ func (s *svc) TaskCreate(ctx context.Context, a Actor, in TaskCreateInput) (*Tas
 			if len(p.new.BlockedBy) > 0 {
 				ids := make([]string, 0, len(p.new.BlockedBy))
 				for _, raw := range p.new.BlockedBy {
-					id, err := s.resolveBlockerID(tx, raw, refToKey, refToID)
+					id, err := s.resolveBlockerID(tx, a, p, raw, refToPlan)
 					if err != nil {
 						return err
 					}
@@ -355,32 +357,33 @@ func buildAcceptance(in []string) []domain.AcceptanceItem {
 // resolveNewParent resolves Parent to a real task ID. The depth check
 // (MaxSubtaskDepth=2) is enforced HERE because TaskRepo.Create does not
 // validate parent depth — only Update does, and only on reparent.
-func (s *svc) resolveNewParent(tx store.Tx, raw string, refToKey, refToID map[string]string, plans []*createItemPlan) (string, error) {
+//
+// A literal key goes through resolveRelatedTask, so a parent the actor
+// cannot read is refused and a parent in another project is refused; the
+// in-batch @ref branch compares the two plans' projects for the same reason.
+func (s *svc) resolveNewParent(tx store.Tx, a Actor, owner *createItemPlan, raw string, refToPlan map[string]*createItemPlan) (string, error) {
 	if strings.HasPrefix(raw, "@") {
 		ref := strings.TrimPrefix(raw, "@")
-		id, ok := refToID[ref]
+		target, ok := refToPlan[ref]
 		if !ok {
 			return "", domain.Invalid("parent",
 				fmt.Sprintf("parent ref %q does not match any item in this batch", raw),
 				"Use @name pointing at a ref in the same batch, or a literal task key.")
 		}
-		// Depth check: the referenced in-batch item must itself be a
-		// top-level task (its own Parent is empty). Look it up in the
-		// plan rather than the database — the row hasn't been inserted
-		// yet at this point.
-		for _, p := range plans {
-			if p.isReplay || p.inserted == nil {
-				continue
-			}
-			if p.new.Ref == ref && p.new.Parent != "" {
-				return "", domain.Invalid("parent",
-					"parent ref is itself a subtask (max depth 2); subtasks may not have children",
-					"Pick a top-level task as the parent; subtasks are leaves.")
-			}
+		if target.project.ID != owner.project.ID {
+			return "", crossProjectEdge("parent", owner.inserted.Key, target.inserted.Key)
 		}
-		return id, nil
+		// Depth check: the referenced in-batch item must itself be a
+		// top-level task (its own Parent is empty). Read it off the plan
+		// rather than the database — the row hasn't been inserted yet.
+		if target.new.Parent != "" {
+			return "", domain.Invalid("parent",
+				"parent ref is itself a subtask (max depth 2); subtasks may not have children",
+				"Pick a top-level task as the parent; subtasks are leaves.")
+		}
+		return target.inserted.ID, nil
 	}
-	t, err := s.store.Tasks().GetByKey(tx, raw)
+	t, err := s.resolveRelatedTask(tx, a, "parent", raw, owner.inserted.Key, owner.project.ID)
 	if err != nil {
 		return "", err
 	}
@@ -392,19 +395,23 @@ func (s *svc) resolveNewParent(tx store.Tx, raw string, refToKey, refToID map[st
 	return t.ID, nil
 }
 
-// resolveBlockerID resolves a single BlockedBy entry to a task ID.
-func (s *svc) resolveBlockerID(tx store.Tx, raw string, refToKey, refToID map[string]string) (string, error) {
+// resolveBlockerID resolves a single BlockedBy entry to a task ID, under the
+// same access and same-project rules as resolveNewParent.
+func (s *svc) resolveBlockerID(tx store.Tx, a Actor, owner *createItemPlan, raw string, refToPlan map[string]*createItemPlan) (string, error) {
 	if strings.HasPrefix(raw, "@") {
 		ref := strings.TrimPrefix(raw, "@")
-		id, ok := refToID[ref]
+		target, ok := refToPlan[ref]
 		if !ok {
 			return "", domain.Invalid("blocked_by",
 				fmt.Sprintf("blocker ref %q does not match any item in this batch", raw),
 				"Use @name pointing at a ref in the same batch, or a literal task key.")
 		}
-		return id, nil
+		if target.project.ID != owner.project.ID {
+			return "", crossProjectEdge("blocked_by", owner.inserted.Key, target.inserted.Key)
+		}
+		return target.inserted.ID, nil
 	}
-	t, err := s.store.Tasks().GetByKey(tx, raw)
+	t, err := s.resolveRelatedTask(tx, a, "blocked_by", raw, owner.inserted.Key, owner.project.ID)
 	if err != nil {
 		return "", err
 	}
@@ -421,6 +428,15 @@ func (s *svc) resolveBlockerID(tx store.Tx, raw string, refToKey, refToID map[st
 //     or a mutating repo call is recorded in that item's ItemResult.Err
 //     and the loop continues with the next patch.
 //
+// Every item runs inside its own nested unit of work (tx.Nested, a SQLite
+// SAVEPOINT), so "the failed item changed nothing" is enforced by the
+// database instead of by the discipline of validating everything before
+// writing anything. That discipline is still worth keeping — a check that
+// runs before the first write produces a better error — but it is no longer
+// load-bearing, and an item that writes and then fails halfway (a move
+// followed by an out-of-range acceptance index, say) can no longer commit
+// half of itself under an ok:false result.
+//
 // Each patch is validated and applied before the next one is looked at.
 // Validating the whole batch first and only then writing reads more
 // tidily, but it turns every check into a time-of-check/time-of-use race
@@ -431,6 +447,58 @@ func (s *svc) resolveBlockerID(tx store.Tx, raw string, refToKey, refToID map[st
 // patch N is checked against the state patches 1..N-1 have already
 // written into this same transaction.
 // ---------------------------------------------------------------------------
+
+// runItem applies one item of a per-item batch inside its own nested unit of
+// work and returns (itemFailure, fatal): itemFailure is that item's
+// ItemResult.Err, fatal aborts the whole call.
+//
+// The database half of the rollback is tx.Nested's job. The half it cannot do
+// is the events: s.emit stages them in the pending slice, in this process,
+// and they are published only after the outer transaction commits — so a
+// rolled-back item whose events are left staged would announce a move that
+// never happened to every SSE subscriber. Recording the length before the
+// item and truncating on failure is the only place that can be fixed, which
+// is why store.Tx.Nested's contract says so explicitly.
+//
+// Two failures are deliberately NOT per-item outcomes:
+//   - the savepoint machinery itself failing, after which the transaction's
+//     state is no longer something we can reason about item by item;
+//   - an error that is not a *domain.Error, i.e. an I/O or driver failure
+//     rather than a refusal. Reporting one as ok:false with no code and no
+//     remediation is exactly the silent downgrade AGENTS.md forbids.
+func runItem(tx store.Tx, pending *[]domain.Event, fn func(store.Tx) error) (itemFailure *domain.Error, fatal error) {
+	staged := len(*pending)
+	var item *nestedItemError
+	nestErr := tx.Nested(func(itx store.Tx) error {
+		if err := fn(itx); err != nil {
+			// Wrapped so the error identity survives: Nested returns the
+			// item's own error unchanged when the rollback worked, and joins
+			// its own failure to it when it did not.
+			item = &nestedItemError{err: err}
+			return item
+		}
+		return nil
+	})
+	if nestErr == nil {
+		return nil, nil
+	}
+	*pending = (*pending)[:staged]
+	if item == nil || nestErr != error(item) {
+		return nil, nestErr
+	}
+	de := domain.AsError(item.err)
+	if de == nil {
+		return nil, item.err
+	}
+	return de, nil
+}
+
+// nestedItemError tags the error a batch item returned, so runItem can tell
+// "this item refused" from "the unit of work itself broke".
+type nestedItemError struct{ err error }
+
+func (e *nestedItemError) Error() string { return e.err.Error() }
+func (e *nestedItemError) Unwrap() error { return e.err }
 
 func (s *svc) TaskUpdate(ctx context.Context, a Actor, in TaskUpdateInput) (*TaskUpdateResult, error) {
 	if err := requireWrite(a); err != nil {
@@ -451,7 +519,10 @@ func (s *svc) TaskUpdate(ctx context.Context, a Actor, in TaskUpdateInput) (*Tas
 	var pending []domain.Event
 
 	err := s.store.Write(ctx, func(tx store.Tx) error {
-		now := tx.Now()
+		now, err := tx.Now()
+		if err != nil {
+			return err
+		}
 		cc := newColumnCache(s, tx)
 		pc := newProjectCache(s, tx)
 
@@ -464,23 +535,26 @@ func (s *svc) TaskUpdate(ctx context.Context, a Actor, in TaskUpdateInput) (*Tas
 				}
 				continue
 			}
-			// prepareUpdate re-reads the task, its project and the target
-			// column's occupancy every time, so the checks below see the
-			// writes made by the earlier patches of this same batch.
-			prep, err := s.prepareUpdate(tx, a, patch)
-			if err != nil {
-				results[i].Err = domain.AsError(err)
-				if in.Atomic {
+			var tv *domain.TaskView
+			itemErr, fatal := runItem(tx, &pending, func(itx store.Tx) error {
+				// prepareUpdate re-reads the task, its project and the target
+				// column's occupancy every time, so the checks below see the
+				// writes made by the earlier patches of this same batch.
+				prep, err := s.prepareUpdate(itx, a, patch)
+				if err != nil {
 					return err
 				}
-				continue
+				results[i].Key = prep.task.Key
+				tv, err = s.applyUpdate(itx, prep, patch, a, &pending, cc.bind(itx), pc.bind(itx), now)
+				return err
+			})
+			if fatal != nil {
+				return fatal
 			}
-			results[i].Key = prep.task.Key
-			tv, err := s.applyUpdate(tx, prep, patch, a, &pending, cc, pc, now)
-			if err != nil {
-				results[i].Err = domain.AsError(err)
+			if itemErr != nil {
+				results[i].Err = itemErr
 				if in.Atomic {
-					return err
+					return itemErr
 				}
 				continue
 			}
@@ -543,7 +617,11 @@ func (s *svc) prepareUpdate(tx store.Tx, a Actor, patch TaskPatch) (*prepared, e
 			"Read the task's current version with task_get and retry with if_version=<n>.")
 	}
 	if patch.IfVersion != nil && task.Version != *patch.IfVersion {
-		tv, err := s.hydrateView(tx, newColumnCache(s, tx), newProjectCache(s, tx), task, tx.Now(), hydrateOpts{})
+		now, err := tx.Now()
+		if err != nil {
+			return nil, err
+		}
+		tv, err := s.hydrateView(tx, newColumnCache(s, tx), newProjectCache(s, tx), task, now, hydrateOpts{})
 		if err != nil {
 			return nil, err
 		}
@@ -608,11 +686,17 @@ func (s *svc) validatePatchShape(p TaskPatch) error {
 	return nil
 }
 
-// applyUpdate applies one prepared patch. It is the only path that
-// writes — every decision that could fail has already been made in
-// prepareUpdate, so a repo call returning an error here means the
-// snapshot went stale (a concurrent writer beat us) and is surfaced to
-// the caller via ItemResult.Err.
+// applyUpdate applies one prepared patch and is the only path that writes.
+//
+// Most decisions that can fail are made in prepareUpdate, and keeping it
+// that way produces better errors. Not all of them are, though — the
+// acceptance-index range, the tag normalisation and the parent-chain rules
+// the store enforces are all decided here, after earlier fields of the same
+// patch have already been written. This used to be a claim that everything
+// fallible happened first, which was untrue and one forgotten check away
+// from committing half an item. It is now merely a preference: the caller
+// runs this inside a nested unit of work, so an error at any point rolls
+// this item's writes back and is surfaced via ItemResult.Err.
 func (s *svc) applyUpdate(
 	tx store.Tx, prep *prepared, patch TaskPatch, a Actor,
 	pending *[]domain.Event, cc *columnCache, pc *projectCache, now time.Time,
@@ -735,7 +819,10 @@ func (s *svc) applyUpdate(
 		if patch.Parent.Value == "" {
 			t.ParentID = nil
 		} else {
-			pt, err := s.store.Tasks().GetByKey(tx, patch.Parent.Value)
+			// Actor-aware and project-local: a reparent used to read the row
+			// straight out of the repository, which let a patch adopt a
+			// parent in a project the token cannot see.
+			pt, err := s.resolveRelatedTask(tx, a, "parent", patch.Parent.Value, t.Key, t.ProjectID)
 			if err != nil {
 				return nil, err
 			}
@@ -977,7 +1064,10 @@ func (s *svc) TaskRemove(ctx context.Context, a Actor, in TaskRemoveInput) (*Tas
 	var pending []domain.Event
 
 	err := s.store.Write(ctx, func(tx store.Tx) error {
-		now := tx.Now()
+		now, err := tx.Now()
+		if err != nil {
+			return err
+		}
 		cc := newColumnCache(s, tx)
 		pc := newProjectCache(s, tx)
 
@@ -987,73 +1077,21 @@ func (s *svc) TaskRemove(ctx context.Context, a Actor, in TaskRemoveInput) (*Tas
 				results[i].Err = domain.Invalid("key", "key is required", "Pass the task key.")
 				continue
 			}
-			task, err := s.resolveTask(tx, a, item.Key)
-			if err != nil {
-				results[i].Err = domain.AsError(err)
-				continue
+			var tv *domain.TaskView
+			itemErr, fatal := runItem(tx, &pending, func(itx store.Tx) error {
+				var err error
+				tv, err = s.removeOne(itx, a, item, in, &pending, cc.bind(itx), pc.bind(itx), now)
+				return err
+			})
+			if fatal != nil {
+				return fatal
 			}
-			if item.IfVersion != nil && task.Version != *item.IfVersion {
-				tv, err := s.hydrateView(tx, cc, pc, task, now, hydrateOpts{})
-				if err != nil {
-					results[i].Err = domain.AsError(err)
-					continue
-				}
-				results[i].Err = domain.Conflict(&tv, *item.IfVersion, task.Version)
-				continue
-			}
-			if !in.Restore && in.CascadeSubtasks {
-				if err := s.archiveChildren(tx, task, a, &pending); err != nil {
-					results[i].Err = domain.AsError(err)
-					continue
-				}
-			}
-			// Force-release any claim.
-			if _, err := s.store.Tasks().Release(tx, task.ID, a.Name, true); err != nil {
-				results[i].Err = domain.AsError(err)
-				continue
-			}
-			// Clear focus if this task held it.
-			proj, err := s.store.Projects().GetByID(tx, task.ProjectID)
-			if err != nil {
-				results[i].Err = domain.AsError(err)
-				continue
-			}
-			if proj.FocusTaskID != nil && *proj.FocusTaskID == task.ID {
-				if err := s.store.Projects().SetFocus(tx, proj.ID, nil); err != nil {
-					results[i].Err = domain.AsError(err)
-					continue
-				}
-				if err := s.emit(tx, &pending, a.Name, domain.EventFocusChanged, proj.ID, &task.ID,
-					map[string]any{"key": task.Key, "focus": false}); err != nil {
-					results[i].Err = domain.AsError(err)
-					continue
-				}
-			}
-			if err := s.store.Tasks().Archive(tx, task.ID, !in.Restore, a.Name); err != nil {
-				results[i].Err = domain.AsError(err)
-				continue
-			}
-			evType := domain.EventTaskArchived
-			if in.Restore {
-				evType = domain.EventTaskRestored
-			}
-			if err := s.emit(tx, &pending, a.Name, evType, task.ProjectID, &task.ID,
-				map[string]any{"key": task.Key}); err != nil {
-				results[i].Err = domain.AsError(err)
-				continue
-			}
-			fresh, err := s.store.Tasks().GetByID(tx, task.ID)
-			if err != nil {
-				results[i].Err = domain.AsError(err)
-				continue
-			}
-			tv, err := s.hydrateView(tx, cc, pc, fresh, now, hydrateOpts{})
-			if err != nil {
-				results[i].Err = domain.AsError(err)
+			if itemErr != nil {
+				results[i].Err = itemErr
 				continue
 			}
 			results[i].OK = true
-			results[i].Task = &tv
+			results[i].Task = tv
 		}
 		return nil
 	})
@@ -1062,6 +1100,71 @@ func (s *svc) TaskRemove(ctx context.Context, a Actor, in TaskRemoveInput) (*Tas
 	}
 	s.publishAll(pending)
 	return &TaskRemoveResult{Items: results}, nil
+}
+
+// removeOne archives (or restores) one task_remove item. It runs inside the
+// item's own nested unit of work, so it may write first and fail afterwards:
+// the cascade below archives every child before the parent's own archive is
+// attempted, and half of that landing under an ok:false result is exactly
+// what the savepoint exists to prevent.
+func (s *svc) removeOne(
+	tx store.Tx, a Actor, item RemoveItem, in TaskRemoveInput,
+	pending *[]domain.Event, cc *columnCache, pc *projectCache, now time.Time,
+) (*domain.TaskView, error) {
+	task, err := s.resolveTask(tx, a, item.Key)
+	if err != nil {
+		return nil, err
+	}
+	if item.IfVersion != nil && task.Version != *item.IfVersion {
+		tv, err := s.hydrateView(tx, cc, pc, task, now, hydrateOpts{})
+		if err != nil {
+			return nil, err
+		}
+		return nil, domain.Conflict(&tv, *item.IfVersion, task.Version)
+	}
+	if !in.Restore && in.CascadeSubtasks {
+		if err := s.archiveChildren(tx, task, a, pending); err != nil {
+			return nil, err
+		}
+	}
+	// Force-release any claim.
+	if _, err := s.store.Tasks().Release(tx, task.ID, a.Name, true); err != nil {
+		return nil, err
+	}
+	// Clear focus if this task held it.
+	proj, err := s.store.Projects().GetByID(tx, task.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	if proj.FocusTaskID != nil && *proj.FocusTaskID == task.ID {
+		if err := s.store.Projects().SetFocus(tx, proj.ID, nil); err != nil {
+			return nil, err
+		}
+		if err := s.emit(tx, pending, a.Name, domain.EventFocusChanged, proj.ID, &task.ID,
+			map[string]any{"key": task.Key, "focus": false}); err != nil {
+			return nil, err
+		}
+	}
+	if err := s.store.Tasks().Archive(tx, task.ID, !in.Restore, a.Name); err != nil {
+		return nil, err
+	}
+	evType := domain.EventTaskArchived
+	if in.Restore {
+		evType = domain.EventTaskRestored
+	}
+	if err := s.emit(tx, pending, a.Name, evType, task.ProjectID, &task.ID,
+		map[string]any{"key": task.Key}); err != nil {
+		return nil, err
+	}
+	fresh, err := s.store.Tasks().GetByID(tx, task.ID)
+	if err != nil {
+		return nil, err
+	}
+	tv, err := s.hydrateView(tx, cc, pc, fresh, now, hydrateOpts{})
+	if err != nil {
+		return nil, err
+	}
+	return &tv, nil
 }
 
 // archiveChildren recursively archives every unarchived descendant of t.

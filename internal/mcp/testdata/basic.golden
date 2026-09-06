@@ -1,5 +1,5 @@
 compact_version=1
-# BMB BeeMemoryBank · focus BMB-14 · Doing 2/3 · Review 1 · Backlog 1 · Done 40 (hidden)
+# BMB BeeMemoryBank · focus BMB-14 · Doing 2/3 · Review 1 · Backlog 1 · Done 40 (hidden) · v9
 ## Doing
 - BMB-14 [high bug] Fix WAL checkpoint race · est 2h · @alex · lease claude@rog 43m · sub 1/3 · #sync · v7 · age 2h
 - BMB-17 [medium feat] Encrypted FTS index · est 8h · lease codex@desk expired · blocked-by BMB-14,BMB-9 · v3 · age 3d

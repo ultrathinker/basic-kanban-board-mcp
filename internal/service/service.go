@@ -63,6 +63,103 @@ func (is Includes) Has(w Include) bool {
 }
 
 // ---------------------------------------------------------------------------
+// Response projection
+// ---------------------------------------------------------------------------
+
+// FieldDetail says how much of a *selected* field a result actually carries.
+//
+// It exists because `include` was doing two incompatible jobs (architecture
+// review finding #21): it selected which fields to return AND was read, one
+// layer down, as permission to return them in full. That made "included but
+// bounded" unrepresentable — a caller could have the whole 64 KiB body or
+// nothing at all — and it made task_next's default answer more expensive than
+// reading the entire board. Selection and detail are now separate axes.
+type FieldDetail string
+
+const (
+	// DetailFull means the field carries the stored value unaltered.
+	DetailFull FieldDetail = "full"
+	// DetailBounded means the field was clipped to the limit the Projection
+	// reports. A bounded body ends in the "… +N chars" marker; a bounded
+	// acceptance list reports its true length in AcceptanceTotals.
+	DetailBounded FieldDetail = "bounded"
+)
+
+// Projection is the explicit, returned description of the shaping a read
+// applied. It is part of the result, not an agreement each layer re-derives
+// from the request: the service decides once, and every surface that renders
+// the result reads that decision instead of guessing at it.
+type Projection struct {
+	// Fields are the optional fields actually populated on every task in the
+	// result. A field absent here is absent from the tasks — a renderer must
+	// not emit it, and must not assume it was merely empty.
+	Fields Includes
+
+	// Body / Acceptance report how much of those fields survived, and the
+	// limit applied when the answer is DetailBounded.
+	Body            FieldDetail
+	BodyLimitBytes  int
+	Acceptance      FieldDetail
+	AcceptanceLimit int
+
+	// AcceptanceTotals gives the true item count for each task whose
+	// acceptance list was clipped, keyed by task key. A key is absent when
+	// nothing was cut, so an empty map means the lists are complete. Bounding
+	// a list without saying how much is missing would be exactly the silent
+	// downgrade AGENTS.md forbids.
+	AcceptanceTotals map[string]int
+}
+
+// Has reports whether the projection populated a field.
+func (p Projection) Has(w Include) bool { return p.Fields.Has(w) }
+
+// Apply shapes one already-hydrated view to this projection, in place: it
+// clears every optional field the projection did not select and clips the ones
+// it bounded, recording in AcceptanceTotals whatever it had to cut.
+//
+// Notes are the one field Apply cannot handle — they are a separate query, so
+// the caller loads them inside its own transaction — but it does clear them,
+// so an unselected note list can never leak through.
+//
+// It is exported because the response shaping is a contract, not an
+// implementation detail: a surface measuring or asserting what a bounded read
+// costs must be able to run the real rule rather than a copy of it that drifts.
+func (p *Projection) Apply(tv *domain.TaskView) {
+	if !p.Has(IncludeBody) {
+		tv.Body = ""
+	} else if p.Body == DetailBounded {
+		tv.Body = truncateBody(tv.Body, p.BodyLimitBytes)
+	}
+
+	if !p.Has(IncludeAcceptance) {
+		tv.Acceptance = nil
+	} else if p.Acceptance == DetailBounded && len(tv.Acceptance) > p.AcceptanceLimit {
+		if p.AcceptanceTotals == nil {
+			p.AcceptanceTotals = map[string]int{}
+		}
+		p.AcceptanceTotals[tv.Key] = len(tv.Acceptance)
+		tv.Acceptance = tv.Acceptance[:p.AcceptanceLimit]
+	}
+
+	if !p.Has(IncludeLinks) {
+		tv.Blocks = nil
+	}
+	if !p.Has(IncludeMetadata) {
+		tv.Metadata = nil
+	}
+	if !p.Has(IncludeNotes) {
+		tv.Notes = nil
+	}
+}
+
+// FullProjection describes a read that returned every selected field whole.
+// It is the shape of every read except task_next, which bounds by default;
+// naming it keeps that difference visible instead of implied.
+func FullProjection(fields Includes) Projection {
+	return Projection{Fields: fields, Body: DetailFull, Acceptance: DetailFull}
+}
+
+// ---------------------------------------------------------------------------
 // board_get
 // ---------------------------------------------------------------------------
 
@@ -100,10 +197,28 @@ type Board struct {
 	Projects []BoardProject
 }
 
+// BoardProject carries the project's full configuration, not just its
+// identity. Version in particular is not decoration: project_upsert
+// (mode:"update") requires if_version, and board_get is the only read that
+// publishes a project at all — without it an administrator cannot reconfigure
+// an existing project through the tool surface at all, which is the pressure
+// that invents a tenth tool (architecture review finding #10).
 type BoardProject struct {
-	Key       string
-	Name      string
-	FocusKey  string // "" when unset
+	Key         string
+	Name        string
+	Description string
+	Version     int    // echo back as project_upsert's if_version
+	FocusKey    string // "" when unset
+
+	// Settings, as project_upsert's `settings` object accepts them, so a
+	// caller can read the current configuration and send back a modified one
+	// without inventing values it never saw.
+	EstimateUnit        string // "h" unless the project configured otherwise
+	EnforceDependencies bool
+	StrictDone          bool
+	ClaimTTLSeconds     int
+	Archived            bool
+
 	Columns   []BoardColumn
 	DoneTotal int
 	DoneShown int
@@ -132,15 +247,55 @@ const (
 	NextStart NextAction = "start"
 )
 
+// NextDetail chooses how much of each selected field task_next returns. It is
+// deliberately separate from Include: `include` says *which* fields, `detail`
+// says *how much*. task_next is the tool an agent calls to choose a piece of
+// work, so the default is the cheap one — full cards are what task_get is for.
+type NextDetail string
+
+const (
+	// NextDetailSummary is the default: body clipped to NextSummaryBodyBytes
+	// and acceptance to NextSummaryAcceptanceItems, enough to pick between
+	// candidates without paying for all of them.
+	NextDetailSummary NextDetail = "summary"
+	// NextDetailFull widens to PLAN §6.2's stated bounds — body ≤
+	// domain.NextBodyTruncate, acceptance ≤ domain.NextAcceptanceItems. It is
+	// still bounded: task_next never returns a whole 64 KiB body, because a
+	// candidate list is the wrong place to spend a context window.
+	NextDetailFull NextDetail = "full"
+)
+
+// Bounds of the two task_next detail levels. The summary numbers live here
+// rather than in domain because they describe one tool's response shaping,
+// not a rule about what a task may contain; domain's Next* limits remain the
+// ceiling that NextDetailFull uses.
+//
+// The split between them is not arbitrary. Measured on the wire, one
+// acceptance item costs about as much as 2 KB of body excerpt does per
+// candidate — roughly 40 tokens against 4 — while an excerpt tells you far
+// more about whether a card is the one you want. So the summary budget goes
+// almost entirely to the excerpt, and the criteria are represented by their
+// count (`acceptance_total`), which is the part that signals size. The text of
+// criteria 3..50 is what task_get, and detail:"full", are for.
+const (
+	NextSummaryBodyBytes       = 256
+	NextSummaryAcceptanceItems = 2
+)
+
 type TaskNextInput struct {
 	ProjectKey string
 	Action     NextAction
 	Limit      int
 	Include    Includes
+	Detail     NextDetail // "" = NextDetailSummary
 }
 
 type NextResult struct {
 	Tasks []domain.TaskView
+	// Projection states exactly what shaping produced Tasks. Rendering
+	// surfaces must read it instead of re-deriving the answer from the
+	// request they sent.
+	Projection Projection
 	// ClaimedKey / StartedKey name the task actually taken, if any.
 	ClaimedKey string
 	StartedKey string
@@ -173,6 +328,12 @@ type BlockedSample struct {
 type TaskGetInput struct {
 	Keys    []string
 	Include Includes
+	// NotesBefore pages backwards through a task's notes: only notes created
+	// strictly before it are returned, newest first. Without it the newest
+	// domain.MaxNotesPerRead are all an agent could ever reach, so a
+	// long-running task's own working history became unreadable through the
+	// tool surface as soon as it crossed the cap (PLAN §6.3).
+	NotesBefore *time.Time
 }
 
 // TaskGetResult preserves the requested order and reports missing keys
@@ -180,6 +341,11 @@ type TaskGetInput struct {
 type TaskGetResult struct {
 	Tasks    []domain.TaskView
 	NotFound []string
+	// NotesNext is the cursor to send back as NotesBefore for the next, older
+	// page of notes, keyed by task key. A key is absent when that task has no
+	// older notes — the cursor is per task because each task's history ends at
+	// a different point.
+	NotesNext map[string]time.Time
 }
 
 // ---------------------------------------------------------------------------

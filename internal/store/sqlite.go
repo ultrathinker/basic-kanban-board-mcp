@@ -9,8 +9,10 @@ import (
 	"net/url"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	// modernc.org/sqlite is pure Go, CGO_ENABLED=0 compliant.
@@ -204,7 +206,7 @@ func (s *sqlStore) Read(ctx context.Context, fn func(Tx) error) error {
 	if err != nil {
 		return fmt.Errorf("store: begin read tx: %w", err)
 	}
-	wrap := &txWrap{tx: tx, store: s, ctx_: ctx}
+	wrap := &txWrap{tx: tx, store: s, ctx_: ctx, state: &txState{}}
 	if err := fn(wrap); err != nil {
 		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
 			return fmt.Errorf("%w (rollback: %v)", err, rbErr)
@@ -234,7 +236,7 @@ func (s *sqlStore) Write(ctx context.Context, fn func(Tx) error) error {
 	if err != nil {
 		return fmt.Errorf("store: begin write tx: %w", err)
 	}
-	wrap := &txWrap{tx: tx, store: s, ctx_: ctx}
+	wrap := &txWrap{tx: tx, store: s, ctx_: ctx, state: &txState{}}
 	if err := fn(wrap); err != nil {
 		if rbErr := tx.Rollback(); rbErr != nil && !errors.Is(rbErr, sql.ErrTxDone) {
 			return fmt.Errorf("%w (rollback: %v)", err, rbErr)
@@ -247,16 +249,81 @@ func (s *sqlStore) Write(ctx context.Context, fn func(Tx) error) error {
 	return nil
 }
 
+// txState is the state a transaction shares with every nested unit derived
+// from it: one cached database clock and one savepoint-name counter. A
+// nested unit is a scope inside the same *sql.Tx, not a new transaction, so
+// it must neither re-read the clock (a nested item is not a new point in
+// time) nor restart the numbering (two live savepoints must never share a
+// name — ROLLBACK TO would unwind to the wrong one).
+type txState struct {
+	mu     sync.Mutex
+	loaded bool
+	now    time.Time
+	nowErr error
+	seq    int64
+}
+
+// clock reads the database clock once per transaction and caches the
+// outcome — including a failure.
+//
+// The failure is cached on purpose. Now() is the ordering authority for
+// lease expiry, done_at and the event log, so the one thing it may never do
+// is give two different answers inside one transaction. A retry that
+// happened to succeed after an earlier caller was told "no clock" would do
+// exactly that: half the transaction's decisions made without a timestamp,
+// the other half stamped from a later read. A transaction whose clock is
+// unreadable is over; every subsequent Now() says so.
+func (st *txState) clock(ctx context.Context, tx *sql.Tx) (time.Time, error) {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.loaded {
+		return st.now, st.nowErr
+	}
+	st.loaded = true
+	var ts string
+	// strftime('%Y-%m-%dT%H:%M:%fZ', 'now') produces a lexically and
+	// chronologically ordered UTC stamp. 'now' is the start-of-statement
+	// timestamp which is stable for the duration of a single SQL statement
+	// but may shift between statements; we want a single stable value
+	// across the whole transaction, so we read it once.
+	if err := tx.QueryRowContext(ctx, "SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')").Scan(&ts); err != nil {
+		st.nowErr = fmt.Errorf("store: read database clock: %w", err)
+		return time.Time{}, st.nowErr
+	}
+	parsed, err := time.Parse(timeLayout, ts)
+	if err != nil {
+		st.nowErr = fmt.Errorf("store: database clock returned unparseable %q: %w", ts, err)
+		return time.Time{}, st.nowErr
+	}
+	st.now = parsed.UTC()
+	return st.now, nil
+}
+
+// nextSavepoint hands out a name that is unique for the lifetime of the
+// transaction. The counter is shared through txState so sibling and nested
+// units cannot collide.
+func (st *txState) nextSavepoint() string {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.seq++
+	return "kanban_sp_" + strconv.FormatInt(st.seq, 10)
+}
+
 // txWrap is the concrete Tx handed to every repository. The database clock
-// is captured once at the top of the transaction — every timestamp the
-// repos write or compare must use this same value, never time.Now(), or
-// lease tests that race a renew against an expiry become flaky.
+// is read on first use and then fixed for the rest of the transaction —
+// every timestamp the repos write or compare must use that one value, never
+// time.Now(), or a lease renewal racing an expiry stops being decidable.
+// Nested units share the same txState, so they share that value too.
 type txWrap struct {
 	tx    *sql.Tx
 	store *sqlStore
-	now   time.Time
-	once  sync.Once
 	ctx_  context.Context
+	state *txState
+	// released marks a nested Tx whose Nested call has already returned.
+	// The savepoint it named is gone, so the value no longer denotes the
+	// scope its holder thinks it does; using it again is a bug we can name
+	// instead of a rollback that silently unwinds the wrong work.
+	released atomic.Bool
 }
 
 // ctx returns the context that was active when the transaction was started.
@@ -264,30 +331,73 @@ type txWrap struct {
 // actor from a context value.
 func (t *txWrap) ctx() context.Context { return t.ctx_ }
 
-func (t *txWrap) Now() time.Time {
-	t.once.Do(func() {
-		var ts string
-		// strftime('%Y-%m-%dT%H:%M:%fZ', 'now') produces a lexically and
-		// chronologically ordered UTC stamp. 'now' is the start-of-statement
-		// timestamp which is stable for the duration of a single SQL
-		// statement but may shift between statements; we want a single
-		// stable value across the whole transaction, so we read it once.
-		if err := t.tx.QueryRow("SELECT strftime('%Y-%m-%dT%H:%M:%fZ','now')").Scan(&ts); err != nil {
-			// Last-resort fallback: process clock. We swallow the error
-			// here because Now() has no error return — the alternative
-			// is a panic, which would corrupt the transaction. Document
-			// this loudly in logs once per failure.
-			ts = time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
+// Now returns the database clock for this transaction, or the error that
+// prevented reading it. See the Tx interface for why there is no fallback.
+func (t *txWrap) Now() (time.Time, error) { return t.state.clock(t.ctx(), t.tx) }
+
+// Nested runs fn inside a SAVEPOINT. See the Tx interface for the contract.
+func (t *txWrap) Nested(fn func(Tx) error) error {
+	if fn == nil {
+		return errors.New("store: Nested: nil function")
+	}
+	if t.released.Load() {
+		return errors.New("store: Nested: this Tx came from a nested unit that has already finished; do not retain the Tx passed to Nested")
+	}
+	name := t.state.nextSavepoint()
+	if _, err := t.tx.ExecContext(t.ctx(), "SAVEPOINT "+name); err != nil {
+		return fmt.Errorf("store: open savepoint: %w", err)
+	}
+	child := &txWrap{tx: t.tx, store: t.store, ctx_: t.ctx_, state: t.state}
+	finished := false
+	defer func() {
+		child.released.Store(true)
+		if finished {
+			return
 		}
-		parsed, err := time.Parse("2006-01-02T15:04:05.000Z", ts)
-		if err != nil {
-			// The format is fixed; if parsing fails the driver returned
-			// something we don't recognize. Fall back to wall clock.
-			parsed = time.Now().UTC()
+		// fn panicked (or called runtime.Goexit — t.Fatal from a helper
+		// goroutine does that). The savepoint is still open and fn's half
+		// finished writes are still provisional, so undo them here: the
+		// enclosing transaction may well be recovered and committed by
+		// whoever catches the panic, and it must not carry them.
+		_ = t.discard(name)
+	}()
+	err := fn(child)
+	finished = true
+	if err != nil {
+		if rbErr := t.discard(name); rbErr != nil {
+			// Report both: the caller needs fn's error for its per-item
+			// result, and the rollback failure means the enclosing
+			// transaction can no longer be trusted to commit.
+			return errors.Join(err, rbErr)
 		}
-		t.now = parsed.UTC()
-	})
-	return t.now
+		return err
+	}
+	if _, relErr := t.tx.ExecContext(t.ctx(), "RELEASE "+name); relErr != nil {
+		// RELEASE failed, so the savepoint is still open and fn's writes
+		// are still provisional. Returning nil would promise the caller
+		// that its unit joined the transaction when it has not.
+		if rbErr := t.discard(name); rbErr != nil {
+			return errors.Join(fmt.Errorf("store: release savepoint: %w", relErr), rbErr)
+		}
+		return fmt.Errorf("store: release savepoint: %w", relErr)
+	}
+	return nil
+}
+
+// discard undoes a savepoint and pops it off the stack.
+//
+// The RELEASE is not optional cleanup: ROLLBACK TO rewinds the writes but
+// leaves the savepoint active, so a batch that rejects fifty items would
+// otherwise leave fifty live savepoint frames on one transaction, and the
+// next ROLLBACK TO of a reused name would unwind to the wrong frame.
+func (t *txWrap) discard(name string) error {
+	if _, err := t.tx.ExecContext(t.ctx(), "ROLLBACK TO "+name); err != nil {
+		return fmt.Errorf("store: roll back savepoint: %w", err)
+	}
+	if _, err := t.tx.ExecContext(t.ctx(), "RELEASE "+name); err != nil {
+		return fmt.Errorf("store: release rolled-back savepoint: %w", err)
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -389,9 +499,13 @@ func (s *sqlStore) Health(ctx context.Context) (HealthInfo, error) {
 	// can complete in < 1 µs on modern SSDs and round to 0.
 	start := time.Now()
 	werr := s.Write(ctx, func(tx Tx) error {
-		_, err := tx.(*txWrap).tx.ExecContext(ctx,
+		now, err := tx.Now()
+		if err != nil {
+			return err
+		}
+		_, err = tx.(*txWrap).tx.ExecContext(ctx,
 			"INSERT INTO schema_migrations(version, name, applied_at) VALUES(-1, '__health__', ?)",
-			formatTime(tx.Now().UTC()))
+			formatTime(now))
 		return err
 	})
 	cleanupErr := s.Write(ctx, func(tx Tx) error {

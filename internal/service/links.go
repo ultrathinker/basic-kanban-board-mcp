@@ -26,7 +26,10 @@ func (s *svc) TaskLink(ctx context.Context, a Actor, in TaskLinkInput) (*TaskLin
 	var pending []domain.Event
 	touched := map[string]*domain.Task{}
 	err := s.store.Write(ctx, func(tx store.Tx) error {
-		now := tx.Now()
+		now, err := tx.Now()
+		if err != nil {
+			return err
+		}
 		cc := newColumnCache(s, tx)
 		pc := newProjectCache(s, tx)
 
@@ -118,7 +121,13 @@ func (s *svc) resolveLinkPair(tx store.Tx, a Actor, pair LinkPair) (blocker, blo
 	if err != nil {
 		return nil, nil, err
 	}
-	blocked, err = s.resolveTask(tx, a, pair.Blocked)
+	// The blocked end is resolved relative to the blocker, so the pair is
+	// refused when the two live in different projects. Checking the actor's
+	// access to both keys is not enough on its own: two projects a token may
+	// read are still two closed aggregates in v1 (PLAN §18 / architecture
+	// review #18), and a cross-project edge makes readiness depend on a task
+	// that a differently-scoped token cannot see.
+	blocked, err = s.resolveRelatedTask(tx, a, "blocked", pair.Blocked, blocker.Key, blocker.ProjectID)
 	if err != nil {
 		return nil, nil, err
 	}

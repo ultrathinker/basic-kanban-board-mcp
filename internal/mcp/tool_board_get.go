@@ -41,13 +41,27 @@ type boardColumnOut struct {
 	Tasks    []taskOut   `json:"tasks,omitempty"`
 }
 
+// boardProjectOut publishes the project's whole configuration, not just its
+// identity. `version` in particular closes a loop that was open: project_upsert
+// (mode:"update") requires if_version and this is the only tool that reads a
+// project, so without it an administrator could not reconfigure an existing
+// project through the nine tools at all. The settings come with it so a caller
+// can send a modified copy of what it read instead of guessing at the values
+// it is about to overwrite.
 type boardProjectOut struct {
-	Key       string           `json:"key"`
-	Name      string           `json:"name"`
-	FocusKey  string           `json:"focus_key,omitempty"`
-	Columns   []boardColumnOut `json:"columns"`
-	DoneTotal int              `json:"done_total"`
-	DoneShown int              `json:"done_shown"`
+	Key                 string           `json:"key"`
+	Name                string           `json:"name"`
+	Description         string           `json:"description,omitempty"`
+	Version             int              `json:"version" jsonschema:"the project configuration version; send it back as project_upsert's if_version"`
+	FocusKey            string           `json:"focus_key,omitempty"`
+	EstimateUnit        string           `json:"estimate_unit" jsonschema:"the unit every estimate on this project is expressed in, e.g. h or d"`
+	EnforceDependencies bool             `json:"enforce_dependencies"`
+	StrictDone          bool             `json:"strict_done"`
+	ClaimTTLSeconds     int              `json:"claim_ttl_seconds"`
+	Archived            bool             `json:"archived,omitempty"`
+	Columns             []boardColumnOut `json:"columns"`
+	DoneTotal           int              `json:"done_total"`
+	DoneShown           int              `json:"done_shown"`
 }
 
 type boardGetData struct {
@@ -170,7 +184,9 @@ func registerBoardGet(s *gomcp.Server, svc service.Service) {
 			return errorResult(opBoardGet, derr), boardGetOutput{OK: false, Op: opBoardGet, Error: newErrorEnvelope(derr)}, nil
 		}
 
-		includes := toIncludes(in.Include)
+		// board_get returns whatever `include` selected, whole: it has no
+		// bounded tier, so the projection is the include set as-is.
+		proj := service.FullProjection(toIncludes(in.Include))
 		data := boardGetData{Projects: make([]boardProjectOut, len(board.Projects))}
 		total := 0
 		for i := range board.Projects {
@@ -183,17 +199,24 @@ func registerBoardGet(s *gomcp.Server, svc service.Service) {
 					Kind:     c.Kind,
 					WIPLimit: c.WIPLimit,
 					Count:    c.Count,
-					Tasks:    taskViewOutList(c.Tasks, includes),
+					Tasks:    taskViewOutList(c.Tasks, proj),
 				}
 				total += len(c.Tasks)
 			}
 			data.Projects[i] = boardProjectOut{
-				Key:       p.Key,
-				Name:      p.Name,
-				FocusKey:  p.FocusKey,
-				Columns:   cols,
-				DoneTotal: p.DoneTotal,
-				DoneShown: p.DoneShown,
+				Key:                 p.Key,
+				Name:                p.Name,
+				Description:         p.Description,
+				Version:             p.Version,
+				FocusKey:            p.FocusKey,
+				EstimateUnit:        p.EstimateUnit,
+				EnforceDependencies: p.EnforceDependencies,
+				StrictDone:          p.StrictDone,
+				ClaimTTLSeconds:     p.ClaimTTLSeconds,
+				Archived:            p.Archived,
+				Columns:             cols,
+				DoneTotal:           p.DoneTotal,
+				DoneShown:           p.DoneShown,
 			}
 		}
 
@@ -203,10 +226,7 @@ func registerBoardGet(s *gomcp.Server, svc service.Service) {
 		if in.Format == "json" {
 			text = jsonText(out)
 		} else {
-			// Render is the frozen compact-grammar implementation; units is
-			// nil because service.Board carries no per-project estimate
-			// unit (see the deviation noted in this package's final report).
-			text = Render(board, renderNow(), nil)
+			text = Render(board, renderNow())
 		}
 		return &gomcp.CallToolResult{Content: []gomcp.Content{&gomcp.TextContent{Text: text}}}, out, nil
 	})

@@ -37,6 +37,15 @@ func (c *columnCache) get(id string) (*domain.Column, error) {
 
 func (c *columnCache) prime(col *domain.Column) { c.byID[col.ID] = col }
 
+// bind returns the same cache reading through a different Tx — the nested
+// unit of work a batch item runs in. The map is shared on purpose: columns
+// are not written by task-level mutations, so entries stay valid across an
+// item that rolls back, and re-reading every column per item would undo the
+// point of the cache.
+func (c *columnCache) bind(tx store.Tx) *columnCache {
+	return &columnCache{s: c.s, tx: tx, byID: c.byID}
+}
+
 type projectCache struct {
 	s    *svc
 	tx   store.Tx
@@ -60,6 +69,13 @@ func (c *projectCache) get(id string) (*domain.Project, error) {
 }
 
 func (c *projectCache) prime(p *domain.Project) { c.byID[p.ID] = p }
+
+// bind mirrors columnCache.bind. Only the fields hydrateView reads (Key) are
+// served from here; every rule that depends on mutable project state
+// (focus, strict_done) re-reads the row inside the item's own unit of work.
+func (c *projectCache) bind(tx store.Tx) *projectCache {
+	return &projectCache{s: c.s, tx: tx, byID: c.byID}
+}
 
 // hydrateOpts controls the expensive optional parts of a TaskView: notes
 // require a separate paginated query, so they are opt-in per PLAN §6.3.

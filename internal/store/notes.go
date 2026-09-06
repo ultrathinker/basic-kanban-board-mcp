@@ -19,7 +19,11 @@ func (r *noteRepo) Add(tx Tx, n *domain.Note) error {
 			"Set those fields before calling note Add.")
 	}
 	if n.CreatedAt.IsZero() {
-		n.CreatedAt = tx.Now().UTC()
+		now, err := tx.Now()
+		if err != nil {
+			return err
+		}
+		n.CreatedAt = now
 	}
 	tw := tx.(*txWrap)
 	_, err := tw.tx.ExecContext(tw.ctx(), `

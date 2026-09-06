@@ -240,20 +240,18 @@ func boardHasTask(t *testing.T, env *testEnv, key string) bool {
 	return false
 }
 
-// TestTaskRemove_ArchiveStillBehavesAsBefore is the regression guard the F3
-// brief asks for: the done-boundary rule must not have disturbed TaskRemove's
-// archive path, whose force-release is the precedent the rule follows.
+// TestTaskRemove_ArchiveReleasesTheLeaseAndRestores is the regression guard
+// the F3 brief asks for: the done-boundary rule must not have disturbed
+// TaskRemove's archive path, whose force-release is the precedent the rule
+// follows.
 //
-// The archive path carries a PRE-EXISTING store-layer defect outside this
-// chunk (reported, not fixed here): Tasks().Archive binds a raw time.Time,
-// so the post-archive re-read cannot parse archived_at, and AsError swallows
-// the raw error — the item reports neither OK nor an error. Worse, restore
-// fails at its first read, so it is a silent no-op. This test pins today's
-// observable behaviour exactly: the archive's writes (force-release first,
-// then archive) DO commit — the task leaves the board — while the response
-// is the broken shape above. When the store bug is fixed, this test flips
-// and should be tightened to assert the released lease directly.
-func TestTaskRemove_ArchiveStillBehavesAsBefore(t *testing.T) {
+// This test used to pin a broken shape (OK=false with a nil Err) caused by a
+// store-layer defect: Tasks().Archive bound a raw time.Time, the post-archive
+// re-read could not parse archived_at, and the raw error was swallowed. That
+// defect was fixed in internal/store during the architecture wave, so the
+// assertion is now the one its own comment asked for — the lease is released
+// and restore actually restores.
+func TestTaskRemove_ArchiveReleasesTheLeaseAndRestores(t *testing.T) {
 	env := openTestEnv(t)
 	task := makeBacklogTask(t, env, "archive me")
 	startTask(t, env, task.Key)
@@ -264,16 +262,22 @@ func TestTaskRemove_ArchiveStillBehavesAsBefore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("remove: %v", err)
 	}
-	if arch.Items[0].OK || arch.Items[0].Err != nil {
-		t.Fatalf("archive item shape changed by F3: OK=%v Err=%+v (pre-existing store defect pins OK=false, Err=nil)",
-			arch.Items[0].OK, arch.Items[0].Err)
+	if !arch.Items[0].OK {
+		t.Fatalf("archive failed: %+v", arch.Items[0].Err)
 	}
+	if arch.Items[0].Task == nil {
+		t.Fatalf("archive returned no task view")
+	}
+	if arch.Items[0].Task.ArchivedAt == nil {
+		t.Fatalf("returned view has no ArchivedAt after archiving")
+	}
+	// The force-release is the whole point of the precedent: an archived task
+	// must not keep a live lease that outlives it.
+	assertNoLease(t, "archived view", *arch.Items[0].Task)
 	if boardHasTask(t, env, task.Key) {
-		t.Fatalf("task still on the board after archive; the archive transaction did not commit")
+		t.Fatalf("task still on the board after archive")
 	}
 
-	// Restore is a pre-existing silent no-op for the same store reason: it
-	// fails before writing anything, so the task must remain archived.
 	rst, err := env.svc.TaskRemove(context.Background(), env.actor, TaskRemoveInput{
 		Items:   []RemoveItem{{Key: task.Key}},
 		Restore: true,
@@ -281,12 +285,16 @@ func TestTaskRemove_ArchiveStillBehavesAsBefore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("restore call: %v", err)
 	}
-	if rst.Items[0].OK || rst.Items[0].Err != nil {
-		t.Fatalf("restore item shape changed by F3: OK=%v Err=%+v", rst.Items[0].OK, rst.Items[0].Err)
+	if !rst.Items[0].OK {
+		t.Fatalf("restore failed: %+v", rst.Items[0].Err)
 	}
-	if boardHasTask(t, env, task.Key) {
-		t.Fatalf("task back on the board after a restore that cannot have run")
+	if rst.Items[0].Task.ArchivedAt != nil {
+		t.Fatalf("restored view still carries ArchivedAt = %v", rst.Items[0].Task.ArchivedAt)
 	}
+	if !boardHasTask(t, env, task.Key) {
+		t.Fatalf("task did not come back on the board after restore")
+	}
+	assertNoLease(t, "restored view", freshView(t, env, task.Key))
 }
 
 // projectVersion reads the seeded project's current version for an upsert.

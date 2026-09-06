@@ -48,7 +48,11 @@ func (r *tokenRepo) Create(tx Tx, t *domain.Token) error {
 			"Set those before calling token Create.")
 	}
 	if t.CreatedAt.IsZero() {
-		t.CreatedAt = tx.Now().UTC()
+		now, err := tx.Now()
+		if err != nil {
+			return err
+		}
+		t.CreatedAt = now
 	}
 	scopes, err := encodeJSON(t.Scopes)
 	if err != nil {
@@ -136,7 +140,11 @@ func (r *tokenRepo) Revoke(tx Tx, name string) error {
 		return domain.Invalid("name", "token name is empty", "Pass the token name.")
 	}
 	tw := tx.(*txWrap)
-	now := formatTime(tx.Now().UTC())
+	ts, err := tx.Now()
+	if err != nil {
+		return err
+	}
+	now := formatTime(ts)
 	res, err := tw.tx.ExecContext(tw.ctx(), "UPDATE tokens SET revoked_at = ? WHERE name = ? COLLATE NOCASE", now, name)
 	if err != nil {
 		return fmt.Errorf("store: revoke token: %w", err)
@@ -153,8 +161,12 @@ func (r *tokenRepo) TouchLastUsed(tx Tx, id string) error {
 		return domain.Invalid("id", "token id is empty", "Pass the token UUID.")
 	}
 	tw := tx.(*txWrap)
-	now := formatTime(tx.Now().UTC())
-	_, err := tw.tx.ExecContext(tw.ctx(), "UPDATE tokens SET last_used_at = ? WHERE id = ?", now, id)
+	ts, err := tx.Now()
+	if err != nil {
+		return err
+	}
+	now := formatTime(ts)
+	_, err = tw.tx.ExecContext(tw.ctx(), "UPDATE tokens SET last_used_at = ? WHERE id = ?", now, id)
 	if err != nil {
 		return fmt.Errorf("store: touch token: %w", err)
 	}
@@ -264,7 +276,11 @@ func (r *sessionRepo) Create(tx Tx, s *domain.Session) error {
 			"Set those before calling session Create.")
 	}
 	if s.CreatedAt.IsZero() {
-		s.CreatedAt = tx.Now().UTC()
+		now, err := tx.Now()
+		if err != nil {
+			return err
+		}
+		s.CreatedAt = now
 	}
 	if s.LastSeenAt.IsZero() {
 		s.LastSeenAt = s.CreatedAt
@@ -325,7 +341,11 @@ func (r *sessionRepo) Touch(tx Tx, id string, now time.Time) error {
 		return domain.Invalid("id", "session id is empty", "Pass the session id.")
 	}
 	if now.IsZero() {
-		now = tx.Now().UTC()
+		ts, err := tx.Now()
+		if err != nil {
+			return err
+		}
+		now = ts
 	}
 	tw := tx.(*txWrap)
 	res, err := tw.tx.ExecContext(tw.ctx(),
@@ -353,7 +373,11 @@ func (r *sessionRepo) Delete(tx Tx, id string) error {
 
 func (r *sessionRepo) DeleteExpired(tx Tx, now time.Time) (int, error) {
 	if now.IsZero() {
-		now = tx.Now().UTC()
+		ts, err := tx.Now()
+		if err != nil {
+			return 0, err
+		}
+		now = ts
 	}
 	tw := tx.(*txWrap)
 	res, err := tw.tx.ExecContext(tw.ctx(), "DELETE FROM sessions WHERE expires_at < ?", formatTime(now))
@@ -376,7 +400,11 @@ func (r *idempotencyRepo) Get(tx Tx, tokenID, key string) (*domain.IdempotencyRe
 			"Both fields are part of the record key.")
 	}
 	tw := tx.(*txWrap)
-	now := formatTime(tx.Now().UTC())
+	ts, err := tx.Now()
+	if err != nil {
+		return nil, err
+	}
+	now := formatTime(ts)
 	row := tw.tx.QueryRowContext(tw.ctx(), `
 		SELECT token_id, key, request_hash, response, expires_at
 		FROM idempotency
@@ -407,7 +435,11 @@ func (r *idempotencyRepo) Put(tx Tx, rec *domain.IdempotencyRecord) error {
 			"Both fields are part of the record key.")
 	}
 	if rec.ExpiresAt.IsZero() {
-		rec.ExpiresAt = tx.Now().UTC().Add(domain.IdempotencyTTL)
+		now, err := tx.Now()
+		if err != nil {
+			return err
+		}
+		rec.ExpiresAt = now.Add(domain.IdempotencyTTL)
 	}
 	tw := tx.(*txWrap)
 	_, err := tw.tx.ExecContext(tw.ctx(), `
@@ -426,7 +458,11 @@ func (r *idempotencyRepo) Put(tx Tx, rec *domain.IdempotencyRecord) error {
 
 func (r *idempotencyRepo) DeleteExpired(tx Tx, now time.Time) (int, error) {
 	if now.IsZero() {
-		now = tx.Now().UTC()
+		ts, err := tx.Now()
+		if err != nil {
+			return 0, err
+		}
+		now = ts
 	}
 	tw := tx.(*txWrap)
 	res, err := tw.tx.ExecContext(tw.ctx(), "DELETE FROM idempotency WHERE expires_at < ?", formatTime(now))

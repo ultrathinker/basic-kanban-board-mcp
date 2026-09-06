@@ -235,11 +235,12 @@ func TestRender_BasicGolden(t *testing.T) {
 	board := &service.Board{Projects: []service.BoardProject{{
 		Key:       "BMB",
 		Name:      "BeeMemoryBank",
+		Version:   9,
 		FocusKey:  "BMB-14",
 		Columns:   []service.BoardColumn{doing, review, backlog},
 		DoneTotal: 40,
 	}}}
-	got := Render(board, fixedNow, nil)
+	got := Render(board, fixedNow)
 	golden(t, "testdata/basic.golden", got)
 }
 
@@ -256,12 +257,13 @@ func TestRender_NoFocusAndDoneShown(t *testing.T) {
 	board := &service.Board{Projects: []service.BoardProject{{
 		Key:       "BMB",
 		Name:      "BeeMemoryBank",
+		Version:   1,
 		FocusKey:  "",
 		Columns:   []service.BoardColumn{backlog, done},
 		DoneTotal: 12,
 		DoneShown: 2,
 	}}}
-	got := Render(board, fixedNow, nil)
+	got := Render(board, fixedNow)
 	golden(t, "testdata/no_focus.golden", got)
 }
 
@@ -274,6 +276,7 @@ func TestRoundTrip(t *testing.T) {
 	want := &service.Board{Projects: []service.BoardProject{{
 		Key:      "BMB",
 		Name:     "BeeMemoryBank",
+		Version:  9,
 		FocusKey: "BMB-14",
 		Columns: []service.BoardColumn{
 			mkColumn("Doing", domain.KindActive, 1,
@@ -311,7 +314,7 @@ func TestRoundTrip(t *testing.T) {
 		},
 		DoneTotal: 40,
 	}}}
-	rendered := Render(want, fixedNow, nil)
+	rendered := Render(want, fixedNow)
 	parsed, err := ParseCompactAt(rendered, fixedNow)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
@@ -319,6 +322,7 @@ func TestRoundTrip(t *testing.T) {
 	// Project header fields.
 	if got := parsed.Projects[0]; got.Key != want.Projects[0].Key ||
 		got.Name != want.Projects[0].Name ||
+		got.Version != want.Projects[0].Version ||
 		got.FocusKey != want.Projects[0].FocusKey ||
 		got.DoneTotal != want.Projects[0].DoneTotal {
 		t.Fatalf("project header fields lost: got %+v want %+v", got, want.Projects[0])
@@ -408,7 +412,7 @@ func TestRoundTripMany(t *testing.T) {
 				},
 				DoneTotal: 0,
 			}}}
-			rendered := Render(board, fixedNow, nil)
+			rendered := Render(board, fixedNow)
 			parsed, err := ParseCompactAt(rendered, fixedNow)
 			if err != nil {
 				t.Fatalf("parse: %v", err)
@@ -558,7 +562,7 @@ func TestBudgetFixture_StaysUnderTokenBudget(t *testing.T) {
 	// (estimated as len/4). The release gate from PLAN §11.
 	//
 	// The gate is a regression guard, not the product claim. It measures
-	// ~1058 tokens against a ceiling of 1200. The number worth publishing is
+	// ~1064 tokens against a ceiling of 1200. The number worth publishing is
 	// the ratio on this same board: ~5640 tokens as minified JSON and ~10650
 	// as indented JSON, i.e. roughly 81% and 90% fewer. See PLAN §18
 	// deviation 5 — the original 600 was written before anything was measured.
@@ -681,11 +685,12 @@ func TestBudgetFixture_StaysUnderTokenBudget(t *testing.T) {
 	board := &service.Board{Projects: []service.BoardProject{{
 		Key:       "BMB",
 		Name:      "BeeMemoryBank",
+		Version:   11,
 		FocusKey:  "BMB-1",
 		Columns:   []service.BoardColumn{doing},
 		DoneTotal: 200,
 	}}}
-	out := Render(board, fixedNow, nil)
+	out := Render(board, fixedNow)
 	tokens := len(out) / 4
 	// The golden fixture is the gate on renderer correctness: the renderer
 	// must reproduce the bytes the fixture says it produces. Drift the
@@ -708,23 +713,52 @@ func TestBudgetFixture_StaysUnderTokenBudget(t *testing.T) {
 	}
 }
 
+// TestRender_EstimatesUseProjectUnit is the regression test for architecture
+// review finding #10's second half: the unit was configurable per project and
+// never reached the renderer, so a project set to days still printed hours.
+// The unit now travels on the BoardProject the renderer is handed.
 func TestRender_EstimatesUseProjectUnit(t *testing.T) {
-	// Default unit is "h"; passing "d" must surface in the rendering.
-	board := &service.Board{Projects: []service.BoardProject{{
-		Key:      "BMB",
-		Name:     "BeeMemoryBank",
-		FocusKey: "",
-		Columns: []service.BoardColumn{mkColumn("Backlog", domain.KindBacklog, 1,
-			mkTask("BMB-1", withEstimate(3), withVersion(1)),
-		)},
-	}}}
-	gotH := Render(board, fixedNow, nil)
-	gotD := Render(board, fixedNow, map[string]string{"BMB": "d"})
-	if !strings.Contains(gotH, "est 3h") {
-		t.Fatalf("default unit h missing: %s", gotH)
+	mkBoard := func(unit string) *service.Board {
+		return &service.Board{Projects: []service.BoardProject{{
+			Key:          "BMB",
+			Name:         "BeeMemoryBank",
+			EstimateUnit: unit,
+			Columns: []service.BoardColumn{mkColumn("Backlog", domain.KindBacklog, 1,
+				mkTask("BMB-1", withEstimate(3), withVersion(1)),
+			)},
+		}}}
 	}
-	if !strings.Contains(gotD, "est 3d") {
-		t.Fatalf("per-project unit d missing: %s", gotD)
+	// An unset unit is the "h" default; "d" must actually surface.
+	if got := Render(mkBoard(""), fixedNow); !strings.Contains(got, "est 3h") {
+		t.Fatalf("default unit h missing: %s", got)
+	}
+	if got := Render(mkBoard("d"), fixedNow); !strings.Contains(got, "est 3d") {
+		t.Fatalf("per-project unit d missing: %s", got)
+	}
+}
+
+// TestRender_ProjectVersionInHeader pins the project version onto the compact
+// header. project_upsert(mode:"update") requires if_version and compact is
+// board_get's default format, so a board read in that format has to be able to
+// feed the write that follows it.
+func TestRender_ProjectVersionInHeader(t *testing.T) {
+	board := &service.Board{Projects: []service.BoardProject{{
+		Key:     "BMB",
+		Name:    "BeeMemoryBank",
+		Version: 42,
+		Columns: []service.BoardColumn{mkColumn("Backlog", domain.KindBacklog, 0)},
+	}}}
+	out := Render(board, fixedNow)
+	header := strings.Split(out, "\n")[1]
+	if !strings.HasSuffix(header, " · v42") {
+		t.Fatalf("project header %q does not end in the version segment", header)
+	}
+	parsed, err := ParseCompactAt(out, fixedNow)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if got := parsed.Projects[0].Version; got != 42 {
+		t.Fatalf("parsed project version = %d, want 42", got)
 	}
 }
 
@@ -738,7 +772,7 @@ func TestRender_LeaseRemainingIsRemainingNotElapsed(t *testing.T) {
 			mkTask("BMB-1", withClaim("claude@rog", 30*time.Minute), withVersion(1)),
 		)},
 	}}}
-	out := Render(board, fixedNow, nil)
+	out := Render(board, fixedNow)
 	if !strings.Contains(out, "lease claude@rog 30m") {
 		t.Fatalf("lease remaining not rendered as remaining: %s", out)
 	}
@@ -757,7 +791,7 @@ func TestRender_VVersionAlwaysPresent(t *testing.T) {
 			mkTask("BMB-1", withVersion(5)),
 		)},
 	}}}
-	out := Render(board, fixedNow, nil)
+	out := Render(board, fixedNow)
 	if !strings.Contains(out, "v5") {
 		t.Fatalf("v<version> missing: %s", out)
 	}
@@ -772,7 +806,7 @@ func TestRender_PriorityNoneOmitsBracket(t *testing.T) {
 			mkTask("BMB-1", withPriority(domain.PriorityNone), withVersion(1)),
 		)},
 	}}}
-	out := Render(board, fixedNow, nil)
+	out := Render(board, fixedNow)
 	if !strings.Contains(out, "[task]") {
 		t.Fatalf("expected [task] bracket: %s", out)
 	}
@@ -793,7 +827,7 @@ func TestRender_SortedTags(t *testing.T) {
 			),
 		)},
 	}}}
-	out := Render(board, fixedNow, nil)
+	out := Render(board, fixedNow)
 	want := "#alpha #sync #zeta"
 	if !strings.Contains(out, want) {
 		t.Fatalf("tags not sorted: %s", out)
@@ -812,7 +846,7 @@ func TestRender_TitleDottedSeparatorReplaced(t *testing.T) {
 			),
 		)},
 	}}}
-	out := Render(board, fixedNow, nil)
+	out := Render(board, fixedNow)
 	if strings.Contains(strings.Split(out, "\n")[2], "Fix A · B") {
 		t.Fatalf("title separator not replaced: %s", out)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/domain"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/store"
@@ -25,11 +26,21 @@ func (s *svc) TaskGet(ctx context.Context, a Actor, in TaskGetInput) (*TaskGetRe
 			fmt.Sprintf("%d keys, the limit is %d", len(in.Keys), domain.MaxGetKeys),
 			"Split the request into multiple calls.")
 	}
+	// A cursor into a page the caller did not ask for is a request that
+	// cannot be honoured; quietly ignoring it would leave them paging through
+	// nothing and believing the history had ended (AGENTS.md "Fail loud").
+	if in.NotesBefore != nil && !in.Include.Has(IncludeNotes) {
+		return nil, domain.Invalid("notes_before", "notes_before was given but notes are not included",
+			`Add "notes" to include, or drop notes_before.`)
+	}
 	ctx = store.WithActor(ctx, a.Name)
 
 	var result TaskGetResult
 	err := s.store.Read(ctx, func(tx store.Tx) error {
-		now := tx.Now()
+		now, err := tx.Now()
+		if err != nil {
+			return err
+		}
 		cc := newColumnCache(s, tx)
 		pc := newProjectCache(s, tx)
 		result.Tasks = make([]domain.TaskView, 0, len(in.Keys))
@@ -56,12 +67,26 @@ func (s *svc) TaskGet(ctx context.Context, a Actor, in TaskGetInput) (*TaskGetRe
 				}
 				return err
 			}
+			wantNotes := in.Include.Has(IncludeNotes)
 			tv, err := s.hydrateView(tx, cc, pc, t, now, hydrateOpts{
-				IncludeNotes: in.Include.Has(IncludeNotes),
-				NotesLimit:   domain.MaxNotesPerRead,
+				IncludeNotes: wantNotes,
+				// One extra row is the probe: if it comes back there is an
+				// older page, and the newest of the notes we keep is the
+				// cursor that reaches it.
+				NotesLimit:  domain.MaxNotesPerRead + 1,
+				NotesBefore: in.NotesBefore,
 			})
 			if err != nil {
 				return err
+			}
+			if wantNotes && len(tv.Notes) > domain.MaxNotesPerRead {
+				tv.Notes = tv.Notes[:domain.MaxNotesPerRead]
+				if result.NotesNext == nil {
+					result.NotesNext = map[string]time.Time{}
+				}
+				// Notes come back newest first, so the oldest one kept is the
+				// exclusive upper bound of the next, older page.
+				result.NotesNext[tv.Key] = tv.Notes[len(tv.Notes)-1].CreatedAt
 			}
 			if !in.Include.Has(IncludeMetadata) {
 				tv.Metadata = nil

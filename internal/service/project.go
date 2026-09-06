@@ -122,7 +122,10 @@ func (s *svc) projectUpdate(tx store.Tx, pending *[]domain.Event, a Actor, key s
 	wasArchiving := false
 	if in.Archived != nil {
 		if *in.Archived && p.ArchivedAt == nil {
-			now := tx.Now()
+			now, err := tx.Now()
+			if err != nil {
+				return nil, nil, err
+			}
 			p.ArchivedAt = &now
 			wasArchiving = true
 		} else if !*in.Archived {

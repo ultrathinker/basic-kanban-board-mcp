@@ -49,12 +49,9 @@ func (w *Web) handleAdmin(rw http.ResponseWriter, r *http.Request) {
 				activeTasks += c.Count
 			}
 		}
-		// Version is not reported by board_get (service.BoardProject has no
-		// Version field) — the frozen service.Service interface has no call
-		// that returns a project's version outside project_upsert's own
-		// result. Left at 0; see the task report's deviation note.
 		model.Projects = append(model.Projects, view.AdminProject{
-			Key: p.Key, Name: p.Name, Columns: len(p.Columns), ActiveTasks: activeTasks, Version: 0,
+			Key: p.Key, Name: p.Name, Columns: len(p.Columns), ActiveTasks: activeTasks,
+			Version: p.Version,
 		})
 	}
 

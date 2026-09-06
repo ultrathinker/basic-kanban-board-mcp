@@ -15,15 +15,11 @@ import (
 // This file fills the wireServeRunner seam declared in main.go. It is the one
 // place where the CLI knows that the server is internal/app.
 //
-// STAGE 2 wiring: app.New with WithServiceFactory + WithMCPFactory. The
-// factory closures run AFTER app.New has opened the store, auth manager and
-// events bus, so they can build the real service.Service and the two MCP
-// HTTP handlers without internal/app having to expose those internals
-// (PLAN §4: internal/app never imports internal/mcp or internal/service's
-// constructor). WithService and WithMCP remain available for tests that
-// want to inject pre-built values, but the production path goes through
-// the factories so the store the service depends on is exactly the one
-// the auth middleware will see.
+// app.New requires both factories: the service is built from the store and
+// bus New opened (so the service's store is exactly the gated view the auth
+// middleware sees), and the MCP handlers are built from that service plus the
+// auth manager. PLAN §4 keeps composition here — internal/app never imports
+// internal/mcp or internal/service's constructor.
 func init() {
 	wireServeRunner = func(cfg config.Config) (ServiceRunner, error) {
 		a, err := app.New(context.Background(), cfg,

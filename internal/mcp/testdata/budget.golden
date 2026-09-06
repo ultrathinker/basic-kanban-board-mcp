@@ -1,5 +1,5 @@
 compact_version=1
-# BMB BeeMemoryBank · focus BMB-1 · Doing 30/30 · Done 200 (hidden)
+# BMB BeeMemoryBank · focus BMB-1 · Doing 30/30 · Done 200 (hidden) · v11
 ## Doing
 - BMB-1 [critical task] Fix WAL checkpoint race under concurrent readers · est 1h · @alex · lease claude@a 15m · blocked-by BMB-8 · #sync · v1 · age 0s
 - BMB-2 [high bug] Encrypted FTS index for sensitive body columns · est 2h · @claude · lease claude@b 22m · sub 0/2 · v2 · age 0s

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -18,7 +19,6 @@ import (
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/domain"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/service"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/store"
-	"github.com/ultrathinker/basic-kanban-board-mcp/internal/web"
 )
 
 // testConfig builds a Config that points at a fresh temp-dir data directory
@@ -36,6 +36,36 @@ func testConfig(t *testing.T, dir string) config.Config {
 		LogFormat: config.LogText,
 		ClaimTTL:  time.Hour,
 	}
+}
+
+// wiringOptions is the production-shaped wiring every test uses: the real
+// service built from the store New opened, and trivial MCP handlers that
+// answer 200 (the handler content is not what these tests assert on).
+func wiringOptions() []Option {
+	return []Option{
+		WithServiceFactory(func(st store.Store, pub service.EventPublisher) service.Service {
+			return service.New(st, pub)
+		}),
+		WithMCPFactory(func(_ service.Service, _ *auth.Manager) (http.Handler, http.Handler) {
+			ok := http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) {
+				rw.WriteHeader(http.StatusOK)
+			})
+			return ok, ok
+		}),
+	}
+}
+
+// newTestApp builds a fully wired App against dir with a pre-seeded admin
+// token, so tests hold a known secret and Bootstrap mints nothing.
+func newTestApp(t *testing.T, dir string) *App {
+	t.Helper()
+	const secret = "kbn_preseeded00xx00xx00xx00xx00xx00xx00xx"
+	preSeedAdminToken(t, dir, secret)
+	a, err := New(context.Background(), testConfig(t, dir), wiringOptions()...)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return a
 }
 
 // preSeedAdminToken inserts an admin token into the token table directly via
@@ -74,20 +104,13 @@ func preSeedAdminToken(t *testing.T, dir string, secret string) {
 	}
 }
 
-// TestNew_OpensStoreAndConfirmsShape confirms the composition root opens
-// the store, runs migrations, builds the handler tree and produces a banner.
+// TestNew_OpensStoreAndConfirmsShape confirms the composition root opens the
+// store, runs migrations, builds the handler tree and produces a banner.
 // It pre-seeds an admin row so the test holds a known secret; Bootstrap then
 // sees a non-empty table and mints nothing.
 func TestNew_OpensStoreAndConfirmsShape(t *testing.T) {
 	dir := t.TempDir()
-	const secret = "kbn_preseeded00xx00xx00xx00xx00xx00xx00xx"
-	preSeedAdminToken(t, dir, secret)
-	cfg := testConfig(t, dir)
-
-	a, err := New(context.Background(), cfg)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
+	a := newTestApp(t, dir)
 	defer a.Close()
 
 	if a.Handler() == nil {
@@ -104,12 +127,12 @@ func TestNew_OpensStoreAndConfirmsShape(t *testing.T) {
 	if a.Banner().AdminToken != "" {
 		t.Fatalf("banner AdminToken = %q, want empty (idempotent bootstrap)", a.Banner().AdminToken)
 	}
-	if a.Addr() != cfg.Addr {
-		t.Fatalf("Addr = %q, want %q", a.Addr(), cfg.Addr)
+	if a.Addr() != a.cfg.Addr {
+		t.Fatalf("Addr = %q, want %q", a.Addr(), a.cfg.Addr)
 	}
 
 	// The pre-seeded secret still verifies through the new app's manager.
-	tok, err := a.auth.VerifyToken(context.Background(), secret)
+	tok, err := a.auth.VerifyToken(context.Background(), "kbn_preseeded00xx00xx00xx00xx00xx00xx00xx")
 	if err != nil || tok == nil {
 		t.Fatalf("pre-seeded secret does not verify: (%v, %v)", tok, err)
 	}
@@ -118,24 +141,26 @@ func TestNew_OpensStoreAndConfirmsShape(t *testing.T) {
 	}
 }
 
-// TestNew_DoubleOpenStaysIdempotent confirms a second New against the same
-// data dir observes the pre-seeded admin token, does not mint a new one,
-// and continues to verify the seeded secret.
-func TestNew_DoubleOpenStaysIdempotent(t *testing.T) {
+// TestNew_SequentialReopenStaysIdempotent confirms that after one App closes
+// and releases ownership, a second New against the same data dir succeeds,
+// observes the pre-seeded admin token, does not mint a new one, and continues
+// to verify the seeded secret.
+func TestNew_SequentialReopenStaysIdempotent(t *testing.T) {
 	dir := t.TempDir()
 	const secret = "kbn_preseeded00xx00xx00xx00xx00xx00xx00xx"
 	preSeedAdminToken(t, dir, secret)
-	cfg := testConfig(t, dir)
 
-	a1, err := New(context.Background(), cfg)
+	a1, err := New(context.Background(), testConfig(t, dir), wiringOptions()...)
 	if err != nil {
 		t.Fatalf("first New: %v", err)
 	}
-	a1.Close()
+	if err := a1.Close(); err != nil {
+		t.Fatalf("first Close: %v", err)
+	}
 
-	a2, err := New(context.Background(), cfg)
+	a2, err := New(context.Background(), testConfig(t, dir), wiringOptions()...)
 	if err != nil {
-		t.Fatalf("second New: %v", err)
+		t.Fatalf("second New after Close: %v", err)
 	}
 	defer a2.Close()
 
@@ -148,6 +173,41 @@ func TestNew_DoubleOpenStaysIdempotent(t *testing.T) {
 	}
 }
 
+// TestNew_SecondServerRefused is the topology test: while one App is open on
+// a data directory, a second New must refuse with the ownership error naming
+// the lock file and the database — never silently share the file.
+func TestNew_SecondServerRefused(t *testing.T) {
+	dir := t.TempDir()
+	a1 := newTestApp(t, dir)
+	defer a1.Close()
+
+	a2, err := New(context.Background(), testConfig(t, dir), wiringOptions()...)
+	if err == nil {
+		_ = a2.Close()
+		t.Fatal("second New on an owned data dir must refuse")
+	}
+	if !errors.Is(err, ErrOwnerHeld) {
+		t.Fatalf("err = %v, want ErrOwnerHeld", err)
+	}
+	msg := err.Error()
+	for _, want := range []string{"refusing to start", "kanban.lock", "kanban.db", "kanban serve"} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("refusal message missing %q:\n%s", want, msg)
+		}
+	}
+
+	// Releasing the first App must make the directory available again —
+	// a closed server may never lock the next one out.
+	if err := a1.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	a3, err := New(context.Background(), testConfig(t, dir), wiringOptions()...)
+	if err != nil {
+		t.Fatalf("New after the owner closed: %v", err)
+	}
+	defer a3.Close()
+}
+
 // TestNew_DataDirUncreatable refuses to silently run when DataDir is a path
 // that cannot be created (e.g. a subdirectory of a regular file).
 func TestNew_DataDirUncreatable(t *testing.T) {
@@ -157,22 +217,101 @@ func TestNew_DataDirUncreatable(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := testConfig(t, filepath.Join(blocker, "sub"))
-	if _, err := New(context.Background(), cfg); err == nil {
+	if _, err := New(context.Background(), cfg, wiringOptions()...); err == nil {
 		t.Fatal("expected New to fail when data dir cannot be created")
 	}
 }
 
-// TestServe_ShutdownClean confirms serve(ctx, ln) returns promptly when the
-// context is cancelled and the store is closed. This exercises the same
-// path the cmd/kanban serve runner drives.
-func TestServe_ShutdownClean(t *testing.T) {
+// TestNew_RequiresFactories: New must fail loud when a wiring factory is
+// missing — a server whose board service or MCP endpoints are absent is a
+// configuration error, not a server that 501s until someone notices.
+func TestNew_RequiresFactories(t *testing.T) {
 	dir := t.TempDir()
 	preSeedAdminToken(t, dir, "kbn_preseeded00xx00xx00xx00xx00xx00xx00xx")
 	cfg := testConfig(t, dir)
-	a, err := New(context.Background(), cfg)
+
+	svcOnly := WithServiceFactory(func(st store.Store, pub service.EventPublisher) service.Service {
+		return service.New(st, pub)
+	})
+
+	if _, err := New(context.Background(), cfg); err == nil {
+		t.Fatal("New without a service factory must refuse")
+	}
+	if _, err := New(context.Background(), cfg, svcOnly); err == nil {
+		t.Fatal("New without an MCP factory must refuse")
+	}
+	// The refusals happen before anything is opened, so the directory must
+	// not be left locked.
+	lock, err := AcquireOwnerLock(dir)
+	if err != nil {
+		t.Fatalf("failed wiring left the data dir locked: %v", err)
+	}
+	_ = lock.Release()
+}
+
+// TestNew_FactoryReceivesGatedStoreAndBus proves the factory seam hands over
+// exactly what production wiring needs: the admission-gated store view (the
+// same one the auth middleware sees) and the App's own events bus, so service
+// publications reach the SSE subscribers the web layer registered.
+func TestNew_FactoryReceivesGatedStoreAndBus(t *testing.T) {
+	dir := t.TempDir()
+	preSeedAdminToken(t, dir, "kbn_preseeded00xx00xx00xx00xx00xx00xx00xx")
+
+	var (
+		gotStore store.Store
+		gotPub   service.EventPublisher
+	)
+	a, err := New(context.Background(), testConfig(t, dir),
+		WithServiceFactory(func(st store.Store, pub service.EventPublisher) service.Service {
+			gotStore = st
+			gotPub = pub
+			return service.New(st, pub)
+		}),
+		WithMCPFactory(func(_ service.Service, _ *auth.Manager) (http.Handler, http.Handler) {
+			ok := http.HandlerFunc(func(rw http.ResponseWriter, _ *http.Request) { rw.WriteHeader(http.StatusOK) })
+			return ok, ok
+		}),
+	)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	defer a.Close()
+
+	if gotStore == nil {
+		t.Fatal("factory did not receive a store")
+	}
+	if _, ok := gotStore.(*gatedStore); !ok {
+		t.Fatalf("factory store type = %T, want *gatedStore (the admission-gated view)", gotStore)
+	}
+	if gotPub != a.bus {
+		t.Fatalf("factory bus (%T) != App bus (%T)", gotPub, a.bus)
+	}
+}
+
+// TestNew_MCPHandlersMounted proves the MCP factory output is reachable at
+// /mcp and /mcp/readonly rather than a stub.
+func TestNew_MCPHandlersMounted(t *testing.T) {
+	dir := t.TempDir()
+	a := newTestApp(t, dir)
+	defer a.Close()
+
+	for _, path := range []string{"/mcp", "/mcp/readonly"} {
+		rw := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", path, strings.NewReader("{}"))
+		req.Header.Set("Content-Type", "application/json")
+		a.Handler().ServeHTTP(rw, req)
+		if rw.Code != http.StatusOK {
+			t.Fatalf("%s: code %d, want 200 from the mounted test handler", path, rw.Code)
+		}
+	}
+}
+
+// TestServe_ShutdownClean confirms serve(ctx, ln) returns promptly when the
+// context is cancelled, with maintenance stopped and the store closed. This
+// exercises the same path the cmd/kanban serve runner drives.
+func TestServe_ShutdownClean(t *testing.T) {
+	dir := t.TempDir()
+	a := newTestApp(t, dir)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -211,6 +350,12 @@ func TestServe_ShutdownClean(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("serve did not return within 5s after ctx cancel")
 	}
+	// After serve returns, ownership is released: a new App may take it.
+	a2, err := New(context.Background(), testConfig(t, dir), wiringOptions()...)
+	if err != nil {
+		t.Fatalf("New after serve shut down: %v (ownership not released?)", err)
+	}
+	defer a2.Close()
 }
 
 // TestHandler_RoutesHealthz confirms the wired handler tree routes requests
@@ -218,12 +363,7 @@ func TestServe_ShutdownClean(t *testing.T) {
 // Every probed path returns a real status (never 0) and never 5xx.
 func TestHandler_RoutesHealthz(t *testing.T) {
 	dir := t.TempDir()
-	preSeedAdminToken(t, dir, "kbn_preseeded00xx00xx00xx00xx00xx00xx00xx")
-	cfg := testConfig(t, dir)
-	a, err := New(context.Background(), cfg)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
+	a := newTestApp(t, dir)
 	defer a.Close()
 
 	for _, path := range []string{"/healthz", "/readyz", "/agent-setup", "/static/app.css", "/login"} {
@@ -239,16 +379,11 @@ func TestHandler_RoutesHealthz(t *testing.T) {
 	}
 }
 
-// TestClose_ReleasesStore confirms Close returns nil. A second Close must
-// not panic — the shutdown channel is closed via sync.Once.
-func TestClose_ReleasesStore(t *testing.T) {
+// TestClose_ReleasesStoreAndOwnership confirms Close tears everything down
+// and a second Close does not panic — every teardown step is once-guarded.
+func TestClose_ReleasesStoreAndOwnership(t *testing.T) {
 	dir := t.TempDir()
-	preSeedAdminToken(t, dir, "kbn_preseeded00xx00xx00xx00xx00xx00xx00xx")
-	cfg := testConfig(t, dir)
-	a, err := New(context.Background(), cfg)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
+	a := newTestApp(t, dir)
 	if err := a.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
@@ -258,191 +393,12 @@ func TestClose_ReleasesStore(t *testing.T) {
 		}
 	}()
 	_ = a.Close()
-}
 
-// TestNew_WithServiceOverridesStub confirms WithService replaces the
-// placeholder unwiredService. We install a sentinel-returning service and
-// prove one of its methods is wired through.
-func TestNew_WithServiceOverridesStub(t *testing.T) {
-	dir := t.TempDir()
-	preSeedAdminToken(t, dir, "kbn_preseeded00xx00xx00xx00xx00xx00xx00xx")
-	cfg := testConfig(t, dir)
-
-	var observed error
-	svc := serviceFunc(func(context.Context, service.Actor, service.BoardGetInput) (*service.Board, error) {
-		observed = web.ErrServiceUnavailable
-		return nil, web.ErrServiceUnavailable
-	})
-
-	a, err := New(context.Background(), cfg, WithService(svc))
+	// Ownership must be free again: the lock file may still sit on disk
+	// (that is fine — it is inert), but no one may hold it.
+	lock, err := AcquireOwnerLock(dir)
 	if err != nil {
-		t.Fatalf("New: %v", err)
+		t.Fatalf("Close did not release ownership: %v", err)
 	}
-	defer a.Close()
-
-	if _, ok := a.svc.(serviceFunc); !ok {
-		t.Fatalf("svc type = %T, want serviceFunc", a.svc)
-	}
-	if _, err := a.svc.BoardGet(context.Background(), service.Actor{}, service.BoardGetInput{View: service.ViewSummary}); err != observed {
-		t.Fatalf("BoardGet err = %v, want %v", err, observed)
-	}
+	_ = lock.Release()
 }
-
-// TestNew_WithServiceFactoryWiresRealDeps proves the WithServiceFactory
-// seam: the closure receives the freshly-opened store and the in-process
-// events bus and its return value becomes the App's service.Service. This
-// is the production path cmd/kanban uses to construct service.New(store,
-// bus) without exposing internals on App.
-//
-// We use the real store, the real bus, and a closure that calls
-// service.New directly — exactly the wiring the CLI ships — and then
-// assert the App ends up holding a non-placeholder service.
-func TestNew_WithServiceFactoryWiresRealDeps(t *testing.T) {
-	dir := t.TempDir()
-	preSeedAdminToken(t, dir, "kbn_preseeded00xx00xx00xx00xx00xx00xx00xx")
-	cfg := testConfig(t, dir)
-
-	var (
-		gotStore store.Store
-		gotPub   service.EventPublisher
-	)
-	a, err := New(context.Background(), cfg,
-		WithServiceFactory(func(st store.Store, pub service.EventPublisher) service.Service {
-			gotStore = st
-			gotPub = pub
-			return service.New(st, pub)
-		}),
-	)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	defer a.Close()
-
-	if gotStore == nil {
-		t.Fatal("factory did not receive a store")
-	}
-	if gotPub == nil {
-		t.Fatal("factory did not receive an event publisher")
-	}
-	// The App's svc must NOT be the placeholder anymore — a real
-	// service.Service was wired in via the factory.
-	if _, ok := a.svc.(serviceFunc); ok {
-		t.Fatalf("svc is still the placeholder stub; factory did not run")
-	}
-	// And the bus inside the factory must be the same one App installed
-	// for SSE subscriptions.
-	if gotPub != a.bus {
-		t.Fatalf("factory bus (%T) != App bus (%T)", gotPub, a.bus)
-	}
-}
-
-// TestNew_WithMCPFactoryMountsHandlers proves WithMCPFactory: a closure
-// receives the freshly-built service + auth manager and returns two
-// http.Handlers that App installs at /mcp and /mcp/readonly. We hit both
-// endpoints and assert the handlers actually respond (they answer the MCP
-// streamable-handshake "initialize" probe rather than the 501 stub).
-func TestNew_WithMCPFactoryMountsHandlers(t *testing.T) {
-	dir := t.TempDir()
-	preSeedAdminToken(t, dir, "kbn_preseeded00xx00xx00xx00xx00xx00xx00xx")
-	cfg := testConfig(t, dir)
-
-	// A trivial handler that always answers 200 — enough to prove the
-	// factory output was wired in instead of the 501 stub.
-	okHandler := http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		rw.Header().Set("Content-Type", "application/json; charset=utf-8")
-		rw.WriteHeader(http.StatusOK)
-		_, _ = rw.Write([]byte(`{"ok":true}`))
-	})
-
-	a, err := New(context.Background(), cfg,
-		WithMCPFactory(func(_ service.Service, _ *auth.Manager) (http.Handler, http.Handler) {
-			return okHandler, okHandler
-		}),
-	)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	defer a.Close()
-
-	for _, path := range []string{"/mcp", "/mcp/readonly"} {
-		rw := httptest.NewRecorder()
-		req := httptest.NewRequest("POST", path, strings.NewReader("{}"))
-		req.Header.Set("Content-Type", "application/json")
-		a.Handler().ServeHTTP(rw, req)
-		if rw.Code == http.StatusNotImplemented {
-			t.Fatalf("%s still served by 501 stub (factory did not run)", path)
-		}
-	}
-}
-
-// TestNew_FactoryPrecedenceOverDirect confirms the documented precedence:
-// when both WithService and WithServiceFactory are supplied, the factory
-// wins. Same for WithMCP / WithMCPFactory. The factory seam is the newer
-// flexible one; the direct value seam stays for tests that want to inject
-// a pre-built service without going through the store.
-func TestNew_FactoryPrecedenceOverDirect(t *testing.T) {
-	dir := t.TempDir()
-	preSeedAdminToken(t, dir, "kbn_preseeded00xx00xx00xx00xx00xx00xx00xx")
-	cfg := testConfig(t, dir)
-
-	directSvc := serviceFunc(func(context.Context, service.Actor, service.BoardGetInput) (*service.Board, error) {
-		return nil, nil
-	})
-	a, err := New(context.Background(), cfg,
-		WithService(directSvc),
-		WithServiceFactory(func(st store.Store, _ service.EventPublisher) service.Service {
-			return service.New(st, nil)
-		}),
-	)
-	if err != nil {
-		t.Fatalf("New: %v", err)
-	}
-	defer a.Close()
-
-	if _, ok := a.svc.(serviceFunc); ok {
-		t.Fatalf("direct service won over factory; want factory output")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Service stub used only by TestNew_WithServiceOverridesStub.
-// ---------------------------------------------------------------------------
-
-// serviceFunc is a tiny service.Service implementation. Only BoardGet is
-// customised; every other method returns web.ErrServiceUnavailable so the
-// type satisfies the interface without us having to enumerate ten identical
-// stubs.
-type serviceFunc func(context.Context, service.Actor, service.BoardGetInput) (*service.Board, error)
-
-func (f serviceFunc) BoardGet(ctx context.Context, a service.Actor, in service.BoardGetInput) (*service.Board, error) {
-	return f(ctx, a, in)
-}
-
-func (serviceFunc) TaskNext(context.Context, service.Actor, service.TaskNextInput) (*service.NextResult, error) {
-	return nil, web.ErrServiceUnavailable
-}
-func (serviceFunc) TaskGet(context.Context, service.Actor, service.TaskGetInput) (*service.TaskGetResult, error) {
-	return nil, web.ErrServiceUnavailable
-}
-func (serviceFunc) TaskCreate(context.Context, service.Actor, service.TaskCreateInput) (*service.TaskCreateResult, error) {
-	return nil, web.ErrServiceUnavailable
-}
-func (serviceFunc) TaskUpdate(context.Context, service.Actor, service.TaskUpdateInput) (*service.TaskUpdateResult, error) {
-	return nil, web.ErrServiceUnavailable
-}
-func (serviceFunc) TaskLink(context.Context, service.Actor, service.TaskLinkInput) (*service.TaskLinkResult, error) {
-	return nil, web.ErrServiceUnavailable
-}
-func (serviceFunc) TaskClaim(context.Context, service.Actor, service.TaskClaimInput) (*service.TaskClaimResult, error) {
-	return nil, web.ErrServiceUnavailable
-}
-func (serviceFunc) TaskRemove(context.Context, service.Actor, service.TaskRemoveInput) (*service.TaskRemoveResult, error) {
-	return nil, web.ErrServiceUnavailable
-}
-func (serviceFunc) ProjectUpsert(context.Context, service.Actor, service.ProjectUpsertInput) (*service.ProjectUpsertResult, error) {
-	return nil, web.ErrServiceUnavailable
-}
-
-// Keep strings in the imports so the go vet blank-imports check stays happy
-// if a future refactor drops one of the explicit references.
-var _ = strings.HasPrefix

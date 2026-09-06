@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
+	"sort"
 
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/domain"
 )
@@ -32,7 +32,11 @@ func (r *linkRepo) Add(tx Tx, l *domain.Link) error {
 			"Use blocks (the only type in v1).")
 	}
 	if l.CreatedAt.IsZero() {
-		l.CreatedAt = tx.Now().UTC()
+		now, err := tx.Now()
+		if err != nil {
+			return err
+		}
+		l.CreatedAt = now
 	}
 	// Reject cycles BEFORE insert (the schema's CHECK only blocks the
 	// trivial self-link; transitive cycles and parent-chain violations
@@ -51,6 +55,9 @@ func (r *linkRepo) Add(tx Tx, l *domain.Link) error {
 		l.BlockerID, l.BlockedID, string(l.Type), formatTime(l.CreatedAt), l.CreatedBy,
 	)
 	if err != nil {
+		if IsProjectLocalityViolation(err) {
+			return crossProjectEdge("link")
+		}
 		if IsUniqueViolation(err) {
 			// Adding the same link is a no-op (idempotent per the schema
 			// contract in PLAN §6.6). We do not surface this as an error.
@@ -184,32 +191,28 @@ func (r *linkRepo) WouldCycle(tx Tx, blockerID, blockedID string) (bool, []strin
 	// Case 3: a transitive wait-for cycle. Adding "blocker blocks blocked"
 	// says blocked waits on blocker, so it closes a loop iff blocker
 	// already waits — directly or transitively — on blocked.
-	var path string
-	err = tw.tx.QueryRowContext(tw.ctx(), `
-		WITH RECURSIVE `+waitsForEdgesCTE+`,
-		walk(curr, depth, path) AS (
-		    SELECT ?, 0, ',' || ? || ','
-		    UNION ALL
-		    SELECT e.dst, w.depth + 1, w.path || e.dst || ','
-		      FROM edges e JOIN walk w ON e.src = w.curr
-		     WHERE w.depth < ? AND instr(w.path, ',' || e.dst || ',') = 0
-		)
-		SELECT path FROM walk WHERE curr = ? ORDER BY depth ASC LIMIT 1`,
-		blockedID, blockedID, maxWaitsForDepth, blockerID).Scan(&path)
-	if errors.Is(err, sql.ErrNoRows) {
+	closes, err := waitsForReaches(tw, blockedID, blockerID)
+	if err != nil {
+		return false, nil, err
+	}
+	if !closes {
 		return false, nil, nil
 	}
+	// The edge being added closes the loop, so the reported cycle starts at
+	// the blocker and ends at it too.
+	ids, err := waitsForPath(tw, blockedID, blockerID)
 	if err != nil {
-		return false, nil, fmt.Errorf("store: walk wait-for graph: %w", err)
+		return false, nil, err
 	}
-	// path is ",<blocked>,...,<blocker>,". The edge being added closes the
-	// loop, so the reported cycle starts at the blocker and — because the
-	// walk stopped there — already ends at it too.
+	if len(ids) == 0 {
+		// The two walks read the same edges in the same transaction, so
+		// this cannot normally happen. If it ever does, the link is still
+		// refused — an unhelpful path is a worse outcome than a committed
+		// cycle only for the person reading the message.
+		return true, []string{blockerKey, blockedKey, blockerKey}, nil
+	}
 	keys := []string{blockerKey}
-	for _, id := range strings.Split(strings.Trim(path, ","), ",") {
-		if id == "" {
-			continue
-		}
+	for _, id := range ids {
 		k, err := r.taskKey(tw, id)
 		if err != nil {
 			return false, nil, err
@@ -219,10 +222,112 @@ func (r *linkRepo) WouldCycle(tx Tx, blockerID, blockedID string) (bool, []strin
 	return true, keys, nil
 }
 
-// maxWaitsForDepth bounds the wait-for walk. The simple-path test in the
-// query is what actually terminates the recursion; this is the belt to its
-// braces, and generous enough that no realistic board hits it.
-const maxWaitsForDepth = 16
+// waitsForReaches reports whether `to` is reachable from `from` over the
+// wait-for relation.
+//
+// The recursive term is UNION, not UNION ALL, and that is the whole point.
+// UNION makes SQLite drop rows it has already produced, so each task enters
+// the walk at most once and the recursion ends when the visited set is
+// exhausted — no depth argument, and cost linear in the reachable
+// subgraph.
+//
+// This replaces a walk that carried the path in a string and tested it for
+// membership. That is per-path bookkeeping rather than a global visited
+// set: on a graph with parallel routes it enumerates exponentially many
+// simple paths, and the `depth < 16` cutoff was what kept it from running
+// away. Bounding the search that way also quietly bounded the product
+// invariant — a cycle whose shortest closing route ran longer than 16 hops
+// was not detected and committed, and dependency-aware task_next then had
+// no runnable leaf anywhere in that component, permanently and across
+// restarts. The batch API takes 100 tasks per call, so describing such a
+// chain took one request.
+func waitsForReaches(tw *txWrap, from, to string) (bool, error) {
+	var found int
+	err := tw.tx.QueryRowContext(tw.ctx(), `
+		WITH RECURSIVE `+waitsForEdgesCTE+`,
+		reach(id) AS (
+		    SELECT ?
+		    UNION
+		    SELECT e.dst FROM edges e JOIN reach r ON e.src = r.id
+		)
+		SELECT 1 FROM reach WHERE id = ? LIMIT 1`, from, to).Scan(&found)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("store: walk wait-for graph: %w", err)
+	}
+	return true, nil
+}
+
+// waitsForPath returns the shortest chain of task ids leading from `from`
+// to `to` over the wait-for relation, inclusive at both ends, or nil when
+// there is none.
+//
+// It only runs after waitsForReaches has already decided to refuse the
+// link, so it can afford to read the whole edge relation and walk it here:
+// this is the error path of a rejected write, not the hot path. Doing the
+// walk breadth-first in Go — rather than asking SQL for a path — keeps the
+// cost linear where a path-carrying recursive query is exponential, and
+// reports the shortest cycle, which is the one a caller can most easily
+// break.
+func waitsForPath(tw *txWrap, from, to string) ([]string, error) {
+	rows, err := tw.tx.QueryContext(tw.ctx(),
+		`WITH RECURSIVE `+waitsForEdgesCTE+` SELECT src, dst FROM edges`)
+	if err != nil {
+		return nil, fmt.Errorf("store: read wait-for edges: %w", err)
+	}
+	defer rows.Close()
+	adj := make(map[string][]string)
+	for rows.Next() {
+		var src, dst string
+		if err := rows.Scan(&src, &dst); err != nil {
+			return nil, fmt.Errorf("store: scan wait-for edge: %w", err)
+		}
+		adj[src] = append(adj[src], dst)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Sorted successors make the reported cycle stable across runs when
+	// several shortest paths exist; an error message that changes between
+	// identical calls is one nobody can write a test against.
+	for _, succ := range adj {
+		sort.Strings(succ)
+	}
+	prev := map[string]string{from: ""}
+	queue := []string{from}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		if cur == to {
+			return tracePath(prev, from, to), nil
+		}
+		for _, next := range adj[cur] {
+			if _, seen := prev[next]; seen {
+				continue
+			}
+			prev[next] = cur
+			queue = append(queue, next)
+		}
+	}
+	return nil, nil
+}
+
+// tracePath rebuilds the from→to chain recorded in a BFS predecessor map.
+func tracePath(prev map[string]string, from, to string) []string {
+	var out []string
+	for at := to; at != ""; at = prev[at] {
+		out = append(out, at)
+		if at == from {
+			break
+		}
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out
+}
 
 // waitsForEdgesCTE is the "Y waits on X" relation that cycle detection
 // walks, as a non-recursive CTE body meant to be spliced into a
@@ -286,11 +391,18 @@ func (r *linkRepo) ancestorChain(tw *txWrap, start, target string) ([]string, bo
 // either reaches `target` or runs out. Returns the IDs (excluding
 // start) on the path to target. Used by both link-cycle detection and
 // task reparenting.
+//
+// The walk is bounded by the visited set, not by a hop count. The domain
+// caps hierarchies at MaxSubtaskDepth, so any constant here would only ever
+// fire on a chain the domain says cannot exist — which is exactly the case
+// where answering "no ancestor found" is wrong, because a hierarchy that
+// deep came from a corrupt row or an import and is the thing most in need
+// of a cycle check. Revisiting a task still ends the walk with a loud error.
 func parentChain(tw *txWrap, start, target string) ([]string, bool, error) {
 	current := start
 	visited := make(map[string]bool)
 	var ids []string
-	for i := 0; i < 32; i++ {
+	for {
 		if visited[current] {
 			return nil, false, fmt.Errorf("store: parent chain cycle at %s", current)
 		}
@@ -314,15 +426,18 @@ func parentChain(tw *txWrap, start, target string) ([]string, bool, error) {
 		}
 		current = parent.String
 	}
-	return nil, false, nil
 }
 
 // parentChainDepth returns how many parent_id edges exist from
 // `start` upward to the root. Returns 0 if start is top-level.
+//
+// Like parentChain, the visited set is the bound: the old hop limit could
+// report a depth of 0 for a chain that was merely long, and depth 0 is the
+// answer that says "this task may take children".
 func parentChainDepth(tw *txWrap, start string) (int, error) {
 	current := start
 	visited := make(map[string]bool)
-	for i := 0; i < 64; i++ {
+	for i := 0; ; i++ {
 		if visited[current] {
 			return 0, fmt.Errorf("store: parent chain cycle at %s", current)
 		}
@@ -342,7 +457,6 @@ func parentChainDepth(tw *txWrap, start string) (int, error) {
 		}
 		current = parent.String
 	}
-	return 0, fmt.Errorf("store: parent chain too deep from %s", start)
 }
 
 // taskKey returns the canonical key of the given task id, or "" if the

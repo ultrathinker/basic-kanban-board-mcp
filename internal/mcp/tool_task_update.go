@@ -343,7 +343,7 @@ func registerTaskUpdate(s *gomcp.Server, svc service.Service) {
 				}
 				i := sendIdx[j]
 				if ir.OK {
-					out := taskViewOut(ir.Task, includes)
+					out := taskViewOut(ir.Task, service.FullProjection(includes))
 					slots[i] = slot{key: ir.Key, ok: true, task: &out}
 				} else {
 					slots[i] = slot{key: ir.Key, err: ir.Err}

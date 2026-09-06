@@ -47,10 +47,19 @@ runs unattended in the background is disruptive, so:
   no toolchain downloads. If a tool you need is missing, stop and report it instead.
 - **Do not run `docker build` or any container command.** CI does that.
 - Compiling and running unit tests is fine (`go build`, `go vet`, `go test`) — keep it to that.
-- **Do not run `go test -race` on this machine.** The race detector needs cgo, we build with
-  `CGO_ENABLED=0`, and there is no C toolchain here on purpose. CI runs `-race` on Linux, so write
-  race-safe code and race-safe tests, but verify locally with plain `go test`. If a tool you need
-  is genuinely missing, **stop and report it** — never install one.
+- **`go test -race` works here — use it.** It needs cgo, which the shipped binary does not
+  (we release with `CGO_ENABLED=0`), so run it with the toolchain explicitly:
+
+  ```bash
+  CGO_ENABLED=1 PATH="/c/msys64/mingw64/bin:$PATH" go test ./your/package/... -race
+  ```
+
+  This paragraph used to say the opposite — that there was no C toolchain here on purpose —
+  and three separate agents wasted words reconciling that with a brief telling them to run
+  it. MSYS2 is installed and gcc is at that path. **Do not install anything to make this
+  work**; if the toolchain is genuinely missing, stop and report it.
+- Concurrency correctness is this product's headline claim, so a package that touches shared
+  state without a `-race` run is not finished.
 - Prefer one combined command over many small ones; every shell invocation flashes a console
   window on Windows.
 

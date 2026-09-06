@@ -156,6 +156,51 @@ func (s *svc) resolveTask(tx store.Tx, a Actor, key string) (*domain.Task, error
 	return s.store.Tasks().GetByKey(tx, key)
 }
 
+// resolveRelatedTask resolves ONE task referenced by another task — a parent
+// or a blocker — and refuses the reference unless both ends live in the same
+// project.
+//
+// Both halves matter and they fail differently on purpose:
+//
+//   - resolveTask applies the actor's project scope, so a token that cannot
+//     read the other project is refused before the row is ever fetched. Going
+//     to the repository directly here (which several paths used to do) let a
+//     project-restricted token attach its task to a project it cannot see,
+//     after which the foreign key leaked into every board read and task_next
+//     refused the work for a reason the caller could not observe.
+//   - The same-project check then applies to callers that CAN see both
+//     projects. v1 deliberately has no cross-project graph: a project is a
+//     closed aggregate for archive, export and dependency purposes, and a
+//     visibility model for cross-project edges has not been designed.
+//
+// ownerProjectID is the project of the task that will carry the edge; field
+// names the input for the validation error.
+func (s *svc) resolveRelatedTask(tx store.Tx, a Actor, field, raw, ownerKey, ownerProjectID string) (*domain.Task, error) {
+	t, err := s.resolveTask(tx, a, raw)
+	if err != nil {
+		return nil, err
+	}
+	if t.ProjectID != ownerProjectID {
+		return nil, crossProjectEdge(field, ownerKey, t.Key)
+	}
+	return t, nil
+}
+
+// crossProjectEdge is the single refusal for a hierarchy or dependency edge
+// whose endpoints are in different projects. Naming both keys is safe: this
+// error is only reachable once the actor has passed the scope check on both
+// ends, so it tells the caller nothing it could not already read.
+func crossProjectEdge(field, ownerKey, otherKey string) *domain.Error {
+	owner := ownerKey
+	if owner == "" {
+		owner = "this task"
+	}
+	return domain.Invalid(field,
+		fmt.Sprintf("%s and %s are in different projects; parent and blocks edges must stay inside one project",
+			owner, otherKey),
+		"Create the related task in the same project, or track the relationship in the task body.")
+}
+
 // resolveColumn finds a column by name, defaulting to the project's first
 // backlog-kind column (in position order) when name is empty.
 func (s *svc) resolveColumn(tx store.Tx, project *domain.Project, name string) (*domain.Column, error) {

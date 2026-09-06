@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"context"
+	"strconv"
+	"time"
 
 	gomcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -18,8 +20,9 @@ const opTaskGet = "task_get"
 var taskGetDefaultInclude = []string{string(service.IncludeBody), string(service.IncludeAcceptance), string(service.IncludeLinks)}
 
 type taskGetInput struct {
-	Keys    []string `json:"keys" jsonschema:"task keys, case-insensitive"`
-	Include []string `json:"include,omitempty" jsonschema:"widen the per-task fields returned"`
+	Keys        []string `json:"keys" jsonschema:"task keys, case-insensitive"`
+	Include     []string `json:"include,omitempty" jsonschema:"widen the per-task fields returned"`
+	NotesBefore string   `json:"notes_before,omitempty" jsonschema:"RFC3339 cursor for paging back through notes: returns the notes created strictly before it, newest first. Requires \"notes\" in include; take the value from a previous result's notes_next_before."`
 }
 
 // taskGetItem is a per-key result. Missing keys are never dropped (PLAN
@@ -54,9 +57,12 @@ func taskGetTool() *gomcp.Tool {
 
 	return &gomcp.Tool{
 		Name: opTaskGet,
-		Description: "Fetch tasks by key. Returns `data.items[]`: one `{key, ok, task|error}` entry per requested key, " +
+		Description: "Fetch whole tasks by key — this is the tool for full detail; task_next deliberately returns bounded summaries. " +
+			"Returns `data.items[]`: one `{key, ok, task|error}` entry per requested key, " +
 			"in request order — a key that does not exist is reported in place with ok:false, never silently dropped. " +
-			"(task_next and task_create return a flat `data.tasks[]` instead, because neither answers per requested key.)",
+			"(task_next and task_create return a flat `data.tasks[]` instead, because neither answers per requested key.)\n" +
+			"Notes are opt-in via include and come newest-first, " + strconv.Itoa(domain.MaxNotesPerRead) + " at a time; " +
+			"when a task has older ones the result carries `notes_next_before` — send it back as `notes_before` to read the next page.",
 		InputSchema: s,
 	}
 }
@@ -72,6 +78,14 @@ func registerTaskGet(s *gomcp.Server, svc service.Service) {
 		includes := toIncludes(in.Include)
 		if len(includes) == 0 {
 			includes = toIncludes(taskGetDefaultInclude)
+		}
+		var notesBefore *time.Time
+		if in.NotesBefore != "" {
+			t, derr := parseRFC3339("notes_before", in.NotesBefore)
+			if derr != nil {
+				return errorResult(opTaskGet, derr), taskGetOutput{OK: false, Op: opTaskGet, Error: newErrorEnvelope(derr)}, nil
+			}
+			notesBefore = &t
 		}
 
 		// A malformed key is a per-item validation failure, not a whole-call
@@ -89,9 +103,17 @@ func registerTaskGet(s *gomcp.Server, svc service.Service) {
 			validKeys = append(validKeys, nk)
 		}
 
+		// task_get is the whole-card read: every selected field comes back
+		// unclipped, which is precisely why task_next may bound its own.
+		proj := service.FullProjection(includes)
+
 		notFoundList := []string{}
 		if len(validKeys) > 0 {
-			res, err := svc.TaskGet(ctx, actor, service.TaskGetInput{Keys: validKeys, Include: includes})
+			res, err := svc.TaskGet(ctx, actor, service.TaskGetInput{
+				Keys:        validKeys,
+				Include:     includes,
+				NotesBefore: notesBefore,
+			})
 			if err != nil {
 				derr := asDomainError(err)
 				return errorResult(opTaskGet, derr), taskGetOutput{OK: false, Op: opTaskGet, Error: newErrorEnvelope(derr)}, nil
@@ -106,7 +128,10 @@ func registerTaskGet(s *gomcp.Server, svc service.Service) {
 					continue // already a validation failure
 				}
 				if tv, ok := found[items[i].Key]; ok {
-					out := taskViewOut(tv, includes)
+					out := taskViewOut(tv, proj)
+					if cursor, more := res.NotesNext[tv.Key]; more {
+						out.NotesNextBefore = formatTimePtr(&cursor)
+					}
 					items[i].OK = true
 					items[i].Task = &out
 					continue

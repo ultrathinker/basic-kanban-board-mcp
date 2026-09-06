@@ -24,7 +24,35 @@ import (
 type Tx interface {
 	// Now returns the database clock for this transaction. Every timestamp
 	// written or compared inside the transaction must come from here.
-	Now() time.Time
+	//
+	// It returns an error rather than falling back to the process clock.
+	// This clock is the ordering authority for lease expiry, done_at and the
+	// event log; silently substituting a different clock does not degrade
+	// gracefully, it produces timestamps that disagree with every other row
+	// written by every other process against the same file. A caller that
+	// cannot read the time must abort its transaction, not guess.
+	Now() (time.Time, error)
+
+	// Nested runs fn inside a SAVEPOINT. If fn returns an error the
+	// savepoint is rolled back and that error is returned; the enclosing
+	// transaction stays open and usable. If fn returns nil the savepoint is
+	// released and its writes become part of the enclosing transaction,
+	// committing or rolling back with it.
+	//
+	// This exists because the nine MCP tools promise PER-ITEM results: a
+	// batch of ten task updates reports nine successes and one conflict, and
+	// the failed item must leave nothing behind. Without a nested unit the
+	// only way to honour that is the discipline "validate everything you
+	// possibly can before touching a single row, so the write cannot fail" —
+	// which works exactly as long as every future contributor remembers it,
+	// and silently corrupts a batch the first time someone does not.
+	//
+	// The Tx passed to fn is a distinct value scoped to the savepoint; do not
+	// retain it after Nested returns. Nested calls may be nested further.
+	// Rolling back does NOT undo anything the caller staged outside the
+	// database — in particular pending domain events must be discarded by the
+	// caller, since they live in memory until the transaction commits.
+	Nested(fn func(Tx) error) error
 }
 
 // Store is the top-level handle. Read runs on the concurrent reader pool;

@@ -27,7 +27,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -37,6 +36,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ultrathinker/basic-kanban-board-mcp/internal/app"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/auth"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/config"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/domain"
@@ -52,68 +52,26 @@ var buildDate = ""
 // ---------------------------------------------------------------------------
 // Service / repo seams.
 //
-// The serve runner needs `internal/service` which is intentionally not yet
-// implemented; everything else (tokens, backup, health, admin purge) can be
-// served straight from `internal/auth` + `internal/store`. The seams below
-// are the only places the CLI talks to the lower layers.
+// The seams below are the only places the CLI talks to the lower layers.
+// Everything except serve (tokens, backup, health, admin purge) is served
+// straight from `internal/auth` + `internal/store` through the openStore
+// seam, which enforces the data-directory ownership policy.
 // ---------------------------------------------------------------------------
 
-// ServiceRunner runs the HTTP/MCP server. It is the seam to the server
-// implementation that lives in another agent's chunk.
+// ServiceRunner runs the HTTP/MCP server. It is the seam to internal/app,
+// which the wiring in wire.go fills in.
 type ServiceRunner interface {
 	Run(ctx context.Context) error
 }
 
-// BackupService backs `kanban backup` (VACUUM INTO under the hood).
-type BackupService interface {
-	Backup(ctx context.Context, dir string) (path string, err error)
-}
-
-// HealthService backs `kanban doctor` and `healthcheck`.
-type HealthService interface {
-	Health(ctx context.Context) (HealthSnapshot, error)
-}
-
-// HealthSnapshot is the slice of store.HealthInfo plus the boot-time settings.
+// HealthSnapshot is the store.HealthInfo slice `kanban doctor` prints.
 type HealthSnapshot struct {
-	Path                string
-	JournalMode         string
-	WALBytes            int64
-	PageCount           int64
-	Migration           int
-	WriteMicros         int64
-	BindAddress         string
-	BaseURL             string
-	AuthMode            string
-	TLSRequired         bool
-	TrustedProxies      []string
-	DataPath            string
-	MCPEndpointRedacted string
-}
-
-// AdminCLI is the seam for `kanban task purge`. Admin scope enforced inside.
-type AdminCLI interface {
-	PurgeTask(ctx context.Context, key string) error
-}
-
-// DemoService is the seam for `kanban demo`.
-type DemoService interface {
-	SeedDemo(ctx context.Context) error
-}
-
-// MigrateService backs `kanban migrate`. The store runs migrations at Open
-// already; this seam exists so `kanban migrate --dry-run` can preview
-// without opening the store.
-type MigrateService interface {
-	Migrate(ctx context.Context, dryRun bool) (MigrateReport, error)
-}
-
-// MigrateReport tells the operator what happened (or would happen).
-type MigrateReport struct {
-	Current int
-	Target  int
-	Applied []int
-	Skipped []int
+	Path        string
+	JournalMode string
+	WALBytes    int64
+	PageCount   int64
+	Migration   int
+	WriteMicros int64
 }
 
 // ---------------------------------------------------------------------------
@@ -192,6 +150,12 @@ Subcommands:
   demo            Seed idempotent sample data.
   version         Print version and exit.
 
+Concurrency:
+  One serving process owns a data directory at a time; a second
+  "kanban serve" on the same --data refuses to start. Short-lived commands
+  (token, backup, doctor, task purge, migrate) attach safely while a server
+  runs — they never migrate the schema under it.
+
 Run 'kanban <subcommand> --help' for subcommand-specific flags.
 `
 
@@ -255,9 +219,9 @@ func runServe(args []string) error {
 	return runner.Run(context.Background())
 }
 
-// wireServeRunner is the seam the server-wiring agent fills in. Until then
-// the runner is built against the interfaces above; the function returns a
-// clear "not wired" error rather than letting main serve fall into a nil deref.
+// wireServeRunner is the seam wire.go fills in; it exists so main.go can be
+// read (and tested) without the server implementation. The default returns a
+// clear "not wired" error rather than letting serve fall into a nil deref.
 var wireServeRunner = func(cfg config.Config) (ServiceRunner, error) {
 	return nil, errors.New("serve: runner not wired in this build; see cmd/kanban/wire.go")
 }
@@ -729,7 +693,9 @@ func runDoctor(args []string) error {
 	fmt.Fprintf(w, "Demo seed:        %t\n", sum.Demo)
 	fmt.Fprintf(w, "Claim TTL:        %s\n", sum.ClaimTTL)
 	if err == nil {
-		fmt.Fprintf(w, "Data path:        %s\n", snap.DataPath)
+		// The data path comes from the config, not the snapshot: it is known
+		// even when the store inside it cannot answer.
+		fmt.Fprintf(w, "Data path:        %s\n", cfg.DataDir)
 		fmt.Fprintf(w, "Journal mode:     %s\n", snap.JournalMode)
 		fmt.Fprintf(w, "WAL bytes:        %d\n", snap.WALBytes)
 		fmt.Fprintf(w, "Page count:       %d\n", snap.PageCount)
@@ -882,19 +848,16 @@ func runDemo(args []string) error {
 }
 
 // ---------------------------------------------------------------------------
-// Wiring seams for store + auth. Real implementations belong in a wire.go
-// file that another agent owns; we provide the variable shapes here so the
-// command file is the only file that knows about the interfaces above.
+// Wiring seams for store + auth.
 // ---------------------------------------------------------------------------
 
-// openStore opens the SQLite store at dataDir using the default config. It
-// is the seam every CLI command uses; tests override openStoreStore to
-// inject an in-memory or fake store.
+// openStore opens the SQLite store for a CLI command, enforcing the
+// data-directory ownership policy (see app.OpenCLIStore): it takes the
+// owner lock and migrates when the directory is free, and attaches without
+// migrating when a server owns it. It is a variable so tests can redirect
+// the data directory.
 var openStore = func(ctx context.Context, dataDir string) (store.Store, error) {
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
-		return nil, err
-	}
-	return store.Open(ctx, store.Config{Path: filepath.Join(dataDir, "kanban.db")})
+	return app.OpenCLIStore(ctx, dataDir)
 }
 
 // tokenManager wraps the auth manager for the token CLI. The store.Store
@@ -903,10 +866,3 @@ var openStore = func(ctx context.Context, dataDir string) (store.Store, error) {
 func tokenManager(st store.Store) *auth.Manager {
 	return auth.NewManagerFromStore(st, nil, "", false, time.Now)
 }
-
-// keep a few imports that look unused to vet on this file but are part of
-// the seam surface for the wiring agent.
-var (
-	_ = filepath.Join
-	_ = net.IPv4
-)

@@ -41,7 +41,10 @@ func (s *svc) TaskClaim(ctx context.Context, a Actor, in TaskClaimInput) (*TaskC
 		if err != nil {
 			return err
 		}
-		now := tx.Now()
+		now, err := tx.Now()
+		if err != nil {
+			return err
+		}
 		cc := newColumnCache(s, tx)
 		pc := newProjectCache(s, tx)
 		pc.prime(proj)

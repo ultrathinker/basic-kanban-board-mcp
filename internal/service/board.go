@@ -42,7 +42,10 @@ func (s *svc) BoardGet(ctx context.Context, a Actor, in BoardGetInput) (*Board, 
 			doneLimit = domain.MaxDoneLimit
 		}
 
-		now := tx.Now()
+		now, err := tx.Now()
+		if err != nil {
+			return err
+		}
 		cc := newColumnCache(s, tx)
 		pc := newProjectCache(s, tx)
 
@@ -93,9 +96,16 @@ func (s *svc) buildBoardProject(
 		return nil, err
 	}
 	bp := &BoardProject{
-		Key:     p.Key,
-		Name:    p.Name,
-		Columns: make([]BoardColumn, 0, len(cols)),
+		Key:                 p.Key,
+		Name:                p.Name,
+		Description:         p.Description,
+		Version:             p.Version,
+		EstimateUnit:        p.EstimateUnit,
+		EnforceDependencies: p.EnforceDependencies,
+		StrictDone:          p.StrictDone,
+		ClaimTTLSeconds:     p.ClaimTTLSeconds,
+		Archived:            p.ArchivedAt != nil,
+		Columns:             make([]BoardColumn, 0, len(cols)),
 	}
 	if p.FocusTaskID != nil {
 		if ft, err := s.store.Tasks().GetByID(tx, *p.FocusTaskID); err == nil {

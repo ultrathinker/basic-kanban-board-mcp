@@ -1,74 +1,43 @@
-# Vendored JavaScript libraries
+# Vendored third-party assets
 
-All assets in `web/static/vendor/` are redistributed under their original licenses
-to keep the board CSP-safe (no CDN, no runtime fetch) and to make a plain
-`go build` sufficient — see `docs/PLAN.md` §4 and §9.
+Everything in `web/static/vendor/` is redistributed under its original licence.
+This directory is the source of truth; `internal/web/static/vendor/` is a
+generated mirror kept in step by `make sync-embed` and checked by
+`make check-embed`, because Go's `//go:embed` cannot traverse `..`.
 
-**Only `sortable.min.js` is loaded by the templates today.** The other three
-are kept here — vendored, licensed and ready — but are not referenced from
-`layout.html`, each for a specific reason recorded below. Restoring any of
-them is one `<script>` tag. Shipping a library that cannot run is worse than
-not shipping it: it costs every page load and fails silently or loudly for
-no benefit.
-
-## htmx v4.0.0 — `htmx.min.js` (NOT LOADED)
-
-- Copyright (c) 2024–2026 Big Sky Software
-- License: BSD 2-Clause License
-- Source: <https://htmx.org/>
-- Local file: `htmx.min.js`
-- **No consumer.** htmx 4 is a rewrite: it has no `hx-get`/`hx-post`
-  (they are `hx-action` + `hx-method`), no `hx-ext`, no extension API and a
-  different event vocabulary (`htmx:before:viewTransition`, not
-  `htmx:afterSwap`). After removing the inert `hx-ext="sse"` markup, no
-  template used a single `hx-*` attribute, so this was 37 KB of no-op on
-  every page. If htmx is wanted back, pin **2.x** — that is the version the
-  SSE extension below and the `hx-get`/`hx-target` idiom in PLAN §9 assume.
-
-## htmx Server-Sent Events Extension v2.2.2 — `sse.min.js` (NOT LOADED)
-
-- Copyright (c) 2024 Big Sky Software
-- License: BSD 2-Clause License
-- Source: <https://htmx.org/extensions/sse/>
-- Local file: `sse.min.js`
-- **Not referenced by any template.** This extension is written against
-  htmx 2's extension API: it calls `htmx.defineExtension` and
-  `htmx.createEventSource`, and it is activated by `hx-ext="sse"`. The htmx
-  vendored here is v4, which has none of those — so loading the file threw a
-  `TypeError` on every page and `hx-ext="sse"` was inert. Live updates are
-  handled by a native `EventSource` in `app.js` instead; see the LIVE
-  UPDATES note at the top of that file. The file is kept so the decision can
-  be reversed cheaply (pin htmx 2.x, restore the `<script>` tag in
-  `layout.html`) rather than re-vendored from scratch.
-
-## Alpine.js v3.17.1 — `alpine.min.js` (NOT LOADED)
-
-- Copyright (c) 2019–2026 Caleb Porzio and contributors
-- License: MIT
-- Source: <https://alpinejs.dev>
-- Bundles `@vue/reactivity` v3.5.41 (c) 2018-present Yuxi (Evan) You and
-  contributors (MIT) — used under the hood by Alpine's `Alpine.reactive`
-  helpers; that dependency is not separately vendored.
-- Local file: `alpine.min.js`
-- **Incompatible with our own CSP.** The standard Alpine build evaluates
-  every `x-` expression with `new Function(...)`, which `script-src 'self'`
-  (PLAN §8, no `'unsafe-eval'`) refuses. Every directive on the page threw.
-  The one place Alpine was used — the copy button on `/agent-setup` — is
-  handled by `app.js` instead. If Alpine is wanted back, vendor the
-  CSP-friendly build (`@alpinejs/csp`), which trades inline expressions for
-  `Alpine.data()` registrations; loosening the CSP is not the trade to make.
+Every file here is loaded by the application. Nothing is vendored "just in
+case" — an embedded file that no page loads is dead weight inside a binary
+whose whole pitch is that it is small.
 
 ## SortableJS v1.15.7 — `sortable.min.js`
 
-- Copyright (c) SortableJS contributors
-- License: MIT
+- Licence: MIT
+- Copyright (c) 2019 All contributors to SortableJS
 - Source: <https://github.com/SortableJS/Sortable>
-- Local file: `sortable.min.js`
+- Loaded by: `web/templates/layout.html`
+- Used for: drag-and-drop reordering of cards between board columns. The
+  keyboard move menu in `app.js` does the same job without it, so the board
+  stays fully operable if this fails to load.
 
-## `../app.css`
+## Removed 2026-09-06 — htmx, its SSE extension, and Alpine.js
 
-- Hand-authored in this repository and served verbatim. It contains no
-  third-party CSS and is **not** Tailwind output: the templates use semantic
-  class names, not utility classes, so there is nothing for Tailwind to
-  scan. `make css` does not currently produce this file — see the task
-  report.
+They were vendored during the first build and are gone now. Recorded here
+because "why is this not here?" is a fair question and the answer took a
+while to establish:
+
+- **htmx v4.0.0** — v4 is a rewrite with no extension mechanism: no
+  `htmx.defineExtension`, no `hx-ext`. Once the inert `hx-ext="sse"` markup
+  was removed it had no consumer at all. If you want htmx back, pin **2.x** —
+  that is the line the SSE extension was written against.
+- **htmx SSE extension v2.2.2** — written against htmx 2's extension API. It
+  called `htmx.defineExtension` and threw a TypeError on every page load
+  under htmx 4, so live updates never worked. Replaced by a native
+  `EventSource` in `app.js`, which treats an event as a change signal and
+  re-fetches the page rather than swapping server-sent fragments.
+- **Alpine.js v3.17.1** — cannot run here at all. Its standard build evaluates
+  expressions with `new Function()`, which the `script-src 'self'` policy in
+  `internal/web/web.go` refuses, and that CSP is mandated by PLAN §8. Its one
+  use, a copy-to-clipboard button, is plain JavaScript now.
+
+Together they were ~95 KB of JavaScript embedded in the binary that no page
+executed. See PLAN §18 deviations 7 and 11.

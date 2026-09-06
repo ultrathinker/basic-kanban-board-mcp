@@ -36,7 +36,10 @@ func (r *taskRepo) Create(tx Tx, t *domain.Task) error {
 		return domain.Invalid("priority", fmt.Sprintf("priority %d is invalid", t.Priority),
 			"Use 0..4 (none..critical).")
 	}
-	now := tx.Now().UTC()
+	now, err := tx.Now()
+	if err != nil {
+		return err
+	}
 	if t.CreatedAt.IsZero() {
 		t.CreatedAt = now
 	}
@@ -80,6 +83,9 @@ func (r *taskRepo) Create(tx Tx, t *domain.Task) error {
 		formatTime(t.CreatedAt), formatTime(t.UpdatedAt), t.CreatedBy, t.UpdatedBy, nullableTime(t.ArchivedAt),
 	)
 	if err != nil {
+		if IsProjectLocalityViolation(err) {
+			return crossProjectEdge("parent")
+		}
 		if IsUniqueViolation(err) {
 			return wrapf(domain.Conflict(nil, 0, 0), "task key %q already exists", t.Key)
 		}
@@ -119,10 +125,13 @@ func (r *taskRepo) Update(tx Tx, t *domain.Task, ifVersion *int) error {
 		return errors.New("store: task.Update: nil or missing id")
 	}
 	tw := tx.(*txWrap)
-	now := tx.Now().UTC()
+	now, err := tx.Now()
+	if err != nil {
+		return err
+	}
 	if ifVersion != nil {
 		var current int
-		err := tw.tx.QueryRowContext(tw.ctx(),
+		err = tw.tx.QueryRowContext(tw.ctx(),
 			"SELECT version FROM tasks WHERE id = ?", t.ID,
 		).Scan(&current)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -170,6 +179,9 @@ func (r *taskRepo) Update(tx Tx, t *domain.Task, ifVersion *int) error {
 		formatTime(t.UpdatedAt), t.UpdatedBy, t.ID,
 	)
 	if err != nil {
+		if IsProjectLocalityViolation(err) {
+			return crossProjectEdge("parent")
+		}
 		return fmt.Errorf("store: update task: %w", err)
 	}
 	n, _ := res.RowsAffected()
@@ -392,10 +404,16 @@ func (r *taskRepo) Archive(tx Tx, id string, archived bool, actor string) error 
 		return domain.Invalid("id", "task id is empty", "Pass the task UUID.")
 	}
 	tw := tx.(*txWrap)
-	now := tx.Now().UTC()
+	now, err := tx.Now()
+	if err != nil {
+		return err
+	}
+	// archived_at is TEXT in the schema and every reader parses it with
+	// parseTime, so it has to be written in the canonical layout — handing
+	// the driver a time.Time lets it choose its own encoding.
 	var arg any
 	if archived {
-		arg = now
+		arg = formatTime(now)
 	} else {
 		arg = nil
 	}
@@ -444,7 +462,10 @@ func (r *taskRepo) Claim(tx Tx, id, actor string, ttl time.Duration) (bool, *dom
 		return false, nil, domain.Invalid("actor", "actor is empty", "Service layer must pass the token name.")
 	}
 	ttl = domain.ClampClaimTTL(ttl)
-	now := tx.Now().UTC()
+	now, err := tx.Now()
+	if err != nil {
+		return false, nil, err
+	}
 	expires := now.Add(ttl)
 	tw := tx.(*txWrap)
 	res, err := tw.tx.ExecContext(tw.ctx(), `
@@ -519,7 +540,10 @@ func (r *taskRepo) Move(tx Tx, id, columnID string, rank int64, actor string) er
 		return domain.Invalid("task", "id and column_id are required", "Pass both.")
 	}
 	tw := tx.(*txWrap)
-	now := tx.Now().UTC()
+	now, err := tx.Now()
+	if err != nil {
+		return err
+	}
 
 	var kind domain.Kind
 	if err := tw.tx.QueryRowContext(tw.ctx(),
@@ -674,7 +698,11 @@ func (r *taskRepo) renumberColumnTx(tw *txWrap, columnID string) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	now := formatTime(tw.Now().UTC())
+	ts, err := tw.Now()
+	if err != nil {
+		return err
+	}
+	now := formatTime(ts)
 	for i, id := range ids {
 		newRank := int64(i+1) * domain.RankStep
 		if _, err := tw.tx.ExecContext(tw.ctx(), `

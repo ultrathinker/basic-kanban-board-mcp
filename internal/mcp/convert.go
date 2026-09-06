@@ -90,6 +90,7 @@ type taskOut struct {
 	ClaimExpiresAt        *string         `json:"claim_expires_at,omitempty"`
 	LeaseRemainingSeconds *int            `json:"lease_remaining_seconds,omitempty"`
 	Acceptance            []acceptanceOut `json:"acceptance,omitempty"`
+	AcceptanceTotal       *int            `json:"acceptance_total,omitempty" jsonschema:"present only when acceptance was clipped by a bounded projection: the number of items the task actually has. Call task_get for the whole list."`
 	DueAt                 *string         `json:"due_at,omitempty"`
 	SubDone               int             `json:"sub_done,omitempty"`
 	SubTotal              int             `json:"sub_total,omitempty"`
@@ -99,6 +100,7 @@ type taskOut struct {
 	Version               int             `json:"version" jsonschema:"the task version AFTER this call, and authoritative: chain your next if_version from it, and never re-read a task just to learn its version. note, lease operations (task_claim) and focus deliberately do not move the version, so a response echoing the same number you sent as if_version means the write landed and the version legitimately did not change."`
 	Metadata              map[string]any  `json:"metadata,omitempty"`
 	Notes                 []noteOut       `json:"notes,omitempty"`
+	NotesNextBefore       *string         `json:"notes_next_before,omitempty" jsonschema:"pass back as task_get's notes_before to read the next, older page of this task's notes. Absent means there are none."`
 	CreatedAt             string          `json:"created_at"`
 	UpdatedAt             string          `json:"updated_at"`
 	CreatedBy             string          `json:"created_by"`
@@ -106,11 +108,12 @@ type taskOut struct {
 	ArchivedAt            *string         `json:"archived_at,omitempty"`
 }
 
-// taskViewOut renders a domain.TaskView, gating the fields PLAN §6 gates
-// behind `include`. BlockedBy is never gated: the compact renderer always
-// shows it because readiness is not optional information, and the JSON form
-// must not disagree.
-func taskViewOut(tv *domain.TaskView, includes service.Includes) taskOut {
+// taskViewOut renders a domain.TaskView under a service.Projection — the
+// service's own statement of what it put in the value, not this layer's guess
+// at what the request implied. BlockedBy is never gated: the compact renderer
+// always shows it because readiness is not optional information, and the JSON
+// form must not disagree.
+func taskViewOut(tv *domain.TaskView, proj service.Projection) taskOut {
 	out := taskOut{
 		Key:        tv.Key,
 		Project:    tv.ProjectKey,
@@ -142,31 +145,37 @@ func taskViewOut(tv *domain.TaskView, includes service.Includes) taskOut {
 			out.LeaseRemainingSeconds = &secs
 		}
 	}
-	if includes.Has(service.IncludeBody) {
+	if proj.Has(service.IncludeBody) {
 		out.Body = &tv.Body
 	}
-	if includes.Has(service.IncludeAcceptance) {
+	if proj.Has(service.IncludeAcceptance) {
 		out.Acceptance = acceptanceOutList(tv.Acceptance)
+		// A clipped list that does not say it was clipped reads as the whole
+		// list. The projection knows the real count; publish it.
+		if total, ok := proj.AcceptanceTotals[tv.Key]; ok {
+			t := total
+			out.AcceptanceTotal = &t
+		}
 	}
-	if includes.Has(service.IncludeNotes) {
+	if proj.Has(service.IncludeNotes) {
 		out.Notes = noteOutList(tv.Notes)
 	}
-	if includes.Has(service.IncludeMetadata) {
+	if proj.Has(service.IncludeMetadata) {
 		out.Metadata = tv.Metadata
 	}
-	if includes.Has(service.IncludeLinks) {
+	if proj.Has(service.IncludeLinks) {
 		out.Blocks = tv.Blocks
 	}
 	return out
 }
 
-func taskViewOutList(tvs []domain.TaskView, includes service.Includes) []taskOut {
+func taskViewOutList(tvs []domain.TaskView, proj service.Projection) []taskOut {
 	if len(tvs) == 0 {
 		return nil
 	}
 	out := make([]taskOut, len(tvs))
 	for i := range tvs {
-		out[i] = taskViewOut(&tvs[i], includes)
+		out[i] = taskViewOut(&tvs[i], proj)
 	}
 	return out
 }

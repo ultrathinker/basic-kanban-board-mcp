@@ -194,6 +194,30 @@ func IsCheckViolation(err error) bool {
 	return strings.Contains(err.Error(), "CHECK constraint failed")
 }
 
+// projectLocalityMarker is the sentence fragment every RAISE(ABORT) in
+// migration 0002 starts with. It is matched textually because RAISE(ABORT)
+// surfaces as a plain SQLITE_CONSTRAINT with the trigger's own message and
+// no code that distinguishes it from a UNIQUE or CHECK failure.
+const projectLocalityMarker = "kanban: cross-project edge"
+
+// IsProjectLocalityViolation reports whether err is one of the
+// project-locality triggers refusing a hierarchy or dependency edge that
+// would span two projects.
+func IsProjectLocalityViolation(err error) bool {
+	return err != nil && strings.Contains(err.Error(), projectLocalityMarker)
+}
+
+// crossProjectEdge builds the domain error for a refused cross-project
+// edge. The service layer rejects these before they reach SQLite, so
+// seeing one here means the write arrived through an import, the admin CLI
+// or a repair script — the message names the rule rather than the caller's
+// mistake, because there may not have been a caller.
+func crossProjectEdge(field string) *domain.Error {
+	return domain.Invalid(field,
+		"hierarchy and dependency edges must stay inside one project",
+		"Both tasks must belong to the same project. Move one of them, or model the relationship inside a single project.")
+}
+
 func sqliteCode(err error) int {
 	var sErr *sqlite.Error
 	if errors.As(err, &sErr) {
@@ -304,7 +328,10 @@ func buildTaskView(t Tx, task *domain.Task) (*domain.TaskView, error) {
 	view.SubDone = subDone
 	view.SubTotal = subTotal
 	// Ready + lease remaining
-	now := t.Now()
+	now, err := t.Now()
+	if err != nil {
+		return nil, err
+	}
 	view.LeaseRemain = domain.LeaseRemaining(&view.Task, now)
 	view.Ready = subTotal == 0 && len(open) == 0 && domain.ClaimableBy(&view.Task, "", now) && view.ColumnKind == domain.KindBacklog
 	return view, nil

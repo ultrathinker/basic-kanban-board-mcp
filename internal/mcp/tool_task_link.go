@@ -91,7 +91,7 @@ func registerTaskLink(s *gomcp.Server, svc service.Service) {
 		includes := service.Includes{service.IncludeLinks}
 		out := taskLinkOutput{
 			OK: true, Op: opTaskLink,
-			Data: &taskLinkData{Tasks: taskViewOutList(res.Tasks, includes)},
+			Data: &taskLinkData{Tasks: taskViewOutList(res.Tasks, service.FullProjection(includes))},
 			Meta: &toolMeta{Count: len(res.Tasks)},
 		}
 		return &gomcp.CallToolResult{Content: []gomcp.Content{&gomcp.TextContent{Text: jsonText(out)}}}, out, nil

@@ -82,22 +82,25 @@ The default output format for `board_get` is compact text (`format: "compact"`).
 
 | Format | Measured Size | Tokens (`len/4`) | Savings vs Compact |
 |---|---|---|---|
-| **Compact text (`compact_version=1`)** | **~4 235 bytes** | **~1 058 tokens** | **Baseline** |
+| **Compact text (`compact_version=1`)** | **~4 258 bytes** | **~1 064 tokens** | **Baseline** |
 | Minified JSON (`Marshal`) | ~22 560 bytes | ~5 640 tokens | ~81% reduction |
 | Indented JSON (`MarshalIndent`) | ~42 600 bytes | ~10 650 tokens | ~90% reduction |
 
 ### Grammar Rules
 
 1. **Version header:** Line 1 must be `compact_version=1`.
-2. **Project header:** `# KEY Name · focus KEY|none · Col1 count[/wip] · Col2 count · Done total (shown shown|hidden)`
+2. **Project header:** `# KEY Name · focus KEY|none · Col1 count[/wip] · Col2 count · Done total (shown shown|hidden) · v<version>`
    - Each non-done column is formatted as `Name count` or `Name count/wip` if a WIP limit is configured.
    - The done segment reports total archived/done tasks and whether any are currently rendered.
+   - `v<version>` is the **project** configuration version and always comes last. Send it back as
+     `project_upsert`'s `if_version`: this is what lets the default compact read feed the write that
+     follows it, with no second call. It is the only segment the header gained since the grammar was written.
 3. **Column header:** `## ColumnName` (the Done section is omitted when `done_limit=0`).
 4. **Task line:** `- KEY [priority type] Title · est <n><unit> · @<assignee> · lease <actor> <remaining>|expired · sub <done>/<total> · blocked-by <KEY>,<KEY> · #tag #tag · v<version> · age <duration>`
    - `[priority type]`: If priority is `none`, only `[type]` is rendered (e.g. `[task]`). When non-zero, rendered as `[high bug]`, `[critical feat]`.
    - Title: internal whitespace is collapsed, newlines stripped, and literal ` · ` replaced with ` - `.
    - Labeled suffixes appear in fixed order, separated by ` · `, and are omitted when empty:
-     - `est <n><unit>`: e.g. `est 2h`, `est 1.5d`.
+     - `est <n><unit>`: e.g. `est 2h`, `est 1.5d`. `<unit>` is the project's configured `estimate_unit`.
      - `@<assignee>`: assignee username or agent name.
      - `lease <actor> <remaining>|expired`: time remaining on lease (`43m`, `2h`, `45s`, `3d`) or `expired`. Never elapsed time.
      - `sub <done>/<total>`: subtasks completion status.
@@ -110,7 +113,7 @@ The default output format for `board_get` is compact text (`format: "compact"`).
 
 ```text
 compact_version=1
-# BMB BeeMemoryBank · focus BMB-14 · Doing 2/3 · Review 1 · Backlog 1 · Done 40 (hidden)
+# BMB BeeMemoryBank · focus BMB-14 · Doing 2/3 · Review 1 · Backlog 1 · Done 40 (hidden) · v9
 ## Doing
 - BMB-14 [high bug] Fix WAL checkpoint race · est 2h · @alex · lease claude@rog 43m · sub 1/3 · #sync · v7 · age 2h
 - BMB-17 [medium feat] Encrypted FTS index · est 8h · lease codex@desk expired · blocked-by BMB-14,BMB-9 · v3 · age 3d
@@ -145,8 +148,16 @@ Reads the board. Emits compact text by default; `structuredContent` always conta
 | `filter.blocked` | boolean | Optional | `null` | — | `true` for tasks with open blockers; `false` for tasks with none. |
 | `filter.q` | string | Optional | `null` | — | Substring search matching title or body. |
 | `filter.updated_since`| string | Optional | `null` | RFC3339 | Only tasks updated on or after timestamp. |
-| `include` | string[] | Optional | `[]` | `"body"`, `"acceptance"`, `"notes"`, `"links"`, `"metadata"` | Additional fields to expand on each task in JSON output. |
+| `include` | string[] | Optional | `[]` | `"body"`, `"acceptance"`, `"notes"`, `"links"`, `"metadata"` | Additional fields to expand on each task in JSON output. Selected fields come back whole — `board_get` has no bounded tier. |
 | `format` | string | Optional | `"compact"` | `"compact"`, `"json"` | `"compact"` renders compact text grammar; `"json"` returns indented JSON text. |
+
+#### Project fields
+
+Each entry in `data.projects[]` carries the project's whole configuration, not just its identity:
+`version`, `estimate_unit`, `enforce_dependencies`, `strict_done`, `claim_ttl_seconds`, `archived`,
+`description`, and the full ordered `columns[]` including columns holding no tasks. This is the
+published source of `project_upsert`'s `if_version` — read the board, modify what you read, send it
+back. There is no separate project-read tool and none is needed.
 
 #### Example Call & Response
 
@@ -160,7 +171,7 @@ Reads the board. Emits compact text by default; `structuredContent` always conta
 
 // Response Content (Text)
 compact_version=1
-# BMB BeeMemoryBank · focus BMB-14 · Doing 1/3 · Backlog 2 · Done 10 (hidden)
+# BMB BeeMemoryBank · focus BMB-14 · Doing 1/3 · Backlog 2 · Done 10 (hidden) · v9
 ## Doing
 - BMB-14 [high bug] Fix WAL checkpoint race · est 2h · @alex · lease claude@rog 43m · v7 · age 2h
 ## Backlog
@@ -176,7 +187,12 @@ compact_version=1
       {
         "key": "BMB",
         "name": "BeeMemoryBank",
+        "version": 9,
         "focus_key": "BMB-14",
+        "estimate_unit": "h",
+        "enforce_dependencies": true,
+        "strict_done": false,
+        "claim_ttl_seconds": 3600,
         "done_total": 10,
         "done_shown": 0,
         "columns": [
@@ -236,7 +252,26 @@ Candidates are ranked by: `priority desc` → `due_at asc (nulls last)` → `ran
 | `project` | string | Optional | `""` | 2–8 chars | Project key. When omitted, inspects all accessible projects. |
 | `action` | string | Optional | `"peek"` | `"peek"`, `"claim"`, `"start"` | Action to perform. |
 | `limit` | integer | Optional | `3` | `1`–`10` | Number of candidate tasks to return. |
-| `include` | string[] | Optional | `["body", "acceptance"]` | `"body"`, `"acceptance"`, `"notes"`, `"links"` | Fields to widen on returned tasks. Bodies are truncated at 2 KB (`… +N chars`). |
+| `include` | string[] | Optional | `["body", "acceptance"]` | `"body"`, `"acceptance"`, `"notes"`, `"links"` | **Which** fields come back on each task. |
+| `detail` | string | Optional | `"summary"` | `"summary"`, `"full"` | **How much** of each included field comes back. See below. |
+
+#### Response projection (`include` vs `detail`)
+
+`task_next` chooses work; it is not a card reader. Selecting a field and deciding how much of it to
+return are separate choices, and the response says which bounds were applied:
+
+| `detail` | `body` | `acceptance` |
+|---|---|---|
+| `"summary"` (default) | first 256 bytes, then `… +N chars` | first 2 items, plus `acceptance_total` when there are more |
+| `"full"` | first 2 048 bytes, then `… +N chars` | first 10 items, plus `acceptance_total` |
+
+Neither tier returns an unbounded body: for a whole card, call `task_get`. `meta.projection` reports
+the bounds actually applied (`{"body":"bounded","body_limit_bytes":256,"acceptance":"bounded","acceptance_limit":2}`),
+so a short body is never ambiguous between "the task is short" and "the answer was clipped".
+
+Measured on ten worst-case candidates (2 KB bodies, 50 criteria each): ~2 930 tokens at `"summary"`
+against ~19 773 for the same call before bounded projections existed. The default 3-candidate answer
+is ~949 tokens — under the ~1 064 it costs to read the entire 30-task board.
 
 #### Actions
 - `peek`: Returns up to `limit` ready tasks. Succeeds even if WIP in active columns is full (`meta.wip_full: true`). Does not mutate.
@@ -273,7 +308,12 @@ Candidates are ranked by: `priority desc` → `due_at asc (nulls last)` → `ran
         "version": 2,
         "ready": true,
         "tags": ["sync"],
-        "body": "When reconnecting after a network partition, tombstone records are dropped...",
+        "body": "When reconnecting after a network partition, tombstone records are dropped… +1804 chars",
+        "acceptance": [
+          { "text": "Tombstones survive a reconnect", "done": false },
+          { "text": "Replay is idempotent", "done": false }
+        ],
+        "acceptance_total": 9,
         "created_at": "2026-09-06T08:00:00Z",
         "updated_at": "2026-09-06T18:05:00Z",
         "created_by": "alex",
@@ -286,6 +326,12 @@ Candidates are ranked by: `priority desc` → `due_at asc (nulls last)` → `ran
     "started_key": "BMB-18",
     "claimed_key": "BMB-18",
     "wip_full": false,
+    "projection": {
+      "body": "bounded",
+      "body_limit_bytes": 256,
+      "acceptance": "bounded",
+      "acceptance_limit": 2
+    },
     "reasons": {
       "blocked_dependency": 2,
       "wip_full": 0,
@@ -311,10 +357,17 @@ Fetches tasks by key. Returns `data.items[]` in exact request order.
 | Name | Type | Required | Default | Bounds / Enum | Description |
 |---|---|---|---|---|---|
 | `keys` | string[] | **Required** | — | 1–50 items | List of task keys (case-insensitive, e.g. `["bmb-14", "BMB-18"]`). |
-| `include` | string[] | Optional | `["body", "acceptance", "links"]` | `"body"`, `"acceptance"`, `"notes"`, `"links"`, `"metadata"` | Fields to expand. `notes` returns up to 20 most recent notes. |
+| `include` | string[] | Optional | `["body", "acceptance", "links"]` | `"body"`, `"acceptance"`, `"notes"`, `"links"`, `"metadata"` | Fields to expand. Every selected field comes back whole — this is the full-detail read. `notes` returns up to 20 most recent notes. |
+| `notes_before` | string | Optional | `null` | RFC3339 | Cursor for the next, older page of notes: returns only notes created strictly before it. Requires `"notes"` in `include` — passing it without is refused, not ignored. |
 
 #### Behavior
 Missing or malformed keys are never dropped. They are reported in place with `ok: false` and a `not_found` error envelope.
+
+#### Paging notes
+Notes come newest-first, 20 per page. A task with older notes carries `notes_next_before` on its
+`task` object; send that value back as `notes_before` to fetch the next page, and repeat until the
+field is absent. The cursor is per task, because each task's history ends at a different point —
+in a multi-key call, use the cursor from the task you are paging.
 
 #### Example Call & Response
 
@@ -717,7 +770,7 @@ Creates or modifies project definition, workflow columns, and board-level settin
 | `key` | string | **Required** | 2–8 alphanumeric characters starting with a letter (e.g. `"BMB"`). |
 | `name` | string | Cond. | Project display name. Required for `mode: "create"`. |
 | `description` | string | Optional | Markdown description of the project. |
-| `if_version` | integer | Cond. | Required for `mode: "update"`. The project version from `board_get`. |
+| `if_version` | integer | Cond. | Required for `mode: "update"`. The project `version` from `board_get` — its `data.projects[].version`, or the trailing `v<version>` on the compact project header. |
 | `columns` | object[] | Optional | Full ordered column layout: `[{ "name": "Backlog", "kind": "backlog" }]`. |
 | `remove_columns` | object[] | Cond. | Required for any existing column absent from `columns`: `[{ "name": "Old", "move_tasks_to": "Backlog" }]`. Prevents accidental orphan data loss. |
 | `settings` | object | Optional | Board settings object. |

@@ -64,6 +64,7 @@ type toolMeta struct {
 	Replayed   bool               `json:"replayed,omitempty"`
 	NotFound   []string           `json:"not_found,omitempty"`
 	WIPFull    bool               `json:"wip_full,omitempty"`
+	Projection *projectionOut     `json:"projection,omitempty"`
 	Reasons    *nextReasonsOut    `json:"reasons,omitempty"`
 	BlockedTop []blockedSampleOut `json:"blocked_top,omitempty"`
 	ClaimedKey string             `json:"claimed_key,omitempty"`

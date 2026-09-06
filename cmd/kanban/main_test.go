@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"io"
 	"os"
@@ -12,6 +13,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
+	"github.com/ultrathinker/basic-kanban-board-mcp/internal/app"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/auth"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/config"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/domain"
@@ -322,14 +326,14 @@ func TestPathImport(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 // withTempStore swaps openStore with one that uses a per-test temp dir,
-// opens the store at the standard path, and returns a teardown. Tests must
-// defer the returned func.
+// opening through the real ownership policy (app.OpenCLIStore) so the CLI
+// tests exercise exactly what ships. Tests must defer the returned func.
 func withTempStore(t *testing.T) (string, func()) {
 	t.Helper()
 	dir := t.TempDir()
 	prev := openStore
 	openStore = func(ctx context.Context, dataDir string) (store.Store, error) {
-		return store.Open(ctx, store.Config{Path: filepath.Join(dir, "kanban.db")})
+		return app.OpenCLIStore(ctx, dir)
 	}
 	return dir, func() { openStore = prev }
 }
@@ -605,4 +609,78 @@ func errorsAs(err error, target **domain.Error) bool {
 		err = u.Unwrap()
 	}
 	return false
+}
+
+// ---------------------------------------------------------------------------
+// Data-directory ownership policy.
+//
+// The CLI shares the ownership lock with the server: commands take the lock
+// when the directory is free (and migrate under it), and attach without
+// migrating when a server owns it. These tests pin both halves of that
+// policy at the seam the commands actually use.
+// ---------------------------------------------------------------------------
+
+// TestOpenStore_HoldsOwnershipWhileOpen: a CLI command that opened a free
+// directory owns it for exactly as long as it keeps the store open.
+func TestOpenStore_HoldsOwnershipWhileOpen(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+
+	st, err := openStore(ctx, dir)
+	if err != nil {
+		t.Fatalf("openStore on a free dir: %v", err)
+	}
+	if _, err := app.AcquireOwnerLock(dir); !errors.Is(err, app.ErrOwnerHeld) {
+		t.Fatalf("expected ErrOwnerHeld while the CLI holds the directory, got %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	lock, err := app.AcquireOwnerLock(dir)
+	if err != nil {
+		t.Fatalf("ownership not released by Close: %v", err)
+	}
+	_ = lock.Release()
+}
+
+// TestOpenStore_AttachesUnderLiveServer: the hostile alternative — refusing
+// `kanban token create` while the server runs — must not happen. The command
+// attaches, and it never migrates under the owner.
+func TestOpenStore_AttachesUnderLiveServer(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+
+	// What a running `kanban serve` looks like from outside: a migrated
+	// database plus a held ownership lock.
+	server, err := store.Open(ctx, store.Config{Path: filepath.Join(dir, "kanban.db")})
+	if err != nil {
+		t.Fatalf("server store open: %v", err)
+	}
+	if err := server.Close(); err != nil {
+		t.Fatalf("server store close: %v", err)
+	}
+	owner, err := app.AcquireOwnerLock(dir)
+	if err != nil {
+		t.Fatalf("server takes ownership: %v", err)
+	}
+	defer owner.Release()
+
+	st, err := openStore(ctx, dir)
+	if err != nil {
+		t.Fatalf("openStore must attach under a live server, got %v", err)
+	}
+	defer st.Close()
+
+	tok := &domain.Token{
+		ID:        uuid.NewString(),
+		Name:      "attached",
+		Hash:      auth.HashToken("kbn_attached00xx00xx00xx00xx00xx00xx00xx"),
+		Scopes:    domain.Scopes{domain.ScopeWrite},
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := st.Write(ctx, func(tx store.Tx) error {
+		return st.Tokens().Create(tx, tok)
+	}); err != nil {
+		t.Fatalf("attached write: %v", err)
+	}
 }

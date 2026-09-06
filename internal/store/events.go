@@ -21,7 +21,11 @@ func (r *eventRepo) Append(tx Tx, e *domain.Event) error {
 		return domain.Invalid("event", "project_id is required", "Events are scoped to a project.")
 	}
 	if e.TS.IsZero() {
-		e.TS = tx.Now().UTC()
+		now, err := tx.Now()
+		if err != nil {
+			return err
+		}
+		e.TS = now
 	}
 	payload, err := encodeJSON(e.Payload)
 	if err != nil {

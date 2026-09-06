@@ -490,7 +490,14 @@ func (f *fakeStore) Sessions() store.SessionRepo { return &fakeSessionRepo{f: f}
 // fakeTx carries the fixed clock the adapter reads.
 type fakeTx struct{}
 
-func (fakeTx) Now() time.Time { return time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC) }
+func (fakeTx) Now() (time.Time, error) {
+	return time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC), nil
+}
+
+// Nested runs fn inline. This fake has no storage to roll back, so it cannot
+// exercise savepoint semantics — anything that needs real per-item rollback
+// must test against store.Open on a temp file, not against this.
+func (t fakeTx) Nested(fn func(store.Tx) error) error { return fn(t) }
 
 type fakeTokenRepo struct {
 	store.TokenRepo // unimplemented methods panic if the adapter grows a new call

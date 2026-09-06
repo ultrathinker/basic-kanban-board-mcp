@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"strconv"
 
 	gomcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -24,7 +25,35 @@ type taskNextInput struct {
 	Project string   `json:"project,omitempty" jsonschema:"project key; omitted = every accessible project"`
 	Action  string   `json:"action,omitempty" jsonschema:"peek looks without taking, claim leases the top candidate, start leases and moves it into the first active column"`
 	Limit   int      `json:"limit,omitempty" jsonschema:"how many ready candidates to consider/return"`
-	Include []string `json:"include,omitempty" jsonschema:"widen the per-task fields returned"`
+	Include []string `json:"include,omitempty" jsonschema:"WHICH per-task fields come back. How much of each is a separate choice: see detail."`
+	Detail  string   `json:"detail,omitempty" jsonschema:"HOW MUCH of each included field: summary clips body and acceptance to an excerpt, full widens them. Both are bounded — call task_get for a whole card."`
+}
+
+// projectionOut publishes the shaping the service applied, so a caller never
+// has to infer from a short body whether the task is short or the answer was
+// clipped. Fields are omitempty: a full projection costs almost nothing here.
+type projectionOut struct {
+	Body            string `json:"body,omitempty"`
+	BodyLimitBytes  int    `json:"body_limit_bytes,omitempty"`
+	Acceptance      string `json:"acceptance,omitempty"`
+	AcceptanceLimit int    `json:"acceptance_limit,omitempty"`
+}
+
+func newProjectionOut(p service.Projection) *projectionOut {
+	out := &projectionOut{}
+	if p.Has(service.IncludeBody) {
+		out.Body = string(p.Body)
+		if p.Body == service.DetailBounded {
+			out.BodyLimitBytes = p.BodyLimitBytes
+		}
+	}
+	if p.Has(service.IncludeAcceptance) {
+		out.Acceptance = string(p.Acceptance)
+		if p.Acceptance == service.DetailBounded {
+			out.AcceptanceLimit = p.AcceptanceLimit
+		}
+	}
+	return out
 }
 
 type nextReasonsOut struct {
@@ -62,13 +91,20 @@ func taskNextTool() *gomcp.Tool {
 	inc := prop(s, "include")
 	setEnum(inc.Items, nextIncludeEnumValues...)
 	setDefault(inc, []string{string(service.IncludeBody), string(service.IncludeAcceptance)})
+	setEnum(prop(s, "detail"), string(service.NextDetailSummary), string(service.NextDetailFull))
+	setDefault(prop(s, "detail"), string(service.NextDetailSummary))
 
 	return &gomcp.Tool{
 		Name: opTaskNext,
 		Description: "Find, claim or start the next ready task. `peek` never takes anything (even when WIP is full); " +
 			"`claim` leases the top candidate without moving it; `start` leases it and moves it into the first active column atomically. " +
 			"Returns `data.tasks[]`: a flat list of task objects, best candidate first (task_get returns `data.items[]` instead, " +
-			"because it answers per requested key). `meta.reasons` counts why the rest were not offered.",
+			"because it answers per requested key). `meta.reasons` counts why the rest were not offered.\n" +
+			"This is a chooser, so it answers cheaply: bodies come back as a " + strconv.Itoa(service.NextSummaryBodyBytes) +
+			"-byte excerpt ending in \"… +N chars\" and acceptance as the first " + strconv.Itoa(service.NextSummaryAcceptanceItems) +
+			" items with `acceptance_total` when there are more. `detail:\"full\"` widens that to " +
+			strconv.Itoa(domain.NextBodyTruncate) + " bytes and " + strconv.Itoa(domain.NextAcceptanceItems) +
+			" items; `meta.projection` always states which bounds were applied. Once you have chosen, task_get returns the whole card.",
 		InputSchema: s,
 	}
 }
@@ -111,6 +147,7 @@ func registerTaskNext(s *gomcp.Server, svc service.Service, readOnly bool) {
 			Action:     action,
 			Limit:      limit,
 			Include:    includes,
+			Detail:     service.NextDetail(in.Detail),
 		})
 		if err != nil {
 			derr := asDomainError(err)
@@ -122,11 +159,16 @@ func registerTaskNext(s *gomcp.Server, svc service.Service, readOnly bool) {
 			blockedTop[i] = blockedSampleOut{Key: b.Key, BlockedBy: b.BlockedBy}
 		}
 
+		// The service decided the shaping and said so; rendering obeys that
+		// statement rather than re-deriving it from the include list we sent.
+		// Those two derivations disagreeing is what made "included but
+		// bounded" impossible to express (architecture review finding #21).
 		out := taskNextOutput{
 			OK: true, Op: opTaskNext,
-			Data: &taskNextData{Tasks: taskViewOutList(res.Tasks, includes)},
+			Data: &taskNextData{Tasks: taskViewOutList(res.Tasks, res.Projection)},
 			Meta: &toolMeta{
 				Count:      len(res.Tasks),
+				Projection: newProjectionOut(res.Projection),
 				WIPFull:    res.WIPFull,
 				ClaimedKey: res.ClaimedKey,
 				StartedKey: res.StartedKey,

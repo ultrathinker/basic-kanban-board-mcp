@@ -116,10 +116,13 @@ func (s *sqlStore) applyOneMigration(ctx context.Context, m migration) error {
 		if _, err := tx.ExecContext(ctx, m.body); err != nil {
 			return fmt.Errorf("execute: %w", err)
 		}
-		now := t.Now().UTC().Format("2006-01-02T15:04:05.000Z")
+		now, err := t.Now()
+		if err != nil {
+			return err
+		}
 		if _, err := tx.ExecContext(ctx,
 			"INSERT INTO schema_migrations(version, name, applied_at) VALUES(?,?,?)",
-			m.version, m.name, now,
+			m.version, m.name, formatTime(now),
 		); err != nil {
 			return fmt.Errorf("record: %w", err)
 		}
