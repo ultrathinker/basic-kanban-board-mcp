@@ -94,6 +94,16 @@ func renderProject(sb *strings.Builder, p *service.BoardProject, now time.Time) 
 		if col.Kind == domain.KindDone && p.DoneShown == 0 {
 			continue
 		}
+		// A section with no task lines under it says nothing the header segment
+		// did not already say, and in `view:"summary"` — where no column
+		// carries tasks by definition — it said it for every column at once,
+		// so the cheapest read in the product opened with four empty headings.
+		// Worse, an empty heading is ambiguous: it reads the same whether the
+		// column is empty, the view omitted tasks, or a filter matched none.
+		// The header segment (`Backlog 6`) is the unambiguous answer.
+		if len(col.Tasks) == 0 {
+			continue
+		}
 		fmt.Fprintf(sb, "## %s\n", col.Name)
 		for j := range col.Tasks {
 			renderTask(sb, &col.Tasks[j], col.Kind, now, p.EstimateUnit)

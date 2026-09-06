@@ -39,7 +39,9 @@ import (
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/app"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/auth"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/config"
+	"github.com/ultrathinker/basic-kanban-board-mcp/internal/demo"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/domain"
+	"github.com/ultrathinker/basic-kanban-board-mcp/internal/service"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/store"
 )
 
@@ -838,13 +840,36 @@ func runMigrate(args []string) error {
 	return nil
 }
 
+// runDemo seeds the sample board into an existing data directory. It is the
+// same seed `serve --demo` runs, so an operator who forgot the flag does not
+// have to restart the server to get one — openStore attaches without
+// migrating when a server already owns the directory.
 func runDemo(args []string) error {
 	fs := flag.NewFlagSet("demo", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
+	dataDir := fs.String("data", "./data", "Directory holding the SQLite database.")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	return errors.New("kanban demo: not implemented yet — it lands with the service layer (M1)")
+	ctx := context.Background()
+	st, err := openStore(ctx, *dataDir)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	// No publisher: a CLI process has no SSE clients to notify, and the events
+	// themselves are still written inside the transaction either way.
+	res, err := demo.Seed(ctx, service.New(st, nil))
+	if err != nil {
+		return err
+	}
+	if !res.Created {
+		fmt.Fprintf(os.Stdout, "Project %s already exists; nothing seeded.\n", demo.ProjectKey)
+		return nil
+	}
+	fmt.Fprintf(os.Stdout, "Seeded project %s with %d sample tasks.\n", demo.ProjectKey, res.Tasks)
+	return nil
 }
 
 // ---------------------------------------------------------------------------

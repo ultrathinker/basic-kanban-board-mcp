@@ -21,6 +21,7 @@ import (
 
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/auth"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/config"
+	"github.com/ultrathinker/basic-kanban-board-mcp/internal/demo"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/events"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/service"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/store"
@@ -170,6 +171,19 @@ func New(ctx context.Context, cfg config.Config, opts ...Option) (*App, error) {
 	bus := events.New(history, 64)
 
 	svc := o.serviceFactory(gate, bus)
+
+	// --demo runs before the listener opens, so the first request already sees
+	// a populated board. It is idempotent, so leaving the flag in a
+	// docker-compose file is harmless; it is also fatal on failure, because a
+	// server that silently ignored the flag would send the user hunting for a
+	// board that was never seeded.
+	if cfg.Demo {
+		if _, err := demo.Seed(ctx, svc); err != nil {
+			_ = st.Close()
+			_ = lock.Release()
+			return nil, err
+		}
+	}
 
 	tpl, err := templates.New()
 	if err != nil {

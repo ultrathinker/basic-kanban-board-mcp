@@ -116,6 +116,7 @@ internal/web/          handlers, templates, SSE, sessions
 internal/events/       in-process bus
 internal/auth/         tokens, sessions, middleware, trusted proxies, rate limit
 internal/config/       flags/env and the startup refusal rules
+internal/demo/         the `--demo` sample board, seeded through the service
 web/templates/ web/static/   embedded assets
 docs/PLAN.md           the spec of record — read it, do not edit it
 ```

@@ -267,6 +267,31 @@ func TestRender_NoFocusAndDoneShown(t *testing.T) {
 	golden(t, "testdata/no_focus.golden", got)
 }
 
+// TestRender_SummaryViewIsHeaderOnly pins the shape of the DEFAULT board_get
+// answer. In view:"summary" no column carries tasks, and the renderer used to
+// emit a bare "## Name" for each one — four empty headings at the top of the
+// cheapest read in the product, saying nothing the header segments had not
+// already said, and reading identically whether a column was empty or the view
+// simply omitted its tasks.
+func TestRender_SummaryViewIsHeaderOnly(t *testing.T) {
+	board := &service.Board{Projects: []service.BoardProject{{
+		Key: "BMB", Name: "BeeMemoryBank", Version: 4,
+		Columns: []service.BoardColumn{
+			mkColumn("Backlog", domain.KindBacklog, 6),
+			mkColumn("Doing", domain.KindActive, 1),
+			mkColumn("Review", domain.KindActive, 0),
+			mkColumn("Done", domain.KindDone, 0),
+		},
+		DoneTotal: 3,
+	}}}
+	got := Render(board, fixedNow)
+	want := "compact_version=1\n" +
+		"# BMB BeeMemoryBank · focus none · Backlog 6 · Doing 1/3 · Review 0 · Done 3 (hidden) · v4\n"
+	if got != want {
+		t.Errorf("summary render:\n got %q\nwant %q", got, want)
+	}
+}
+
 func TestRoundTrip(t *testing.T) {
 	// The round-trip property is field-level, not byte-level. The grammar
 	// carries: KEY, [priority type], title, est, @assignee, lease actor+rem,
