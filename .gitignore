@@ -1,2 +1,32 @@
+# Local build artefacts
+/bin/
+/dist/
+/.tools/
+
+# Editor scratch
+/.idea/
+/.vscode/
+*.swp
+
+# Local kanban data (developer running `kanban serve` locally)
+/data/
+
+# Test coverage
+/coverage.out
+*.cover
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Go vendor caches (we use go.mod, not vendor)
+/vendor/
+
+# Agent scratch
+/.agentlogs/
+.agentlogs/
+
+# Review scratch (PLAN §11 — reviewer logs are intentionally local)
 docs/reviews/.*.log
 docs/reviews/.*.err
+docs/reviews/.*.tmp

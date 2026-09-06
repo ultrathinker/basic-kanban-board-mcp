@@ -1,0 +1,149 @@
+# GoReleaser config for basic-kanban-board-mcp.
+#
+# Targets: linux, darwin, windows × amd64, arm64.
+# Archives: .tar.gz on POSIX, .zip on Windows.
+# Image: multi-arch linux/amd64 + linux/arm64 to ghcr.io.
+
+version: 1
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: kanban
+    main: ./cmd/kanban
+    binary: kanban
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s
+      - -w
+      # main.version and main.buildDate are populated by `make build`.
+      - -X main.version={{.Version}}
+      - -X main.buildDate={{.Date}}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      # windows/arm64 needs the pure-Go sqlite DLL; we ship amd64 only.
+      - goos: windows
+        goarch: arm64
+
+archives:
+  - id: default
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}"
+    formats:
+      - format: tar.gz
+        name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}"
+        wrap_in_directory: true
+        files:
+          - LICENSE
+          - README.md
+          - docs/**
+      - format: zip
+        name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ if .Arm }}v{{ .Arm }}{{ end }}"
+        wrap_in_directory: true
+        files:
+          - LICENSE
+          - README.md
+          - docs/**
+
+checksum:
+  name_template: '{{ .ProjectName }}_{{ .Version }}_SHASUMS.txt'
+  algorithm: sha256
+
+sboms:
+  - id: source-spdx
+    artifacts: source
+
+nfpms:
+  - id: packages
+    package_name: basic-kanban-board-mcp
+    file_name_template: "{{ .ConventionalFileName }}"
+    formats:
+      - deb
+      - rpm
+      - apk
+    maintainer: ultrathinker <noreply@example.org>
+    description: |
+      A minimal, self-hosted kanban board for AI coding agents. One
+      static Go binary, one SQLite file, one port, with a native MCP
+      server and a web UI.
+    license: MIT
+    section: net
+    priority: optional
+
+brews:
+  - tap:
+      owner: ultrathinker
+      name: homebrew-tap
+    commit_author:
+      name: ultrathinker-bot
+      email: noreply@example.org
+
+docker_manifests:
+  - name_template: "{{ .ProjectName }}:{{ .Tag }}"
+    image_templates:
+      - "ghcr.io/ultrathinker/{{ .ProjectName }}:{{ .Tag }}-amd64"
+      - "ghcr.io/ultrathinker/{{ .ProjectName }}:{{ .Tag }}-arm64"
+  - name_template: "{{ .ProjectName }}:latest"
+    image_templates:
+      - "ghcr.io/ultrathinker/{{ .ProjectName }}:latest-amd64"
+      - "ghcr.io/ultrathinker/{{ .ProjectName }}:latest-arm64"
+
+docker_images:
+  - image_templates:
+      - "ghcr.io/ultrathinker/{{ .ProjectName }}:{{ .Tag }}-amd64"
+      - "ghcr.io/ultrathinker/{{ .ProjectName }}:{{ .Tag }}-arm64"
+    use_trim_path: true
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.source=https://github.com/ultrathinker/{{ .ProjectName }}"
+      - "--label=org.opencontainers.image.licenses=MIT"
+    extra_files:
+      - LICENSE
+      - docs/**
+
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^Merge branch"
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\([[:alnum:]]+\))??:.*$'
+      order: 0
+    - title: 'Bug fixes'
+      regexp: '^.*?fix(\([[:alnum:]]+\))??:.*$'
+      order: 1
+    - title: Others
+      order: 999
+
+release:
+  github:
+    owner: ultrathinker
+    name: basic-kanban-board-mcp
+  prerelease: auto
+  name_template: "v{{ .Version }}"
+  header: |
+    ## basic-kanban-board-mcp {{ .Tag }}
+
+    One board. Every agent. 9 tools.
+  footer: |
+    ---
+
+    Full notes: https://github.com/ultrathinker/basic-kanban-board-mcp/blob/main/docs/PLAN.md

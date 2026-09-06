@@ -1,0 +1,88 @@
+{{/* partials: focused on single-fragment rendering so htmx can swap them. */}}
+
+{{define "card"}}
+{{- /* expects .Card (TaskCard) and .CSRF */ -}}
+<article class="card {{priorityClass .Card.Priority}}" data-task-key="{{.Card.Key}}" data-card-id="{{.Card.Key}}"
+         aria-label="Task {{.Card.Key}}: {{.Card.Title}}">
+  <header class="head">
+    <a class="key mono" href="{{.Card.URL}}">{{.Card.Key}}</a>
+    <span class="badge-type type-{{.Card.Type}}">{{.Card.Type}}</span>
+    {{if .Card.Lease}}
+      <span class="lease {{.Card.Lease.State}}" title="Lease held by {{.Card.Lease.Actor}}">
+        <span class="dot" aria-hidden="true"></span>{{.Card.Lease.Actor}} · {{.Card.Lease.Remain}}
+      </span>
+    {{end}}
+    <span class="spacer"></span>
+    <span class="text-xs text-subtle">v{{.Card.Version}}</span>
+  </header>
+  <div class="title"><a href="{{.Card.URL}}">{{.Card.Title}}</a></div>
+  <div class="meta">
+    {{if .Card.Estimate}}<span class="estimate-pill">est {{.Card.Estimate.Label}}</span>{{end}}
+    {{if .Card.Assignee}}<span class="assignee">@{{.Card.Assignee}}</span>{{end}}
+    {{if .Card.SubTotal}}<span class="sub-progress {{if eq .Card.SubDone .Card.SubTotal}}done{{end}}">sub {{.Card.SubDone}}/{{.Card.SubTotal}}</span>{{end}}
+    {{range .Card.Tags}}<span class="tag">#{{.}}</span>{{end}}
+    {{if .Card.Blocked}}<span class="blocked-indicator" title="Blocked by {{commaKeys .Card.BlockedBy}}">blocked · {{commaKeys .Card.BlockedBy}}</span>{{end}}
+    {{if .Card.Age}}<span class="text-xs text-subtle">age {{.Card.Age}}</span>{{end}}
+  </div>
+  {{template "card-move-menu" (dict "Card" .Card "CSRF" .CSRF "Columns" .Columns)}}
+</article>
+{{end}}
+
+{{define "card-move-menu"}}
+{{- /* keyboard-accessible alternative to drag-and-drop. The actual POST is
+       wired by app.js when the select changes. */ -}}
+{{- if .Columns}}
+<div class="row" style="margin-top:0.25rem">
+  <label class="sr-only" for="move-{{.Card.Key}}">Move {{.Card.Key}}</label>
+  <select id="move-{{.Card.Key}}" data-move-menu data-move-url="/fragments/move" class="btn btn-sm" style="font-size:0.7rem">
+    <option value="">move to…</option>
+    {{range .Columns}}
+      <option value="{{.Name}}">{{.Name}}</option>
+    {{end}}
+  </select>
+</div>
+{{- end}}
+{{end}}
+
+{{define "column"}}
+{{- /* expects .Column (ColumnView) and .CSRF */ -}}
+<section class="column {{if eq .Column.Kind "done"}}done{{end}}"
+         id="column-{{.Column.Name}}" data-column-name="{{.Column.Name}}"
+         data-sortable data-sortable-url="/fragments/move" data-sortable-group="cards"
+         aria-label="Column {{.Column.Name}}">
+  <header class="column-head">
+    <span class="name">{{.Column.Name}}</span>
+    {{if .Column.WIP}}<span class="wip {{if ge .Column.Count (index .Column.WIP 0 | int) }}{{else}}{{end}}{{if and .Column.WIP (ge .Column.Count (index .Column.WIP 0))}}full{{end}} tabular">
+      {{.Column.Count}}{{if .Column.WIP}}/{{index .Column.WIP 0}}{{end}}
+    </span>{{else}}<span class="wip tabular">{{.Column.Count}}</span>{{end}}
+  </header>
+  <div class="column-list">
+    {{if hasAny .Column.Tasks}}
+      {{range .Column.Tasks}}{{template "card" (dict "Card" . "CSRF" $.CSRF "Columns" $.Columns)}}{{end}}
+    {{else}}
+      <p class="column-empty">No tasks</p>
+    {{end}}
+  </div>
+</section>
+{{end}}
+
+{{define "focus-banner"}}
+{{- if .Focus}}
+<section class="focus-banner" aria-label="Project focus">
+  <span class="label">Now</span>
+  <a class="key mono" href="{{drawerURL .Focus.Key}}">{{.Focus.Key}}</a>
+  <span class="title">{{.Focus.Title}}</span>
+</section>
+{{end}}
+{{end}}
+
+{{define "activity-row"}}
+{{- /* expects .Event (ActivityEvent) */ -}}
+<div class="row {{if .Event.IsNew}}new{{end}}">
+  <span class="actor">{{.Event.Actor}}</span>
+  <span class="verb">{{.Event.Verb}}</span>
+  <a class="target mono" href="{{drawerURL .Event.Target}}">{{.Event.Target}}</a>
+  <span class="text-subtle">{{.Event.TargetTitle}}</span>
+  <span class="ts">{{.Event.RelTime}}</span>
+</div>
+{{end}}

@@ -1,0 +1,77 @@
+{{/* The layout is split into head/foot blocks so each page template can wrap
+   its own content without using a template.Funcs helper. The head block
+   opens <html> and <body>; the foot block closes them and includes the
+   static assets. */}}
+
+{{define "layout-head"}}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{.CSRFToken}}">
+  <title>{{.Title}} · basic-kanban-board-mcp</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  {{template "topbar" .}}
+  <main id="main" class="container" tabindex="-1">
+    {{if .Flash}}<div class="toast-region" role="status" aria-live="polite"><div class="toast">{{.Flash}}</div></div>{{end}}
+{{end}}
+
+{{define "layout-foot"}}
+  </main>
+  {{template "footer" .}}
+  <div class="toast-region" id="toasts" role="status" aria-live="polite"></div>
+  <script src="/static/vendor/htmx.min.js" defer></script>
+  <script src="/static/vendor/sse.min.js" defer></script>
+  <script src="/static/vendor/sortable.min.js" defer></script>
+  <script src="/static/vendor/alpine.min.js" defer></script>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
+{{end}}
+
+{{define "topbar"}}<header class="topbar" role="banner">
+  <a href="/" class="brand" aria-label="basic-kanban-board-mcp home">
+    <span class="dot" aria-hidden="true"></span>
+    <span>basic-kanban-board-mcp</span>
+  </a>
+  {{template "project-switcher" .}}
+  <nav aria-label="Sections">
+    <a href="/" class="{{if eq .Nav "overview"}}active{{end}}">Overview</a>
+    {{if .CurrentUser}}
+      <a href="/admin" class="{{if eq .Nav "admin"}}active{{end}}">Admin</a>
+    {{end}}
+  </nav>
+  <span class="spacer"></span>
+  <button type="button" class="icon-btn" data-theme-toggle aria-label="Toggle color theme" title="Toggle theme">
+    <span aria-hidden="true">◐</span>
+  </button>
+  {{if .CurrentUser}}
+    <span class="text-muted text-xs">{{.CurrentUser}}</span>
+  {{else}}
+    <a href="{{loginURL "/"}}" class="btn btn-sm">Sign in</a>
+  {{end}}
+</header>{{end}}
+
+{{define "project-switcher"}}
+  <form method="get" action="/" class="project-switcher" role="search">
+    <label for="project" class="sr-only">Switch project</label>
+    <select id="project" name="p" onchange="this.form.submit()">
+      <option value="">All projects</option>
+      {{range .Layout.Projects}}
+        <option value="{{.Key}}" {{if eq .Key $.Layout.CurrentKey}}selected{{end}}>{{.Key}} — {{.Name}}</option>
+      {{end}}
+    </select>
+    <noscript><button type="submit" class="btn btn-sm">Go</button></noscript>
+  </form>
+{{end}}
+
+{{define "footer"}}<footer class="container text-subtle text-xs" style="padding:1rem 0 2rem">
+  <hr>
+  <span>One board · Every agent · Nine tools</span>
+  <span class="spacer" style="display:inline-block;width:1rem"></span>
+  <a href="/agent-setup">Agent setup</a>
+</footer>{{end}}

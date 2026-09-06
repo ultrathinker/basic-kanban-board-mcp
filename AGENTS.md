@@ -34,6 +34,26 @@ negotiable:
   with plain Go values.
 - **Only `internal/service` may call `internal/store`.** MCP, web and CLI call the service.
 
+## Do not disturb the human's desktop
+
+A person is working at this machine while you run. Anything that opens a window, steals focus or
+runs unattended in the background is disruptive, so:
+
+- **Never start a long-running or foreground process**: no dev servers, no `go run` of anything
+  that listens, no watchers, no `docker run`, no browsers. If a task needs a server to be
+  verified, write the code and the test, and say in your final message how to run it — the
+  coordinator will.
+- **Never install anything system-wide** — no `winget`, `choco`, `apt`, `npm -g`, no installers,
+  no toolchain downloads. If a tool you need is missing, stop and report it instead.
+- **Do not run `docker build` or any container command.** CI does that.
+- Compiling and running unit tests is fine (`go build`, `go vet`, `go test`) — keep it to that.
+- **Do not run `go test -race` on this machine.** The race detector needs cgo, we build with
+  `CGO_ENABLED=0`, and there is no C toolchain here on purpose. CI runs `-race` on Linux, so write
+  race-safe code and race-safe tests, but verify locally with plain `go test`. If a tool you need
+  is genuinely missing, **stop and report it** — never install one.
+- Prefer one combined command over many small ones; every shell invocation flashes a console
+  window on Windows.
+
 ## Your boundaries
 
 Your brief names the packages you own. **Do not create or edit files outside them**, and in

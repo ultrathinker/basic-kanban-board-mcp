@@ -1,0 +1,369 @@
+{{/* page entry points — each template opens the layout head, emits its body,
+   and closes the layout foot. */}}
+
+{{define "page-board"}}
+{{template "layout-head" .}}
+{{with .Model}}
+<section class="row wrap" aria-label="Project actions">
+  <h1>{{.Project.Name}} <span class="text-muted mono text-xs">{{.Project.Key}}</span></h1>
+  <span class="spacer"></span>
+  {{if .HideDone}}<a class="btn btn-sm" href="?hide_done=0">Show done</a>
+  {{else}}<a class="btn btn-sm" href="?hide_done=1">Hide done</a>{{end}}
+  <a class="btn btn-sm" href="{{activityURL .Project.Key}}">Activity</a>
+  <a class="btn btn-sm" href="/p/{{.Project.Key}}/export">Export</a>
+</section>
+
+{{template "focus-banner" (dict "Focus" .Focus)}}
+
+<div class="row wrap text-muted text-xs" aria-label="Live updates status">
+  <span>Live updates:</span>
+  <span sse-connect="/events/p/{{.Project.Key}}"
+        sse-swap="board-update"
+        aria-live="polite"
+        hx-ext="sse">connecting…</span>
+</div>
+
+<div class="board" role="list" aria-label="Board columns">
+  {{range .Columns}}{{template "column" (dict "Column" . "CSRF" $.CSRF)}}{{end}}
+</div>
+
+<noscript>
+  <p class="text-muted">Drag-and-drop, live updates, and move menus need JavaScript. The board still renders.</p>
+</noscript>
+{{end}}
+{{template "layout-foot" .}}
+{{end}}
+
+{{define "page-drawer"}}
+{{template "layout-head" .}}
+{{with .Model}}
+<a href="{{boardURL .Project.Key}}" class="btn btn-sm">← back to {{.Project.Key}}</a>
+<article style="margin-top:0.75rem">
+  <header class="row wrap">
+    <span class="key mono text-xs text-muted">{{.Task.Key}}</span>
+    <span class="badge-type type-{{.Task.Type}}">{{.Task.Type}}</span>
+    <span class="priority-stripe {{priorityClass .Task.Priority}}" title="priority: {{priorityName .Task.Priority}}"></span>
+    <span class="text-xs text-muted">v{{.Task.Version}}</span>
+    {{if .Task.Lease}}
+      <span class="lease {{.Task.Lease.State}}" title="Lease held by {{.Task.Lease.Actor}}">
+        <span class="dot"></span>{{.Task.Lease.Actor}} · {{.Task.Lease.Remain}}
+      </span>
+    {{end}}
+    <span class="spacer"></span>
+    {{if .CanEdit}}<button class="btn btn-sm" data-edit-task="{{.Task.Key}}">Edit</button>{{end}}
+  </header>
+  <h1>{{.Task.Title}}</h1>
+  <div class="meta-row">
+    {{if .Task.Estimate}}<span class="estimate-pill">est {{.Task.Estimate.Label}}</span>{{end}}
+    {{if .Task.Assignee}}<span class="assignee">@{{.Task.Assignee}}</span>{{end}}
+    {{range .Task.Tags}}<span class="tag">#{{.}}</span>{{end}}
+    {{if .Task.Due}}<span class="text-muted">due {{.Task.Due}}</span>{{end}}
+    <span class="text-muted">created {{.Task.CreatedAt}} by {{.Task.CreatedBy}}</span>
+    <span class="text-muted">updated {{.Task.UpdatedAt}} by {{.Task.UpdatedBy}}</span>
+  </div>
+
+  <section class="body" aria-label="Task body">
+    {{.MarkdownHTML}}
+  </section>
+
+  {{if hasAny .Acceptance}}
+  <section aria-label="Acceptance criteria">
+    <h2 style="margin-top:1.25rem;font-size:0.95rem">Acceptance</h2>
+    <ul class="acceptance">
+      {{range .Acceptance}}
+      <li>
+        <input type="checkbox" id="acc-{{$.Model.Task.Key}}-{{.Index}}" {{if .Done}}checked{{end}} {{if not $.CanEdit}}disabled{{end}}>
+        <label for="acc-{{$.Model.Task.Key}}-{{.Index}}">
+          {{if .Done}}<s>{{.Text}}</s>{{else}}{{.Text}}{{end}}
+        </label>
+      </li>
+      {{end}}
+    </ul>
+  </section>
+  {{end}}
+
+  {{if hasAny .Blockers}}
+  <section aria-label="Blockers">
+    <h2 style="margin-top:1.25rem;font-size:0.95rem">Blocked by</h2>
+    <ul class="acceptance">
+      {{range .Blockers}}
+      <li><a class="mono" href="{{.URL}}">{{.Key}}</a> — {{.Title}} <span class="badge-type type-{{.Type}}">{{.Type}}</span></li>
+      {{end}}
+    </ul>
+  </section>
+  {{end}}
+
+  {{if hasAny .Blocking}}
+  <section aria-label="Blocking">
+    <h2 style="margin-top:1.25rem;font-size:0.95rem">Blocking</h2>
+    <ul class="acceptance">
+      {{range .Blocking}}
+      <li><a class="mono" href="{{.URL}}">{{.Key}}</a> — {{.Title}} <span class="badge-type type-{{.Type}}">{{.Type}}</span></li>
+      {{end}}
+    </ul>
+  </section>
+  {{end}}
+
+  {{if hasAny .Subtasks}}
+  <section aria-label="Subtasks">
+    <h2 style="margin-top:1.25rem;font-size:0.95rem">Subtasks</h2>
+    <ul class="acceptance">
+      {{range .Subtasks}}
+      <li><a class="mono" href="{{.URL}}">{{.Key}}</a> — {{.Title}} <span class="badge-type type-{{.Type}}">{{.Type}}</span></li>
+      {{end}}
+    </ul>
+  </section>
+  {{end}}
+
+  {{if hasAny .Notes}}
+  <section aria-label="Notes">
+    <h2 style="margin-top:1.25rem;font-size:0.95rem">Notes ({{len .Notes}})</h2>
+    <div class="notes-timeline">
+      {{range .Notes}}
+      <div class="note">
+        <div class="who"><strong>{{.Author}}</strong> · {{.RelTime}} ({{.CreatedAt}})</div>
+        <div>{{.Body}}</div>
+      </div>
+      {{end}}
+    </div>
+  </section>
+  {{end}}
+
+  {{if hasAny .History}}
+  <section aria-label="History">
+    <h2 style="margin-top:1.25rem;font-size:0.95rem">History</h2>
+    <div class="history">
+      {{range .History}}
+      <div class="row"><span class="actor">{{.Actor}}</span> <span class="verb">{{.Verb}}</span> {{if .Detail}}<span>{{.Detail}}</span>{{end}} <span class="ts">{{.RelTime}}</span></div>
+      {{end}}
+    </div>
+  </section>
+  {{end}}
+</article>
+{{end}}
+{{template "layout-foot" .}}
+{{end}}
+
+{{define "page-activity"}}
+{{template "layout-head" .}}
+{{with .Model}}
+<header class="row wrap">
+  <h1>Activity · {{.Project.Name}}</h1>
+  <span class="spacer"></span>
+  <a class="btn btn-sm" href="{{boardURL .Project.Key}}">← back to board</a>
+</header>
+
+<div sse-connect="/events/p/{{.Project.Key}}" sse-swap="activity-feed" hx-ext="sse" class="text-xs text-muted"
+     style="margin-bottom:0.5rem">connecting live feed…</div>
+
+<section class="activity" aria-live="polite" aria-label="Activity feed" id="activity-feed">
+  {{if hasAny .Events}}
+    {{range .Events}}{{template "activity-row" (dict "Event" .)}}{{end}}
+  {{else}}
+    <p class="text-muted">No activity yet.</p>
+  {{end}}
+</section>
+{{end}}
+{{template "layout-foot" .}}
+{{end}}
+
+{{define "page-overview"}}
+{{template "layout-head" .}}
+{{with .Model}}
+<header class="row wrap">
+  <h1>Overview</h1>
+  <span class="spacer"></span>
+  <span class="text-muted text-xs">{{.Total.Projects}} projects · {{.Total.Active}} active · {{.Total.Backlog}} backlog · {{.Total.Done}} done</span>
+</header>
+
+<section style="display:grid;grid-template-columns:repeat(auto-fit,minmax(18rem,1fr));gap:0.75rem;margin-top:0.75rem" aria-label="Projects">
+  {{range .Projects}}
+  <article class="column" style="cursor:pointer">
+    <header class="column-head">
+      <span class="name">{{.Name}} <span class="text-muted mono text-xs">{{.Key}}</span></span>
+      <span class="wip tabular">{{.Active}}</span>
+    </header>
+    <p class="text-muted text-xs">{{.Description}}</p>
+    {{if .Focus}}
+    <div class="focus-banner" style="margin:0.25rem 0">
+      <span class="label">Now</span>
+      <a class="key mono" href="{{drawerURL .Focus}}">{{.Focus}}</a>
+    </div>
+    {{end}}
+    <div class="row text-xs text-muted" aria-label="Counts">
+      <span>backlog <strong class="tabular">{{.Backlog}}</strong></span>
+      <span>active <strong class="tabular">{{.Active}}</strong></span>
+      <span>done <strong class="tabular">{{.Done}}</strong></span>
+      <span class="spacer"></span>
+      <a class="btn btn-sm" href="{{.URL}}">Open</a>
+    </div>
+  </article>
+  {{end}}
+</section>
+{{end}}
+{{template "layout-foot" .}}
+{{end}}
+
+{{define "page-login"}}
+{{template "layout-head" .}}
+{{with .Model}}
+<section style="max-width:30rem;margin:3rem auto">
+  <h1>Sign in</h1>
+  <p class="text-muted">Paste an API token. Your session cookie lasts 7 days idle, 30 absolute.</p>
+  {{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
+  <form method="post" action="/login" class="form" novalidate>
+    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+    {{if .Redirect}}<input type="hidden" name="next" value="{{.Redirect}}">{{end}}
+    <div class="field">
+      <label for="token">Token</label>
+      <input id="token" name="token" type="password" autocomplete="off" required minlength="16" autofocus>
+      <small class="text-subtle">kbn_… — copied from the token list or the startup banner.</small>
+    </div>
+    <div class="row">
+      <button class="btn btn-primary" type="submit">Sign in</button>
+      <a class="btn btn-ghost" href="/">Cancel</a>
+    </div>
+  </form>
+  <p class="text-xs text-subtle">Don't have a token yet? Ask an admin, or see <a href="/agent-setup">agent setup</a> if this is your first run.</p>
+</section>
+{{end}}
+{{template "layout-foot" .}}
+{{end}}
+
+{{define "page-firstrun"}}
+{{template "layout-head" .}}
+{{with .Model}}
+<section style="max-width:48rem;margin:3rem auto">
+  <h1>Welcome — first run</h1>
+  <p>Your admin token was generated once and printed to the server logs. Rotate it the moment you have copied it:</p>
+  <pre class="code" aria-label="Bootstrap token">{{.Token}}</pre>
+  <div class="row">
+    <button class="btn" data-copy="{{.Token}}">Copy token</button>
+    <a class="btn btn-primary" href="{{loginURL "/"}}">Sign in</a>
+  </div>
+  <h2 style="margin-top:1.5rem">Next steps</h2>
+  <ol>
+    <li>Sign in (paste the token above).</li>
+    <li>Create a project and a write token for each agent.</li>
+    <li>Distribute <a href="/agent-setup">/agent-setup</a> snippets — they include the <code>Authorization</code> header.</li>
+  </ol>
+  <p class="text-xs text-subtle">Base URL: <code class="mono">{{.BaseURL}}</code></p>
+</section>
+{{end}}
+{{template "layout-foot" .}}
+{{end}}
+
+{{define "page-agent-setup"}}
+{{template "layout-head" .}}
+{{with .Model}}
+<header class="row wrap">
+  <h1>Agent setup</h1>
+  <span class="spacer"></span>
+  <span class="text-xs text-muted">Base URL: <code class="mono">{{.BaseURL}}</code></span>
+</header>
+<p class="text-muted">Each block is paste-ready for a specific client. The <code>Authorization</code> header is the part everyone fumbles — it is in every block below.</p>
+
+<section class="snippet-grid" aria-label="Per-client setup snippets">
+  {{range .Snippets}}
+  <article class="snippet column" x-data="{ copied: false }">
+    <h3>{{.Title}}</h3>
+    <p class="desc">{{.Description}}</p>
+    <pre class="code" aria-label="{{.Title}} config">{{.Config}}</pre>
+    <div class="row">
+      <button class="btn btn-sm" data-copy="{{.Config}}"
+              x-on:click="copied = true; setTimeout(() => copied = false, 1200)">
+        <span x-show="!copied">Copy</span>
+        <span x-show="copied" x-cloak>Copied</span>
+      </button>
+      <span class="text-xs text-subtle">format: {{.Format}}</span>
+    </div>
+  </article>
+  {{end}}
+</section>
+
+<section style="margin-top:1.5rem">
+  <h2>Verify</h2>
+  <p>Once your client is configured, the simplest smoke test is a <code>board_get</code> via the MCP endpoint:</p>
+  <pre class="code">curl -sS -H "Authorization: Bearer $KANBAN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"board_get","arguments":{}}}' \
+  {{.BaseURL}}/mcp</pre>
+</section>
+{{end}}
+{{template "layout-foot" .}}
+{{end}}
+
+{{define "page-admin"}}
+{{template "layout-head" .}}
+{{with .Model}}
+<header class="row wrap">
+  <h1>Admin</h1>
+  <span class="spacer"></span>
+  <a class="btn" href="/admin/export">Export JSON</a>
+  <a class="btn btn-primary" href="/admin/backup">Run backup</a>
+</header>
+
+<section style="margin-top:1rem" aria-label="Tokens">
+  <h2 style="font-size:0.95rem">Tokens</h2>
+  <table class="table">
+    <thead>
+      <tr><th>Name</th><th>Scope</th><th>Projects</th><th>Created</th><th>Last used</th><th>State</th><th></th></tr>
+    </thead>
+    <tbody>
+      {{range .Tokens}}
+      <tr>
+        <td class="mono">{{.Name}}</td>
+        <td>{{.Scope}}</td>
+        <td class="mono">{{.ProjectKeys}}</td>
+        <td>{{.CreatedAt}}</td>
+        <td>{{.LastUsed}}</td>
+        <td>{{if .Active}}<span class="text-success">active</span>{{else}}<span class="text-subtle">revoked</span>{{end}}</td>
+        <td class="row">
+          {{if .Active}}
+          <form method="post" action="/admin/tokens/{{.Name}}/rotate"><button class="btn btn-sm">Rotate</button></form>
+          <form method="post" action="/admin/tokens/{{.Name}}/revoke"><button class="btn btn-sm btn-danger">Revoke</button></form>
+          {{end}}
+        </td>
+      </tr>
+      {{end}}
+      <tr>
+        <form method="post" action="/admin/tokens">
+          <td><input name="name" required minlength="2" placeholder="claude@rog"></td>
+          <td>
+            <select name="scope">
+              <option value="read">read</option>
+              <option value="write" selected>write</option>
+              <option value="admin">admin</option>
+            </select>
+          </td>
+          <td><input name="projects" placeholder="BMB,KAN or empty"></td>
+          <td colspan="3" class="text-subtle">new</td>
+          <td><button class="btn btn-primary">Create</button></td>
+        </form>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<section style="margin-top:1.5rem" aria-label="Projects">
+  <h2 style="font-size:0.95rem">Projects</h2>
+  <table class="table">
+    <thead><tr><th>Key</th><th>Name</th><th>Columns</th><th>Active tasks</th><th>Version</th><th></th></tr></thead>
+    <tbody>
+      {{range .Projects}}
+      <tr>
+        <td class="mono">{{.Key}}</td>
+        <td>{{.Name}}</td>
+        <td class="tabular">{{.Columns}}</td>
+        <td class="tabular">{{.ActiveTasks}}</td>
+        <td class="tabular">v{{.Version}}</td>
+        <td><a class="btn btn-sm" href="/admin/projects/{{.Key}}">Edit</a></td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</section>
+{{end}}
+{{template "layout-foot" .}}
+{{end}}

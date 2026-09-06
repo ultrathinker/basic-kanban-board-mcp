@@ -1,0 +1,73 @@
+# Release for basic-kanban-board-mcp.
+#
+# Triggered by pushing a v* tag (also re-runnable via workflow_dispatch).
+# GoReleaser handles the multi-arch build, checksum, SBOM, and the multi-arch
+# image push to ghcr.
+
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to release from (e.g. v1.0.0)"
+        required: true
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
+jobs:
+  release:
+    name: GoReleaser
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+          cache: true
+
+      - name: Show toolchain
+        run: go version
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: v2
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: ghcr login (for image push)
+        if: env.GHCR_LOGIN == 'true'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+  verify:
+    name: Verify release artefacts
+    runs-on: ubuntu-latest
+    needs: release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: Show artefact summary
+        run: |
+          ls -la dist
+          shasum -a 256 dist/*.txt 2>/dev/null || sha256sum dist/*.txt
+      - name: Smoke-test linux/amd64 binary
+        run: |
+          ./dist/kanban_linux_amd64_v1/kanban version
+          ./dist/kanban_linux_amd64_v1/kanban doctor --addr=127.0.0.1:8080

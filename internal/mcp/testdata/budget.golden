@@ -1,0 +1,33 @@
+compact_version=1
+# BMB BeeMemoryBank · focus BMB-1 · Doing 30/30 · Done 200 (hidden)
+## Doing
+- BMB-1 [critical task] Fix WAL checkpoint race under concurrent readers · est 1h · @alex · lease claude@a 15m · blocked-by BMB-8 · #sync · v1 · age 0s
+- BMB-2 [high bug] Encrypted FTS index for sensitive body columns · est 2h · @claude · lease claude@b 22m · sub 0/2 · v2 · age 0s
+- BMB-3 [medium feat] Squash migrations 41-44 into a single coherent step · est 3h · @codex · lease codex@c expired · #db · v3 · age 0s
+- BMB-4 [low chore] Sync sometimes loses tombstones after reconnect · est 4h · @robert · blocked-by BMB-11 · v4 · age 0s
+- BMB-5 [doc] Trim ambiguous grammar in compact board rendering · sub 1/3 · #release #sync · v5 · age 0s
+- BMB-6 [critical perf] Validate project_upsert mode is always required · est 6h · @alex · lease claude@c 50m · v6 · age 0s
+- BMB-7 [high research] Add idempotency replay golden test with payload hash · est 7h · @claude · lease claude@a 57m · blocked-by BMB-14 · #perf · v7 · age 0s
+- BMB-8 [medium task] SSE Last-Event-ID resync path on stale client buffer · est 8h · @codex · lease codex@b expired · sub 2/4 · v8 · age 0s
+- BMB-9 [low bug] Honor X-Forwarded-* only from --trusted-proxies CIDRs · est 1h · @robert · #docs · v9 · age 0s
+- BMB-10 [feat] Bootstrap admin token prints once under migration lock · blocked-by BMB-17 · v10 · age 0s
+- BMB-11 [critical chore] DoneLimit ordering by most recent DoneAt descending · est 3h · @alex · lease claude@b 1h · sub 3/5 · #sync · v11 · age 0s
+- BMB-12 [high doc] Lexicographic sort of #tags on every compact task line · est 4h · @claude · lease claude@c 1h · v12 · age 0s
+- BMB-13 [medium perf] Strict_done blocks move into Done with unchecked items · est 5h · @codex · lease codex@a expired · blocked-by BMB-20 · #db · v13 · age 0s
+- BMB-14 [low research] task_next peek returns work even when WIP is full · est 6h · @robert · sub 0/2 · v14 · age 0s
+- BMB-15 [task] Deterministic ordering under identical priority/due · #release #sync · v15 · age 0s
+- BMB-16 [critical bug] Append note must never bump task.Version optimistic field · est 8h · @alex · lease claude@a 2h · blocked-by BMB-23 · v16 · age 0s
+- BMB-17 [high feat] Symbolic @ref inside task_create blocked_by array · est 1h · @claude · lease claude@b 2h · sub 1/3 · #perf · v17 · age 0s
+- BMB-18 [medium chore] Focus banner clears when focused task is archived · est 2h · @codex · lease codex@c expired · v18 · age 0s
+- BMB-19 [low doc] Atomic claim CAS expressed as a single UPDATE statement · est 3h · @robert · blocked-by BMB-26 · #docs · v19 · age 0s
+- BMB-20 [perf] task_remove cascade_subtasks defaults to true on archive · sub 2/4 · v20 · age 0s
+- BMB-21 [critical research] Export JSON pretty-prints with two-space indent for diffs · est 5h · @alex · lease claude@c 2h · #sync · v21 · age 0s
+- BMB-22 [high task] Doctor reports bind address and base-url plan in plain text · est 6h · @claude · lease claude@a 2h · blocked-by BMB-29 · v22 · age 0s
+- BMB-23 [medium bug] Healthcheck exit codes zero on healthy only, nonzero otherwise · est 7h · @codex · lease codex@b expired · sub 3/5 · #db · v23 · age 0s
+- BMB-24 [low feat] agent-config prints paste-ready Claude/Codex/Cursor snippets · est 8h · @robert · v24 · age 0s
+- BMB-25 [chore] Rate-limit LRU store bounded at 10000 entries to bound memory · blocked-by BMB-2 · #release #sync · v25 · age 0s
+- BMB-26 [critical doc] Markdown body sanitized with bluemonday policy on render · est 2h · @alex · lease claude@b 3h · sub 0/2 · v26 · age 0s
+- BMB-27 [high perf] Alpine drawer state must survive htmx swap on navigation · est 3h · @claude · lease claude@c 3h · #perf · v27 · age 0s
+- BMB-28 [medium research] SortableJS keyboard reorder via arrow keys without a mouse · est 4h · @codex · lease codex@a expired · blocked-by BMB-5 · v28 · age 0s
+- BMB-29 [low task] htmx SSE reconnect wrapper for transient dropped connections · est 5h · @robert · sub 1/3 · #docs · v29 · age 0s
+- BMB-30 [bug] Tailwind v4 theme tokens for priority stripe and type badges · v30 · age 0s

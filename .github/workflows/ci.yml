@@ -1,0 +1,112 @@
+# CI for basic-kanban-board-mcp.
+#
+# Matrix: ubuntu + windows, every push and PR.
+# Pipeline (each matrix):
+#   1. checkout
+#   2. setup Go 1.27
+#   3. go vet ./...
+#   4. go test ./... -race
+#   5. staticcheck (best-effort, only on ubuntu; continue-on-error)
+#   6. govulncheck (best-effort)
+#   7. build kanban binary
+#   8. run `kanban version` and `kanban doctor` as smoke tests
+#
+# CSS freshness check runs on ubuntu only — the Tailwind standalone CLI is
+# platform-specific and Windows runners do not need it.
+
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build/test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        go: ["1.27"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          cache: true
+
+      - name: Show toolchain
+        run: go version
+
+      - name: go build
+        run: go build ./...
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test -race
+        run: CGO_ENABLED=1 go test ./... -race -count=1 -timeout=10m
+
+      - name: staticcheck (ubuntu only)
+        if: runner.os == 'Linux'
+        uses: dominikbraun/graph@v1
+        with:
+          # staticcheck is not in deps.go because it is dev-only. Install
+          # it just for this step. Failure is non-fatal: staticcheck
+          # periodically flags stdlib constructs and Go-ecosystem changes.
+          continue-on-error: true
+
+      - name: govulncheck (ubuntu only)
+        if: runner.os == 'Linux'
+        env:
+          GOFLAGS: -mod=mod
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+      - name: Build kanban binary
+        run: |
+          mkdir -p bin
+          go build -trimpath -ldflags "-s -w" -o bin/kanban ./cmd/kanban
+
+      - name: Smoke test (ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          ./bin/kanban version
+          ./bin/kanban doctor --addr=127.0.0.1:8080
+
+      - name: Smoke test (windows)
+        if: runner.os == 'Windows'
+        run: |
+          ./bin/kanban.exe version
+          ./bin/kanban.exe doctor --addr=127.0.0.1:8080
+
+  css-freshness:
+    name: web/static/app.css up to date
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Regenerate app.css
+        run: |
+          mkdir -p .tools
+          curl -fsSL -o .tools/tailwindcss \
+              https://github.com/tailwindlabs/tailwindcss/releases/download/v4.3.3/tailwindcss-linux-amd64
+          chmod +x .tools/tailwindcss
+          make css
+
+      - name: Check for diff
+        run: |
+          if ! git diff --quiet web/static/app.css; then
+            echo "::error::web/static/app.css is out of date — run 'make css' locally and commit."
+            git diff web/static/app.css
+            exit 1
+          fi
