@@ -296,10 +296,10 @@ func (m *Manager) LoginRateLimit(next http.Handler) http.Handler {
 }
 
 // authenticateRequest reads credentials from the request. Precedence:
-//   1. Bearer / X-API-Key header (MCP)
-//   2. Query-string ?ticket= (SSE; one-time, consumed)
-//   3. Session cookie (browser)
-//   4. No credential
+//  1. Bearer / X-API-Key header (MCP)
+//  2. Query-string ?ticket= (SSE; one-time, consumed)
+//  3. Session cookie (browser)
+//  4. No credential
 //
 // AuthKind on the result tells downstream handlers what was consumed.
 func (m *Manager) authenticateRequest(r *http.Request) (*AuthResult, error) {
@@ -334,11 +334,23 @@ func (m *Manager) authenticateRequest(r *http.Request) (*AuthResult, error) {
 	if cid, ok := readSessionCookie(r); ok {
 		sess, err := m.Sessions.GetSession(r.Context(), cid)
 		if err != nil {
+			// Same not-found-as-403 contract as VerifyToken: a stale or
+			// tampered session cookie is a bad credential, never a server
+			// fault. Treat it as if the cookie were absent so the caller
+			// can challenge afresh.
+			if e := domain.AsError(err); e != nil && e.Code == domain.CodeNotFound {
+				return nil, ErrNoToken
+			}
 			return nil, err
 		}
 		if sess != nil && m.validSession(sess, m.Now()) {
 			tok, err := m.lookupByTokenID(r.Context(), sess.TokenID)
 			if err != nil {
+				// A session that points at a token that no longer exists is
+				// a stale login, not a server fault.
+				if e := domain.AsError(err); e != nil && e.Code == domain.CodeNotFound {
+					return nil, ErrForbidden
+				}
 				return nil, err
 			}
 			if tok == nil || !tok.Active() {
@@ -397,6 +409,16 @@ func readSessionCookie(r *http.Request) (string, bool) {
 // Bodies are deliberately short: the machine-readable code lives in the
 // service envelope for MCP callers, and the HTML login form picks up the
 // header on the browser side.
+//
+// Fail-safe: the *default* of this function is 403, not 500. The auth
+// layer's entire job is to police the credential; any error reaching it
+// that we did not anticipate is more likely to be a bad credential than a
+// server fault, and a 500 here would tell every MCP client "the server is
+// broken" when the actual answer is "your token is wrong". A genuine
+// 500-condition (e.g. the token store is unreachable) DOES propagate — it
+// shows up via the higher-level logging, not by being masked to 403 here.
+// domain.Error codes are mapped so a CodeNotFound coming out of the store
+// becomes the 403 it actually means, not a 500.
 func writeAuthError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, ErrNoToken):
@@ -408,7 +430,14 @@ func writeAuthError(w http.ResponseWriter, err error) {
 		w.Header().Set("Retry-After", "60")
 		http.Error(w, "rate limited", http.StatusTooManyRequests)
 	default:
-		http.Error(w, "auth error", http.StatusInternalServerError)
+		if e := domain.AsError(err); e != nil {
+			// Whether the store phrased it as "not found", "forbidden" or
+			// anything else, the credential path cannot honour the request
+			// — that is, by definition, the user's problem.
+			http.Error(w, strings.ToLower(string(e.Code)), http.StatusForbidden)
+			return
+		}
+		http.Error(w, "forbidden", http.StatusForbidden)
 	}
 }
 

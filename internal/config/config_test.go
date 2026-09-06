@@ -72,8 +72,8 @@ func TestBuild_FlagsWinOverEnv(t *testing.T) {
 func TestBuild_EnvWinsOverDefaults(t *testing.T) {
 	fs := newFS()
 	env := mapEnv(map[string]string{
-		"KANBAN_ADDR":     "127.0.0.1:9001",
-		"KANBAN_DATA":     "/tmp/kanban",
+		"KANBAN_ADDR":      "127.0.0.1:9001",
+		"KANBAN_DATA":      "/tmp/kanban",
 		"KANBAN_LOG_LEVEL": "debug",
 	})
 	cfg, _, err := Build(Inputs{FS: fs, Env: env, Args: []string{}})
@@ -89,8 +89,8 @@ func TestBuild_BoolAndDurationEnv(t *testing.T) {
 	fs := newFS()
 	env := mapEnv(map[string]string{
 		"KANBAN_INSECURE_HTTP": "true",
-		"KANBAN_DEMO":           "1",
-		"KANBAN_CLAIM_TTL":      "30m",
+		"KANBAN_DEMO":          "1",
+		"KANBAN_CLAIM_TTL":     "30m",
 	})
 	cfg, _, err := Build(Inputs{FS: fs, Env: env, Args: []string{}})
 	if err != nil {

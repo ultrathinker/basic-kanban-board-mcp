@@ -22,12 +22,7 @@ var SampleProjects = []ProjectSummary{
 // server.
 func SampleBoardModel() (BoardModel, []domain.Column, []domain.TaskView) {
 	now := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
-	columns := []domain.Column{
-		{ID: "c-backlog", Name: "Backlog", Kind: domain.KindBacklog},
-		{ID: "c-doing", Name: "Doing", Kind: domain.KindActive, WIPLimit: intPtr(3)},
-		{ID: "c-review", Name: "Review", Kind: domain.KindActive},
-		{ID: "c-done", Name: "Done", Kind: domain.KindDone},
-	}
+	columns := sampleColumns()
 	tasks := sampleTasks(now, columns)
 	project := SampleProjects[0]
 	focus := &FocusCard{Key: "BMB-14", Title: "Fix WAL checkpoint race", Type: domain.TypeBug}
@@ -37,15 +32,121 @@ func SampleBoardModel() (BoardModel, []domain.Column, []domain.TaskView) {
 // SampleBoardModelFor returns a BoardModel for the named project key.
 func SampleBoardModelFor(key string) (BoardModel, []domain.Column, []domain.TaskView) {
 	now := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
-	columns := []domain.Column{
+	columns := sampleColumns()
+	tasks := sampleTasks(now, columns)
+	project := ProjectSummary{Key: key, Name: key}
+	return BuildBoard(project, nil, columns, tasks, true), columns, tasks
+}
+
+// sampleColumns is the board shape every board fixture shares. "Ready" is
+// deliberately empty and deliberately has no WIP limit: a template that only
+// renders against populated, limited columns is a template nobody has
+// tested — the WIP badge crash that shipped in the first cut was exactly
+// that gap.
+func sampleColumns() []domain.Column {
+	return []domain.Column{
 		{ID: "c-backlog", Name: "Backlog", Kind: domain.KindBacklog},
+		{ID: "c-ready", Name: "Ready", Kind: domain.KindActive},
 		{ID: "c-doing", Name: "Doing", Kind: domain.KindActive, WIPLimit: intPtr(3)},
 		{ID: "c-review", Name: "Review", Kind: domain.KindActive},
 		{ID: "c-done", Name: "Done", Kind: domain.KindDone},
 	}
-	tasks := sampleTasks(now, columns)
-	project := ProjectSummary{Key: key, Name: key}
-	return BuildBoard(project, nil, columns, tasks, true), columns, tasks
+}
+
+// SampleEmptyBoardModel is a project that exists but has nothing in it: the
+// first thing a new install shows, and the state most likely to divide by
+// zero or range over nil.
+func SampleEmptyBoardModel() BoardModel {
+	return BuildBoard(
+		ProjectSummary{Key: "NEW", Name: "Fresh project"},
+		nil,
+		sampleColumns(),
+		nil,
+		false,
+	)
+}
+
+// SampleColumnlessBoardModel is the degenerate board: a project with no
+// columns at all. project_upsert can create one, so the template must not
+// render a bare, unexplained void.
+func SampleColumnlessBoardModel() BoardModel {
+	return BoardModel{Project: ProjectSummary{Key: "VOID", Name: "No columns yet"}}
+}
+
+// SampleMinimalDrawerModel is a task with nothing optional set: no body, no
+// acceptance, no subtasks, no notes, no history, no links, no lease, no
+// estimate, no assignee, read-only. Every `{{if}}` in the drawer takes its
+// other branch here.
+func SampleMinimalDrawerModel() DrawerModel {
+	return DrawerModel{
+		Project: ProjectSummary{Key: "BMB", Name: "BeeMemoryBank"},
+		Task: DrawerTask{
+			Key:       "BMB-42",
+			Title:     "Bare task with nothing filled in",
+			Type:      domain.TypeTask,
+			Priority:  domain.PriorityNone,
+			Version:   1,
+			CreatedAt: "2026-09-06T09:00:00Z",
+			CreatedBy: "alex",
+			UpdatedAt: "2026-09-06T09:00:00Z",
+			UpdatedBy: "alex",
+		},
+		CanEdit: false,
+	}
+}
+
+// SampleEmptyActivityModel is the feed before anything has happened.
+func SampleEmptyActivityModel() ActivityModel {
+	return ActivityModel{Project: SampleProjects[0]}
+}
+
+// SampleEmptyOverviewModel is the overview with no projects — what a fresh
+// install renders at "/".
+func SampleEmptyOverviewModel() OverviewModel {
+	return OverviewModel{}
+}
+
+// SampleEmptyAdminModel is /admin with no tokens and no projects.
+func SampleEmptyAdminModel() AdminModel {
+	return AdminModel{ExportURL: "/admin/export", BackupURL: "/admin/backup"}
+}
+
+// SamplePage wraps a model in the Page envelope the layout binds to. Every
+// field the chrome reads is populated: Layout (the project switcher), CSRF
+// and CSRFToken (every state-changing form), CurrentUser (the topbar). A
+// page rendered without those is not the page the server renders, so tests
+// that skip them do not prove anything — which is how a missing Page.Layout
+// and Page.CSRF reached production the first time.
+func SamplePage(title, nav string, model any) Page {
+	return Page{
+		Title:       title,
+		Nav:         nav,
+		Theme:       "light",
+		CSRFToken:   "csrf-fixture-token",
+		CSRF:        "csrf-fixture-token",
+		CurrentUser: "alex",
+		BaseURL:     "http://127.0.0.1:8080",
+		Layout: Layout{
+			Projects:      SampleProjects,
+			CurrentKey:    "BMB",
+			LoggedInActor: "alex",
+		},
+		Model: model,
+	}
+}
+
+// SampleAnonymousPage is the chrome an unauthenticated visitor sees: no
+// current user, no project switcher, no sign-out form.
+func SampleAnonymousPage(title, nav string, model any) Page {
+	return Page{
+		Title:     title,
+		Nav:       nav,
+		Theme:     "light",
+		CSRFToken: "csrf-fixture-token",
+		CSRF:      "csrf-fixture-token",
+		BaseURL:   "http://127.0.0.1:8080",
+		Model:     model,
+	}
 }
 
 // SampleDrawerModel builds a drawer model for BMB-14.
@@ -56,19 +157,19 @@ func SampleDrawerModel() DrawerModel {
 	leaseExp := now.Add(43 * time.Minute)
 	t := domain.TaskView{
 		Task: domain.Task{
-			ID:        "t-14",
-			Key:       "BMB-14",
-			Title:     "Fix WAL checkpoint race",
-			Body:      "## Problem\n\n`wal_checkpoint(TRUNCATE)` can be preempted by another writer, leaving the WAL growing.\n\n## Steps\n\n1. Add a `BEGIN IMMEDIATE` wrapper around `wal_checkpoint`.\n2. Retry up to three times when the SQLITE_BUSY is returned.\n3. Log every retry.\n\n## Acceptance\n\n- [ ] no WAL growth over 24h\n- [ ] no SQLITE_BUSY leaked to callers",
-			Type:             domain.TypeBug,
-			Priority:         domain.PriorityHigh,
-			Tags:             []string{"sync", "storage"},
-			Assignee:         ptrString("alex"),
-			ClaimedBy:        ptrString("claude@rog"),
-			ClaimedAt:        ptrTime(startedAt),
-			ClaimExpiresAt:   ptrTime(leaseExp),
-			ColumnEnteredAt:  colEnter,
-			StartedAt:        ptrTime(startedAt),
+			ID:              "t-14",
+			Key:             "BMB-14",
+			Title:           "Fix WAL checkpoint race",
+			Body:            "## Problem\n\n`wal_checkpoint(TRUNCATE)` can be preempted by another writer, leaving the WAL growing.\n\n## Steps\n\n1. Add a `BEGIN IMMEDIATE` wrapper around `wal_checkpoint`.\n2. Retry up to three times when the SQLITE_BUSY is returned.\n3. Log every retry.\n\n## Acceptance\n\n- [ ] no WAL growth over 24h\n- [ ] no SQLITE_BUSY leaked to callers",
+			Type:            domain.TypeBug,
+			Priority:        domain.PriorityHigh,
+			Tags:            []string{"sync", "storage"},
+			Assignee:        ptrString("alex"),
+			ClaimedBy:       ptrString("claude@rog"),
+			ClaimedAt:       ptrTime(startedAt),
+			ClaimExpiresAt:  ptrTime(leaseExp),
+			ColumnEnteredAt: colEnter,
+			StartedAt:       ptrTime(startedAt),
 			Acceptance: []domain.AcceptanceItem{
 				{Text: "no WAL growth over 24h", Done: true},
 				{Text: "no SQLITE_BUSY leaked to callers", Done: false},
@@ -95,15 +196,17 @@ func SampleDrawerModel() DrawerModel {
 	d := DrawerModel{
 		Project: SampleProjects[0],
 		Task: DrawerTask{
-			Key:      t.Key,
-			Title:    t.Title,
-			Body:     t.Body,
-			Type:     t.Type,
-			Priority: t.Priority,
-			Tags:     t.Tags,
-			Assignee: ptrStringValue(t.Assignee),
-			Version:  t.Version,
-			Lease:    cardLease(t),
+			Key:       t.Key,
+			Title:     t.Title,
+			Body:      t.Body,
+			Type:      t.Type,
+			Priority:  t.Priority,
+			Tags:      t.Tags,
+			Assignee:  ptrStringValue(t.Assignee),
+			Version:   t.Version,
+			Lease:     cardLease(t),
+			Due:       "overdue",
+			Overdue:   true,
 			CreatedAt: now.Add(-72 * time.Hour).Format(time.RFC3339),
 			CreatedBy: "alex",
 			UpdatedAt: now.Add(-12 * time.Minute).Format(time.RFC3339),
@@ -220,7 +323,7 @@ func SampleAgentSetup(baseURL, tokenName string) AgentSetupModel {
 			{
 				ID: "claude", Title: "Claude Code",
 				Description: "Drop into ~/.claude.json or paste into the project .mcp.json.",
-				Config: cfg("claude"), Format: "json",
+				Config:      cfg("claude"), Format: "json",
 			},
 			{
 				ID: "codex", Title: "Codex CLI",
@@ -240,8 +343,8 @@ headers = { "Authorization" = "Bearer ${KANBAN_TOKEN}" }`, baseURL+"/mcp"),
 			{
 				ID: "generic", Title: "Generic (streamable-HTTP)",
 				Description: "Any MCP client that speaks streamable-HTTP over bearer auth.",
-				Config: fmt.Sprintf("POST %s/mcp\nAuthorization: Bearer ${KANBAN_TOKEN}\nContent-Type: application/json", baseURL),
-				Format: "text",
+				Config:      fmt.Sprintf("POST %s/mcp\nAuthorization: Bearer ${KANBAN_TOKEN}\nContent-Type: application/json", baseURL),
+				Format:      "text",
 			},
 		},
 	}
@@ -298,7 +401,7 @@ func cardLease(t domain.TaskView) *LeaseView {
 		remain = time.Until(*t.ClaimExpiresAt)
 		live = remain > 0
 	}
-	lv := &LeaseView{Actor: *t.ClaimedBy, IsMine: live}
+	lv := &LeaseView{Actor: *t.ClaimedBy}
 	if live {
 		lv.State = "live"
 		lv.Remain = formatDuration(remain)
@@ -368,7 +471,7 @@ func sampleTasks(now time.Time, columns []domain.Column) []domain.TaskView {
 		}
 		return tv
 	}
-	return []domain.TaskView{
+	out := []domain.TaskView{
 		mk("BMB-14", "Fix WAL checkpoint race", domain.TypeBug, domain.PriorityHigh, "Doing", ptrFloat(2),
 			[]string{"sync"}, ptrString("alex"), ptrString("claude@rog"), 17*time.Minute, 2*time.Hour,
 			[]string{"BMB-9"}, 1, 3, 7),
@@ -400,4 +503,18 @@ func sampleTasks(now time.Time, columns []domain.Column) []domain.TaskView {
 			nil, nil, nil, 0, 30*24*time.Hour,
 			nil, 0, 0, 9),
 	}
+	// Due dates: one comfortably ahead, one already past. Overdue is one of
+	// the three states PLAN §9 says must not be missed, and it is rendered
+	// as an inverted block rather than a colour — so a fixture has to
+	// contain one or nothing ever exercises that branch.
+	for i := range out {
+		switch out[i].Key {
+		case "BMB-18": // critical AND overdue AND blocked: the loudest card
+			out[i].DueAt = ptrTime(time.Now().UTC().Add(-26 * time.Hour))
+			out[i].BlockedBy = []string{"BMB-9"}
+		case "BMB-17":
+			out[i].DueAt = ptrTime(time.Now().UTC().Add(72 * time.Hour))
+		}
+	}
+	return out
 }

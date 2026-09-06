@@ -63,8 +63,8 @@ func (r *noteRepo) ListByTask(tx Tx, taskID string, limit int, before *time.Time
 	var out []domain.Note
 	for rows.Next() {
 		var (
-			n   domain.Note
-			ts  string
+			n  domain.Note
+			ts string
 		)
 		if err := rows.Scan(&n.ID, &n.TaskID, &n.Author, &n.Body, &ts); err != nil {
 			return nil, fmt.Errorf("store: scan note: %w", err)

@@ -13,8 +13,8 @@ package auth
 
 import (
 	"context"
-	"crypto/subtle"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base32"
 	"encoding/hex"
 	"errors"
@@ -22,6 +22,8 @@ import (
 	"net"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/domain"
 )
@@ -149,6 +151,17 @@ func (m *Manager) VerifyToken(ctx context.Context, secret string) (*domain.Token
 	hash := HashToken(secret)
 	tok, err := m.Tokens.GetByHash(ctx, hash)
 	if err != nil {
+		// A "no such token" from the store is not a server fault; it means
+		// the caller's credential is wrong. The store surfaces this as a
+		// *domain.Error with CodeNotFound (see store.scanToken). Translating
+		// it to (nil, nil) keeps VerifyToken's contract — "no token, no
+		// leak" — uniform regardless of which store the Manager sits on top
+		// of, and lets RequireAuth map it to 403 via ErrForbidden. Any other
+		// error (connection lost, schema drift, …) is a real failure and
+		// must propagate.
+		if e := domain.AsError(err); e != nil && e.Code == domain.CodeNotFound {
+			return nil, nil
+		}
 		return nil, err
 	}
 	if tok == nil {
@@ -230,8 +243,9 @@ func (e *BootstrapError) Error() string { return "auth: bootstrap: " + e.Reason 
 
 // Bootstrap ensures the token table has at least one admin-scope token. When
 // the table is empty it:
-//   1. Uses supplied if non-empty.
-//   2. Generates a new secret and stores the hash, returning the secret.
+//  1. Uses supplied if non-empty.
+//  2. Generates a new secret and stores the hash, returning the secret.
+//
 // The caller is responsible for printing the returned secret exactly once and
 // for warning the operator to rotate it (PLAN §8: "this token is now in your
 // logs — rotate it").
@@ -269,10 +283,16 @@ func (m *Manager) mintAndStore(ctx context.Context, name string, scopes domain.S
 		return &BootstrapError{Reason: fmt.Sprintf("supplied token for %q does not start with %q", name, TokenPrefix)}
 	}
 	t := &domain.Token{
+		// ID is the primary key. The real store rejects empty IDs (see
+		// store.tokenRepo.Create); mintAndStore has no caller-supplied
+		// value because there is no caller here — Bootstrap is the
+		// caller. Generate a UUIDv4 the same way the CLI does in
+		// cmd/kanban/main.go's token commands.
+		ID:        uuid.NewString(),
 		Name:      name,
 		Hash:      HashToken(secret),
 		Scopes:    scopes,
-		CreatedAt: m.Now(),
+		CreatedAt: m.Now().UTC(),
 	}
 	return m.Tokens.Create(ctx, t)
 }
@@ -305,16 +325,27 @@ func (m *Manager) MintAndStore(ctx context.Context, t *domain.Token) (string, er
 // Rotate issues a fresh secret for an existing token and updates the stored
 // hash. The previous secret is invalidated immediately. We do not preserve
 // any per-caller lease state because leases live on tasks, not tokens.
+//
+// Errors: the missing / revoked cases return *domain.Error so CLI callers
+// (and the service layer) can branch on Code without unwrapping a
+// package-private BootstrapError. BootstrapError is reserved for the
+// bootstrap-supplied-secret validation path — anything that crosses the
+// public Manager boundary uses the domain taxonomy.
 func (m *Manager) Rotate(ctx context.Context, name string) (string, error) {
 	tok, err := m.Tokens.GetByName(ctx, name)
 	if err != nil {
+		if e := domain.AsError(err); e != nil && e.Code == domain.CodeNotFound {
+			return "", domain.NotFound("token", name)
+		}
 		return "", err
 	}
 	if tok == nil {
-		return "", &BootstrapError{Reason: fmt.Sprintf("token %q not found", name)}
+		return "", domain.NotFound("token", name)
 	}
 	if !tok.Active() {
-		return "", &BootstrapError{Reason: fmt.Sprintf("token %q is revoked", name)}
+		return "", domain.Forbidden(
+			fmt.Sprintf("token %q is revoked", name),
+			"Create a new token with `kanban token create` instead.")
 	}
 	secret, err := NewSecret()
 	if err != nil {

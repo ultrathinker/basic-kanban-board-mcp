@@ -250,16 +250,16 @@ type TaskPatch struct {
 	TagsAdd    []string
 	TagsRemove []string
 
-	Column string       // move; validated by domain.CheckMove inside the tx
-	Rank   string       // "top" | "bottom"
-	Parent FieldString  // reparent, or clear to make top-level
+	Column string      // move; validated by domain.CheckMove inside the tx
+	Rank   string      // "top" | "bottom"
+	Parent FieldString // reparent, or clear to make top-level
 
 	Acceptance      []domain.AcceptanceItem // replace whole list
 	AcceptanceCheck []int                   // tick by index; requires IfVersion
 	AcceptanceAdd   []string
 
-	Note          string // appended as a Note; does not bump version
-	Focus         *bool  // project focus; bumps PROJECT version
+	Note          string         // appended as a Note; does not bump version
+	Focus         *bool          // project focus; bumps PROJECT version
 	MetadataMerge map[string]any // null value deletes the key
 
 	Force  bool // admin scope only, requires Reason
@@ -352,9 +352,9 @@ type TaskClaimResult struct {
 // ---------------------------------------------------------------------------
 
 type TaskRemoveInput struct {
-	Items            []RemoveItem
-	CascadeSubtasks  bool
-	Restore          bool
+	Items           []RemoveItem
+	CascadeSubtasks bool
+	Restore         bool
 }
 
 type RemoveItem struct {

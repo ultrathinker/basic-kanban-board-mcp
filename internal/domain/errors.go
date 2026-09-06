@@ -102,8 +102,8 @@ func Blocked(key string, blockers []string) *Error {
 
 func WIPExceeded(column string, limit int) *Error {
 	return &Error{
-		Code:    CodeWIPExceeded,
-		Message: fmt.Sprintf("column %q is at its WIP limit of %d", column, limit),
+		Code:        CodeWIPExceeded,
+		Message:     fmt.Sprintf("column %q is at its WIP limit of %d", column, limit),
 		Remediation: "Finish or move something out of that column first, or move with force:true and a reason (admin scope).",
 	}
 }

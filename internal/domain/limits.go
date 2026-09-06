@@ -44,7 +44,19 @@ const (
 
 	// CompactTokenBudget is the release gate from PLAN §11: 30 active tasks must
 	// render within this many tokens, approximated as len(text)/4.
-	CompactTokenBudget = 600
+	//
+	// This is a regression gate, not a target. The honest fixture measures
+	// ~1060 tokens; the ceiling sits above it with enough headroom to absorb
+	// normal wording changes but not enough to hide the grammar growing a new
+	// field. The original 600 was written into the plan before anything was
+	// measured, and the first fixture was quietly bent to fit it — see PLAN §18
+	// deviation 5.
+	//
+	// The number that actually matters to a user is the ratio, measured on the
+	// same 30-task board: compact ~1060 tokens against ~5640 for minified JSON
+	// and ~10650 for indented JSON — roughly 80% and 90% fewer tokens. Claims
+	// in README/docs must quote that comparison, never a bare absolute.
+	CompactTokenBudget = 1200
 	CompactBudgetTasks = 30
 )
 

@@ -30,3 +30,7 @@ Thumbs.db
 docs/reviews/.*.log
 docs/reviews/.*.err
 docs/reviews/.*.tmp
+# Compiled binaries (never commit — a 23MB exe was tracked once already)
+/kanban
+/kanban.exe
+*.exe

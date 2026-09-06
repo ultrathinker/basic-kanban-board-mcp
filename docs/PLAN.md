@@ -87,7 +87,7 @@ mobile · OAuth/SSO · email · multi-tenant SaaS · AI features inside the boar
 | Persona | Scenario | Must be true |
 |---|---|---|
 | **Solo dev, several machines, several agents** (owner) | Claude Code creates 12 tasks; Codex on another box starts the next unblocked one; the human watches on a phone | one remote endpoint, per-agent tokens, `task_next(action:start)`, live UI |
-| **Agent** (primary API user) | session start → `board_get` (≤ ~600 tokens) → `task_next(start)` → work → `task_update{note, if_version}` → done | compact read, one-round-trip start, batch writes, human keys, conflict carries current state |
+| **Agent** (primary API user) | session start → `board_get` (~1 000 tokens for 30 tasks, ~90% less than a JSON dump) → `task_next(start)` → work → `task_update{note, if_version}` → done | compact read, one-round-trip start, batch writes, human keys, conflict carries current state |
 | **Homelab self-hoster** | `docker run` one-liner, Caddy in front, backup = one file | single binary, single port, distroless image, `--trusted-proxies`, `kanban backup` |
 | **Team lead evaluating** | README in 60 s, comparison table, `--demo` | GIF of the activity feed while three agents work — *that* is the money shot |
 
@@ -257,7 +257,7 @@ include?: ["body","acceptance","notes","links","metadata"]   (default none)
 format?: "compact" | "json"         (default "compact"; structuredContent always JSON)
 ```
 **Compact grammar v1** (versioned; `docs/MCP-TOOLS.md` is the contract; a strict regex must
-round-trip every line in a golden test; target **≤ 600 tokens ≈ 2 400 chars for 30 active
+round-trip every line in a golden test; gate **≤ 1 200 tokens for 30 active
 tasks**):
 ```
 compact_version=1
@@ -489,12 +489,15 @@ Windows paths tested (owner is on Windows). `go install …/cmd/kanban@latest` q
 ## 11. Quality — invariant tests instead of coverage gates
 
 Measured targets, reported not promised: binary and image size, idle RSS, cold start,
-`board_get` p95 with 1 000 tasks, **compact ≤ 600 tokens (`len/4`) for 30 active tasks**.
+`board_get` p95 with 1 000 tasks, **compact ≤ 1 200 tokens (`len/4`) for 30 active tasks**
+(measured ~1 058; the gate is a regression guard, and the claim we publish is the ratio
+against JSON — ~81% smaller than minified, ~90% smaller than indented, same board).
 
 Invariant tests that gate release:
 1. 50 goroutines claim one task → exactly one wins; `start` under WIP=1 → exactly one moves.
 2. Every compact line round-trips through the strict grammar regex (golden fixtures).
-3. Token budget fixture (30 active tasks) ≤ 600 tokens.
+3. Token budget fixture (30 active tasks) ≤ 1 200 tokens, and the compact/JSON ratio for
+   that same board stays at or better than 5× minified / 10× indented.
 4. Version conflict returns `current`; lease renew does **not** change `version`; link add does.
 5. Cycle detection incl. parent chains; depth-3 subtask rejected.
 6. WIP / dependency / strict_done enforced inside the transaction (no TOCTOU).
@@ -526,6 +529,11 @@ CI: `go vet`, `staticcheck`, `govulncheck`, `gofmt`, `-race`. Conventional commi
 - Listings: official MCP registry (schemas inline), awesome-mcp-servers PR, Smithery/mcp.so,
   GitHub topics; Show HN, r/selfhosted, r/ClaudeAI. `--demo` seeds idempotent, visibly labeled
   sample data.
+- **Before the first push to a public remote, squash history into a single initial commit.**
+  A 23 MB `kanban.exe` was committed by an agent in `bd0bc1c` (wave 1). It is untracked and
+  gitignored now, but it still sits in the object store, and a "minimal, single-binary" tool
+  whose clone drags a stale binary contradicts its own pitch. There is no remote yet, so this
+  costs nothing today and cannot be undone cheaply after publication.
 
 ---
 
@@ -646,4 +654,9 @@ this plan"). Newest last. Empty at v2.
 | 2 | 2026-09-06 | §4, §9 | Hand-written `app.css` + htmx + SortableJS, "no build step at all" | **Tailwind CSS v4.3.3 via the standalone CLI binary** (no Node/npm) + htmx v4.0.0 + **Alpine.js v3.17.1** + SortableJS v1.15.7; generated CSS is committed and embedded | Owner's instruction: use the most popular technologies that produce a good-looking UI quickly. Tailwind is that, and its standalone binary keeps the no-npm rule intact | One build step in CI (download one binary, run it) — **not** an npm toolchain. Contributors still need no Node. Single Go binary unchanged. Generated CSS committed so `go build` alone always works |
 | 3 | 2026-09-06 | §4 | Go 1.25 | **Go 1.27.0** | Latest stable at implementation time | None |
 | 4 | 2026-09-06 | §5, §10 | `TokenRepo` had no way to change a token's secret | Added `TokenRepo.UpdateHash(tx, id, hash)` (+ `auth.TokenLookup.UpdateHash`, adapter, SQLite impl) | `kanban token rotate` was implemented as `Create` on an existing token, which violates the `tokens_name_uniq` / `tokens_hash_uniq` indexes — rotation would have failed in production, not just in tests | Frozen-contract change made by the coordinator; rotation now updates the row in place |
-| 5 | 2026-09-06 | §6.1, §11 | compact `board_get` ≤ **600 tokens** for 30 active tasks | Honest fixture measures **1062 tokens** (4251 bytes, ~142 B/task); the gate test fails on purpose rather than being tuned to pass | The first fixture was bent to fit (short titles, most fields omitted). Rewritten with realistic titles, estimates, assignees, tags, leases and blockers | **Open decision.** Options: tighten the grammar (~10% available from separators), make more fields opt-in, or restate the claim as a measured comparison against a competitor's JSON dump for the same board. Not yet resolved |
+| 5 | 2026-09-06 | §6.1, §11 | compact `board_get` ≤ **600 tokens** for 30 active tasks | Gate raised to **1200 tokens**; the product claim becomes a measured ratio, not an absolute | The 600 was written into the plan before anything was measured, and the first fixture was bent to fit it (short titles, most fields omitted). Rewritten honestly, the same 30-task board measures **~1058 tokens / 4235 bytes**. Measured against the identical board: minified JSON **~5640 tokens (5.3×)**, indented JSON **~10650 tokens (10.1×)** — i.e. compact saves **~81%** and **~90%** respectively. Competing MCP servers overwhelmingly return `MarshalIndent` output, so 10× is the realistic comparison. Shrinking the grammar to reach 600 would drop information for the sake of a round number | **Resolved.** `domain.CompactTokenBudget = 1200` as a regression gate with headroom for wording but not for a new field. README/docs quote the ratio ("~90% fewer tokens than a JSON board dump"), never a bare absolute. Approved by the maintainer 2026-09-06 |
+| 6 | 2026-09-06 | §9 | Live board updates via the htmx `sse` extension on `/events`, targeted fragment swaps | Native `EventSource` in `app.js`; SSE carries a *change signal*, the page re-fetches its own URL and swaps `#board` / `#activity-feed` | The vendored htmx is **v4.0.0, which has no extension mechanism at all** — no `defineExtension`, no `hx-ext`. The vendored `sse.min.js` is the v2.2.2 extension written against htmx 2's API; it threw a TypeError on every page load and `hx-ext="sse"` was inert. Fixing targets and payloads would not have helped, because the extension could never run | HTML still comes from one template set, so there is no second renderer to drift. Debounced 300 ms, suppressed during drag, `resync` reloads, bounded reconnect |
+| 7 | 2026-09-06 | §4, §9 | htmx + Alpine.js are part of the front-end stack | Both still vendored but **no longer loaded**; `sortable.min.js` and `app.js` are the only scripts | htmx lost its only consumer when the inert `hx-ext` markup went (deviation 6). Alpine cannot run here at all: its standard build uses `new Function()`, which `script-src 'self'` refuses — and PLAN §8 mandates that CSP. Its single use (a copy button) is now plain JS | Restoring either is one `<script>` tag; the reasons are recorded in `web/static/vendor/LICENSES.md`. The page now has no framework at all, which suits "the basic one" |
+| 8 | 2026-09-06 | §9 | Priority stripes, type badges, estimate pills | **Monochrome only.** Priority = rule width + title weight + an inverted label for the top two; type = the word in a fixed-width slot at a constant x; must-not-miss state = one vocabulary, the inverted block (paper on ink). No accent hue anywhere | Visual direction set by the maintainer 2026-09-06: the UI must read as "the basic one" on sight. Colour was never needed to *distinguish* type, only to make it fast — a fixed slot restores the speed. On a white page a solid black block is the loudest mark available, louder than a red chip, and it survives greyscale printing, colour blindness and bad screens | Enforced mechanically: `TestStylesheetIsGreyscale` rejects any hex where r≠g≠b plus hsl/lch/color-mix/gradients; `TestStylesheetHasNoElevation` rejects box-shadow and non-zero radius; `TestThemeTokensAreReachable` rejects `@theme` and dangling `var()` |
+| 9 | 2026-09-06 | §8 | CSRF exempt for any request carrying a non-session credential | Exemption narrowed to request **headers** only (`Authorization`, `X-API-Key`) | The first implementation also exempted a `?ticket=` query parameter, reasoning that SSE tickets are only issued to a proven token holder. It never validated the ticket — only its presence — and a query string is entirely attacker-chosen, so any page could POST to `/admin/tokens?ticket=x` with the victim session cookie and skip CSRF outright. Found by an independent review; the coordinator had approved the original design and missed it | Only headers qualify, because a cross-origin form can aim a request anywhere but cannot set a header on it. Tickets are consumed on `GET /events`, which never reaches `verifyCSRF`, so the exemption bought nothing. Pinned by `TestCSRF_QueryParamCannotBypass` |
+| 10 | 2026-09-06 | §9 | `GET /admin/backup`, `GET /admin/export`, `GET /p/{key}/export` | All three are **POST** with a CSRF token | An anchor cannot carry a CSRF token by construction, and `/admin/backup` is a GET that writes a file to disk — a state change behind a safe method | Templates submit them as forms; each handler verifies CSRF after the auth check |

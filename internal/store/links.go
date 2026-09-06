@@ -61,7 +61,10 @@ func (r *linkRepo) Add(tx Tx, l *domain.Link) error {
 				"Drop the link or pick a different target.")
 		}
 		if IsForeignKeyViolation(err) {
-			return domain.NotFound("task", "blocker or blocked")
+			return missingRef(
+				fmt.Sprintf("link references a task that does not exist: blocker %s or blocked %s",
+					l.BlockerID, l.BlockedID),
+				"Check both task keys with task_get, then retry task_link.")
 		}
 		return fmt.Errorf("store: insert link: %w", err)
 	}
@@ -122,11 +125,11 @@ func (r *linkRepo) Blocks(tx Tx, taskID string) ([]string, error) {
 
 // WouldCycle reports whether adding the edge blocker -> blocked would
 // close a cycle. It checks three cases:
-//   1. self-link (caught at the schema CHECK, repeated here for a clear
-//      domain error path)
-//   2. parent/child chain — a task may not block anything in its own
-//      subtree, and may not be blocked by anything in its own ancestry
-//   3. transitive blocks-graph cycles
+//  1. self-link (caught at the schema CHECK, repeated here for a clear
+//     domain error path)
+//  2. parent/child chain — a task may not block anything in its own
+//     subtree, and may not be blocked by anything in its own ancestry
+//  3. transitive blocks-graph cycles
 //
 // The returned path is the full closed cycle starting and ending at
 // blocker, e.g. ["BMB-3","BMB-7","BMB-3"] for a 2-step cycle, so the

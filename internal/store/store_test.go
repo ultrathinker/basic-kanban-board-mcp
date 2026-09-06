@@ -489,9 +489,9 @@ func TestNextTaskSeq_ConcurrentAllocDiffers(t *testing.T) {
 
 	const N = 30
 	var (
-		mu    sync.Mutex
-		seen  = make(map[int]bool)
-		wg    sync.WaitGroup
+		mu      sync.Mutex
+		seen    = make(map[int]bool)
+		wg      sync.WaitGroup
 		barrier = make(chan struct{})
 	)
 	for i := 0; i < N; i++ {

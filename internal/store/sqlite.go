@@ -99,11 +99,11 @@ func Open(ctx context.Context, cfg Config) (Store, error) {
 	}
 
 	s := &sqlStore{
-		path:           cfg.Path,
-		writer:         writer,
-		reader:         reader,
-		migration:      0,
-		repos:          make(map[reposKey]any),
+		path:      cfg.Path,
+		writer:    writer,
+		reader:    reader,
+		migration: 0,
+		repos:     make(map[reposKey]any),
 	}
 	apply := true
 	if cfg.ApplyMigrations != nil {

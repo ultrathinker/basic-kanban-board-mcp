@@ -16,10 +16,10 @@ import (
 // A 100-item batch counts as one AllowToken call: the rate limit lives in the
 // HTTP middleware, not the service layer.
 type RateLimiter struct {
-	mu       sync.Mutex
-	buckets  map[string]*bucket
-	maxKeys  int
-	now      func() time.Time
+	mu      sync.Mutex
+	buckets map[string]*bucket
+	maxKeys int
+	now     func() time.Time
 }
 
 // bucket is a sliding-window counter over the last minute. We use a coarse

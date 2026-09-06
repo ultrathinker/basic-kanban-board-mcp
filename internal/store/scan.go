@@ -458,6 +458,20 @@ func wrapf(e *domain.Error, format string, args ...any) *domain.Error {
 	return &clone
 }
 
+// missingRef builds a CodeNotFound error for a foreign-key violation, where
+// the row that is missing is one of two the statement referenced and SQLite
+// does not say which. domain.NotFound takes a single identifier, so these
+// call sites used to pass a fabricated noun ("parent or column") in the key
+// slot — a message that names nothing the caller can look up. msg is a whole
+// sentence instead, and it must name every id involved.
+func missingRef(msg, remediation string) *domain.Error {
+	return &domain.Error{
+		Code:        domain.CodeNotFound,
+		Message:     msg,
+		Remediation: remediation,
+	}
+}
+
 // idempotencyMismatch builds a fresh CodeIdempotencyMismatch error without
 // touching the shared ErrIdempotencyMismatch sentinel.
 func idempotencyMismatch(format string, args ...any) *domain.Error {

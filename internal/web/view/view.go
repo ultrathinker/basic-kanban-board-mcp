@@ -23,14 +23,21 @@ import (
 // `Title`, `Nav` (which topbar item is active), `Theme` and one of the
 // concrete Model values.
 type Page struct {
-	Title       string
-	Subtitle    string
-	Nav         string // "board" | "activity" | "overview" | "admin" | "login" | "agent-setup"
-	Theme       string // "light" | "dark"
-	CSRFToken   string
+	Title     string
+	Subtitle  string
+	Nav       string // "board" | "activity" | "overview" | "admin" | "login" | "agent-setup"
+	Theme     string // "light" | "dark"
+	CSRFToken string
+	// CSRF mirrors CSRFToken. The board/column/card fragment templates read
+	// $.CSRF (set alongside CSRFToken by every page handler).
+	CSRF        string
 	CurrentUser string // actor = token name, never accepted as a parameter
 	BaseURL     string
 	Flash       string // optional one-line message rendered above the body
+
+	// Layout feeds the shared chrome (project switcher, active project). The
+	// topbar template reads .Layout directly, so every page render must set it.
+	Layout Layout
 
 	// Model is the page-specific payload. Concrete types live in this package.
 	Model any
@@ -52,9 +59,9 @@ type ProjectSummary struct {
 
 // BoardModel is what the board page renders.
 type BoardModel struct {
-	Project  ProjectSummary
-	Focus    *FocusCard      // nil if no focus is set
-	Columns  []ColumnView
+	Project   ProjectSummary
+	Focus     *FocusCard // nil if no focus is set
+	Columns   []ColumnView
 	DoneTotal int
 	DoneShown int
 	HideDone  bool
@@ -78,25 +85,41 @@ type ColumnView struct {
 }
 
 // TaskCard is the card rendered for one task on the board.
+//
+// The presentation fields (PriorityCSS, PriorityBadge, ColumnName, Overdue)
+// are computed here rather than in the template on purpose: the board is
+// monochrome, so priority is carried by a rule width, a title weight and a
+// printed word instead of a hue, and those decisions are rules worth
+// testing in Go rather than branching inside HTML.
 type TaskCard struct {
 	Key         string
 	Title       string
 	Type        domain.Type
 	Priority    domain.Priority
 	PriorityCSS string // prio-none | prio-low | ...
-	Estimate    *EstimateView
-	Tags        []string
-	Assignee    string // empty when unassigned
-	Lease       *LeaseView
-	BlockedBy   []string // open blockers (sorted, keys)
-	Blocked     bool
-	SubDone     int
-	SubTotal    int
-	Version     int
-	HasBody     bool // whether to show "edit" hint; full body lives in drawer
-	Age         string
-	Updated     time.Time
-	URL         string // /t/{KEY}
+	// PriorityBadge is the word printed next to the type, and is empty for
+	// everything below "high": with no colour available, only the top two
+	// levels earn a label, so the label still means something when it
+	// appears. "critical" is rendered as an inverted block, "high" as caps.
+	PriorityBadge string
+	Estimate      *EstimateView
+	Tags          []string
+	Assignee      string // empty when unassigned
+	Lease         *LeaseView
+	BlockedBy     []string // open blockers (sorted, keys)
+	Blocked       bool
+	SubDone       int
+	SubTotal      int
+	Version       int
+	HasBody       bool // whether to show "edit" hint; full body lives in drawer
+	Age           string
+	Due           string // pre-formatted relative due ("in 3d", "overdue")
+	Overdue       bool
+	// ColumnName is the card's current column, so the keyboard move menu
+	// can omit it (offering "move to the column it is already in" is noise).
+	ColumnName string
+	Updated    time.Time
+	URL        string // /t/{KEY}
 }
 
 // EstimateView is the pill: "2h", "30m".
@@ -107,41 +130,50 @@ type EstimateView struct {
 }
 
 // LeaseView is the badge: remaining time + actor + state.
+//
+// There is no "is this lease mine" flag: this package never sees the calling
+// actor, so the only honest answer would be a guess. The actor's name is
+// printed instead — with several agents on one board, whose lease it is
+// matters more than whether it is yours.
 type LeaseView struct {
-	Actor    string
-	State    string // "live" | "expired" | "mine"
-	Remain   string // "43m", "2h", "expired"
-	IsMine   bool
+	Actor  string
+	State  string // "live" | "expired"
+	Remain string // "43m", "2h", "expired"
 }
 
 // DrawerModel is the /t/{KEY} page (rendered inside the topbar layout).
 type DrawerModel struct {
-	Project   ProjectSummary
-	Task      DrawerTask
-	Blockers  []TaskRef
-	Blocking  []TaskRef
-	Subtasks  []TaskRef
-	Notes     []DrawerNote
-	History   []DrawerHistoryEntry
-	Acceptance []AcceptanceView
+	Project      ProjectSummary
+	Task         DrawerTask
+	Blockers     []TaskRef
+	Blocking     []TaskRef
+	Subtasks     []TaskRef
+	Notes        []DrawerNote
+	History      []DrawerHistoryEntry
+	Acceptance   []AcceptanceView
 	MarkdownHTML template.HTML
-	CanEdit   bool
-	IsAdmin   bool
+	CanEdit      bool
+	IsAdmin      bool
 }
 
 // DrawerTask is the full task payload the drawer binds to.
 type DrawerTask struct {
-	Key       string
-	Title     string
-	Body      string
-	Type      domain.Type
-	Priority  domain.Priority
-	Estimate  *EstimateView
-	Tags      []string
-	Assignee  string
-	Version   int
-	Lease     *LeaseView
-	Due       string
+	Key      string
+	Title    string
+	Body     string
+	Type     domain.Type
+	Priority domain.Priority
+	Estimate *EstimateView
+	Tags     []string
+	Assignee string
+	Version  int
+	Lease    *LeaseView
+	Due      string
+	// Overdue drives the inverted "overdue" block. The board card computes
+	// this itself in viewCard; on the drawer the page handler owns the
+	// mapping, so it stays false until that handler sets it — which renders
+	// as "no mark", never as a wrong one.
+	Overdue   bool
 	CreatedAt string
 	CreatedBy string
 	UpdatedAt string
@@ -150,10 +182,10 @@ type DrawerTask struct {
 
 // TaskRef is a small reference used in lists (blockers, subtasks, ...).
 type TaskRef struct {
-	Key    string
-	Title  string
-	Type   domain.Type
-	URL    string
+	Key   string
+	Title string
+	Type  domain.Type
+	URL   string
 }
 
 // DrawerNote is one row in the notes timeline.
@@ -189,14 +221,14 @@ type ActivityModel struct {
 
 // ActivityEvent is one row in the feed.
 type ActivityEvent struct {
-	ID       int64
-	Actor    string
-	Verb     string // human-friendly: "started", "moved to Review"
-	Target   string // task key
+	ID          int64
+	Actor       string
+	Verb        string // human-friendly: "started", "moved to Review"
+	Target      string // task key
 	TargetTitle string
-	RelTime  string
-	TS       time.Time
-	IsNew    bool // whether to apply enter animation
+	RelTime     string
+	TS          time.Time
+	IsNew       bool // whether to apply enter animation
 }
 
 // OverviewModel is the / page — all projects, counts, focus per project.
@@ -219,15 +251,15 @@ type OverviewProject struct {
 
 // OverviewTotals is the roll-up shown above the project grid.
 type OverviewTotals struct {
-	Projects   int
-	Active     int
-	Backlog    int
-	Done       int
+	Projects int
+	Active   int
+	Backlog  int
+	Done     int
 }
 
 // LoginModel is /login.
 type LoginModel struct {
-	Error   string
+	Error    string
 	Redirect string
 }
 
@@ -258,20 +290,20 @@ type AgentSnippet struct {
 
 // AdminModel is /admin.
 type AdminModel struct {
-	Tokens       []AdminToken
-	Projects     []AdminProject
-	ExportURL    string
-	BackupURL    string
+	Tokens    []AdminToken
+	Projects  []AdminProject
+	ExportURL string
+	BackupURL string
 }
 
 // AdminToken is one row in the tokens table.
 type AdminToken struct {
-	Name      string
-	Scope     string
+	Name        string
+	Scope       string
 	ProjectKeys string
-	CreatedAt string
-	LastUsed  string
-	Active    bool
+	CreatedAt   string
+	LastUsed    string
+	Active      bool
 }
 
 // AdminProject is one row in the projects table.
@@ -296,17 +328,17 @@ func BuildBoard(project ProjectSummary, focus *FocusCard, columns []domain.Colum
 		byCol[t.ColumnID] = append(byCol[t.ColumnID], t)
 	}
 	out := BoardModel{
-		Project: project,
-		Focus:   focus,
+		Project:  project,
+		Focus:    focus,
 		HideDone: hideDone,
 	}
 	for _, c := range columns {
 		tasks := byCol[c.ID]
 		cv := ColumnView{
-			Name:  c.Name,
-			Kind:  c.Kind,
-			WIP:   c.WIPLimit,
-			Count: len(tasks),
+			Name:   c.Name,
+			Kind:   c.Kind,
+			WIP:    c.WIPLimit,
+			Count:  len(tasks),
 			Hidden: hideDone && c.Kind == domain.KindDone,
 		}
 		for _, t := range tasks {
@@ -322,23 +354,30 @@ func BuildBoard(project ProjectSummary, focus *FocusCard, columns []domain.Colum
 
 // viewCard turns a TaskView into the card value the board template binds to.
 func viewCard(projectKey string, t domain.TaskView) TaskCard {
+	now := time.Now().UTC()
 	c := TaskCard{
-		Key:         t.Key,
-		Title:       t.Title,
-		Type:        t.Type,
-		Priority:    t.Priority,
-		PriorityCSS: priorityCSS(t.Priority),
-		Tags:        t.Tags,
-		Assignee:    assignOf(t.Assignee),
-		BlockedBy:   t.BlockedBy,
-		Blocked:     len(t.BlockedBy) > 0,
-		SubDone:     t.SubDone,
-		SubTotal:    t.SubTotal,
-		Version:     t.Version,
-		HasBody:     t.Body != "",
-		Age:         formatAge(t.ColumnEnteredAt, time.Now().UTC()),
-		Updated:     t.UpdatedAt,
-		URL:         "/t/" + url.PathEscape(t.Key),
+		Key:           t.Key,
+		Title:         t.Title,
+		Type:          t.Type,
+		Priority:      t.Priority,
+		PriorityCSS:   priorityCSS(t.Priority),
+		PriorityBadge: priorityBadge(t.Priority),
+		Tags:          t.Tags,
+		Assignee:      assignOf(t.Assignee),
+		BlockedBy:     t.BlockedBy,
+		Blocked:       len(t.BlockedBy) > 0,
+		SubDone:       t.SubDone,
+		SubTotal:      t.SubTotal,
+		Version:       t.Version,
+		HasBody:       t.Body != "",
+		Age:           formatAge(t.ColumnEnteredAt, now),
+		ColumnName:    t.ColumnName,
+		Updated:       t.UpdatedAt,
+		URL:           "/t/" + url.PathEscape(t.Key),
+	}
+	if t.DueAt != nil {
+		c.Due = relTimeFuture(*t.DueAt, now)
+		c.Overdue = t.DueAt.Before(now)
 	}
 	if t.Estimate != nil {
 		c.Estimate = &EstimateView{N: *t.Estimate, Unit: "h", Label: formatEstimate(*t.Estimate, "h")}
@@ -356,7 +395,7 @@ func viewCard(projectKey string, t domain.TaskView) TaskCard {
 			remain = time.Until(*t.ClaimExpiresAt)
 			live = remain > 0
 		}
-		lv := &LeaseView{Actor: *t.ClaimedBy, IsMine: live}
+		lv := &LeaseView{Actor: *t.ClaimedBy}
 		if live {
 			lv.State = "live"
 			lv.Remain = formatDuration(remain)
@@ -399,6 +438,30 @@ func priorityLabel(p domain.Priority) string {
 	return p.String()
 }
 
+// priorityBadge returns the word printed on the card for a priority, or ""
+// when the priority is quiet enough to be carried by the left rule alone.
+//
+// Only "high" and "critical" print a word. That is the whole point: in a
+// greyscale interface a label costs attention, so labelling all five levels
+// would leave five equally shouty cards and no hierarchy. Two labels, two
+// distinct treatments (caps for high, an inverted block for critical), and
+// silence for the rest.
+func priorityBadge(p domain.Priority) string {
+	switch p {
+	case domain.PriorityHigh, domain.PriorityCritical:
+		return p.String()
+	default:
+		return ""
+	}
+}
+
+// wipFull reports whether a column is at or over its WIP limit — the state
+// the board must not let you miss, rendered as an inverted count block. A
+// nil limit means "no limit", which is never full.
+func wipFull(count int, limit *int) bool {
+	return limit != nil && count >= *limit
+}
+
 // formatEstimate renders an estimate as e.g. "2h", "30m" (no unit conversion
 // here — the project unit is assumed, the compact format is the same as the
 // compact grammar: integer + unit).
@@ -425,14 +488,19 @@ func formatDuration(d time.Duration) string {
 	return fmt.Sprintf("%dd", int(d/(24*time.Hour)))
 }
 
-// formatAge renders the time since column entry the same way.
+// formatAge renders the time since column entry.
+//
+// It does NOT reuse formatDuration's sub-minute case: that one collapses to
+// "expired", which is right for a lease that crossed zero and nonsense for a
+// card that was moved ten seconds ago — the board used to label the freshest
+// card on it "age expired".
 func formatAge(t time.Time, now time.Time) string {
 	if t.IsZero() {
 		return ""
 	}
 	d := now.Sub(t)
-	if d < 0 {
-		d = 0
+	if d < time.Minute {
+		return "<1m"
 	}
 	return formatDuration(d)
 }

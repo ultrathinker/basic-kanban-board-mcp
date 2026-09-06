@@ -327,21 +327,19 @@ func tokenCreate(args []string) error {
 	}
 	defer storeHandle.Close()
 
-	secret, err := auth.NewSecret()
-	if err != nil {
-		return err
-	}
+	// Token creation goes through auth.Manager.MintAndStore so the secret
+	// generation, hashing, timestamp and storage shape are owned by exactly
+	// one place — three copies (auth, CLI, web/admin) is the same duplication
+	// problem round 1 flagged for startup refusals.
+	mgr := tokenManager(storeHandle)
 	tok := &domain.Token{
 		ID:          uuid.NewString(),
 		Name:        *name,
-		Hash:        auth.HashToken(secret),
 		Scopes:      domain.Scopes{domain.Scope(*scope)},
 		ProjectKeys: projects,
-		CreatedAt:   time.Now().UTC(),
 	}
-	if err := storeHandle.Write(ctx, func(tx store.Tx) error {
-		return storeHandle.Tokens().Create(tx, tok)
-	}); err != nil {
+	secret, err := mgr.MintAndStore(ctx, tok)
+	if err != nil {
 		return err
 	}
 	fmt.Fprintf(os.Stdout, "Token: %s\nSecret: %s\nScope: %s\n", tok.Name, secret, *scope)
@@ -424,53 +422,18 @@ func tokenRotate(name string, args []string) error {
 		return err
 	}
 	defer storeHandle.Close()
-	// The store's TokenRepo has Create but no Update; rotation is implemented
-	// at this layer by revoking the old row and creating a fresh one with the
-	// same name but a new hash. The unique-name index allows this because the
-	// revoked row still occupies the slot, so the simplest correct flow is:
-	// read, generate secret, hash it, write back via direct SQL through Tx.
-	// We avoid touching store internals by calling Revoke + a follow-up
-	// Create that uses a fresh UUID — this leaves the old hash unrecoverable
-	// while keeping the audit trail (revoked + new row).
-	secret, err := auth.NewSecret()
+	// Rotation must keep the same token row — same id, same name, same scopes,
+	// same created_at — and replace only the hash. The store's UNIQUE indexes
+	// on name and hash make revoke-then-create a constraint violation; the
+	// only correct primitive is TokenRepo.UpdateHash, which auth.Manager.Rotate
+	// already wraps. We go through it so the CLI does not reimplement rotation
+	// (three copies of this code is the duplication problem round 1 already
+	// flagged for startup refusals).
+	mgr := tokenManager(storeHandle)
+	secret, err := mgr.Rotate(ctx, name)
 	if err != nil {
 		return err
 	}
-	var created *domain.Token
-	err = storeHandle.Write(ctx, func(tx store.Tx) error {
-		old, err := storeHandle.Tokens().GetByName(tx, name)
-		if err != nil {
-			return err
-		}
-		if old == nil {
-			return domain.NotFound("token", name)
-		}
-		if old.RevokedAt != nil {
-			return domain.Forbidden("token is revoked; create a new one", "Run `kanban token create` instead.")
-		}
-		newTok := &domain.Token{
-			ID:          uuid.NewString(),
-			Name:        old.Name,
-			Hash:        auth.HashToken(secret),
-			Scopes:      old.Scopes,
-			ProjectKeys: old.ProjectKeys,
-			CreatedAt:   time.Now().UTC(),
-		}
-		// Same name → unique-name index will reject a second INSERT. Use the
-		// direct SQL path through the store Tx to keep this in one place.
-		if err := storeHandle.Tokens().Revoke(tx, old.Name); err != nil {
-			return err
-		}
-		if err := storeHandle.Tokens().Create(tx, newTok); err != nil {
-			return err
-		}
-		created = newTok
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-	_ = created
 	fmt.Fprintf(os.Stdout, "Rotated %s\nNew secret: %s\n", name, secret)
 	fmt.Fprintln(os.Stdout, "The previous secret is now invalid. The new secret is shown only this once.")
 	return nil
@@ -594,7 +557,8 @@ At the start of every session:
   6. When you finish, set the column to Done via task_update.
 
 Tools you should know:
-  - board_get          read the board (compact default; ~600 tokens for 30 tasks)
+  - board_get          read the board (compact default; ~1,000 tokens for 30 tasks,
+                       ~90% smaller than the same board as indented JSON)
   - task_next          peek | claim | start
   - task_get           fetch by key, expand body/acceptance/notes
   - task_create        batch create, all-or-nothing

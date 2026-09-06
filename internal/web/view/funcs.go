@@ -25,27 +25,56 @@ import (
 func Funcs() template.FuncMap {
 	return template.FuncMap{
 		// formatting
-		"priorityClass": priorityCSS,
-		"priorityName":  priorityLabel,
-		"duration":      formatDuration,
-		"age":           formatAge,
-		"relTime":       relTime,
-		"relTimeFuture": relTimeFuture,
+		"priorityClass":  priorityCSS,
+		"priorityName":   priorityLabel,
+		"priorityBadge":  priorityBadge,
+		"wipFull":        wipFull,
+		"duration":       formatDuration,
+		"age":            formatAge,
+		"relTime":        relTime,
+		"relTimeFuture":  relTimeFuture,
 		"formatEstimate": func(n float64, unit string) string { return formatEstimate(n, unit) },
-		"truncate":      truncate,
-		"joinTags":      joinTags,
-		"commaKeys":     commaKeys,
-		"upper":         strings.ToUpper,
+		"truncate":       truncate,
+		"joinTags":       joinTags,
+		"commaKeys":      commaKeys,
+		"upper":          strings.ToUpper,
+		"dict": func(values ...any) (map[string]any, error) {
+			if len(values)%2 != 0 {
+				return nil, fmt.Errorf("dict: odd number of arguments")
+			}
+			m := make(map[string]any, len(values)/2)
+			for i := 0; i < len(values); i += 2 {
+				k, ok := values[i].(string)
+				if !ok {
+					return nil, fmt.Errorf("dict: key %v is not a string", values[i])
+				}
+				m[k] = values[i+1]
+			}
+			return m, nil
+		},
+		"int": func(v any) int {
+			switch n := v.(type) {
+			case int:
+				return n
+			case *int:
+				if n == nil {
+					return 0
+				}
+				return *n
+			default:
+				return 0
+			}
+		},
 
 		// navigation / URLs
-		"boardURL":   boardURL,
-		"taskURL":    taskURL,
-		"drawerURL":  taskURL, // drawer is the task page
+		"boardURL":    boardURL,
+		"taskURL":     taskURL,
+		"drawerURL":   taskURL, // drawer is the task page
 		"activityURL": activityURL,
 		"overviewURL": func() string { return "/" },
 		"adminURL":    func() string { return "/admin" },
 		"agentURL":    func() string { return "/agent-setup" },
-		"loginURL":    func(r string) string {
+		"loginURL": func(r string) string {
 			if r == "" {
 				return "/login"
 			}
@@ -57,12 +86,18 @@ func Funcs() template.FuncMap {
 		"markdownSummary": markdownSummary,
 
 		// collections
-		"hasAny": hasAny,
-		"add":    func(a, b int) int { return a + b },
-		"sub":    func(a, b int) int { return a - b },
-		"div":    func(a, b int) int { if b == 0 { return 0 }; return a / b },
-		"mul":    func(a, b int) int { return a * b },
-		"now":    func() time.Time { return time.Now().UTC() },
+		"hasAny":      hasAny,
+		"moveTargets": moveTargets,
+		"add":         func(a, b int) int { return a + b },
+		"sub":         func(a, b int) int { return a - b },
+		"div": func(a, b int) int {
+			if b == 0 {
+				return 0
+			}
+			return a / b
+		},
+		"mul": func(a, b int) int { return a * b },
+		"now": func() time.Time { return time.Now().UTC() },
 	}
 }
 
@@ -82,6 +117,29 @@ func activityURL(key string) string {
 		return "/"
 	}
 	return "/p/" + url.PathEscape(strings.ToUpper(key)) + "/activity"
+}
+
+// moveTargets returns the column names a card may be moved to: every column
+// except the one it is already in. It takes `any` because the board template
+// passes the value straight through a dict, where a missing key arrives as
+// nil — a card fragment rendered without the column list must degrade to "no
+// move menu", not blow up mid-render.
+func moveTargets(columns any, current string) []string {
+	cols, ok := columns.([]ColumnView)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(cols))
+	for _, c := range cols {
+		if c.Name == current {
+			continue
+		}
+		out = append(out, c.Name)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // hasAny reports whether v contains any element (for empty-collection tests).

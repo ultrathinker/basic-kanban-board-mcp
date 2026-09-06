@@ -477,9 +477,227 @@ func TestFuncs(t *testing.T) {
 	if f == nil {
 		t.Fatal("Funcs() = nil")
 	}
-	for _, name := range []string{"priorityClass", "priorityName", "duration", "age", "relTime", "markdown", "truncate", "joinTags"} {
+	// Every helper the templates call must be here. `dict` and `int` are on
+	// this list because their absence is not a compile error and not a parse
+	// error in isolation — it takes down template parsing for the whole
+	// engine, which is how the UI once shipped unable to render any page.
+	for _, name := range []string{
+		"priorityClass", "priorityName", "priorityBadge", "wipFull",
+		"duration", "age", "relTime", "relTimeFuture", "markdown", "truncate",
+		"joinTags", "commaKeys", "dict", "int", "hasAny", "moveTargets",
+		"boardURL", "taskURL", "drawerURL", "activityURL", "loginURL",
+	} {
 		if _, ok := f[name]; !ok {
 			t.Errorf("Funcs missing %q", name)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Monochrome presentation rules. Priority and type are no longer carried by
+// colour, so the mapping from a domain value to what the page prints is a
+// rule worth pinning down.
+// ---------------------------------------------------------------------------
+
+func TestPriorityBadgeOnlyLabelsTheTopTwo(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		p    domain.Priority
+		want string
+	}{
+		{domain.PriorityNone, ""},
+		{domain.PriorityLow, ""},
+		{domain.PriorityMedium, ""},
+		{domain.PriorityHigh, "high"},
+		{domain.PriorityCritical, "critical"},
+	}
+	for _, tc := range cases {
+		if got := priorityBadge(tc.p); got != tc.want {
+			t.Errorf("priorityBadge(%v) = %q, want %q", tc.p, got, tc.want)
+		}
+	}
+}
+
+func TestWIPFull(t *testing.T) {
+	t.Parallel()
+	three := 3
+	cases := []struct {
+		name  string
+		count int
+		limit *int
+		want  bool
+	}{
+		{"no limit is never full", 99, nil, false},
+		{"under the limit", 2, &three, false},
+		{"at the limit", 3, &three, true},
+		{"over the limit", 4, &three, true},
+		{"empty limited column", 0, &three, false},
+	}
+	for _, tc := range cases {
+		if got := wipFull(tc.count, tc.limit); got != tc.want {
+			t.Errorf("%s: wipFull(%d, %v) = %v, want %v", tc.name, tc.count, tc.limit, got, tc.want)
+		}
+	}
+}
+
+func TestMoveTargetsOmitsTheCurrentColumn(t *testing.T) {
+	t.Parallel()
+	cols := []ColumnView{{Name: "Backlog"}, {Name: "Doing"}, {Name: "Done"}}
+	got := moveTargets(cols, "Doing")
+	want := []string{"Backlog", "Done"}
+	if len(got) != len(want) {
+		t.Fatalf("moveTargets = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("moveTargets = %v, want %v", got, want)
+		}
+	}
+	// A card fragment rendered without the column list must degrade to "no
+	// menu" rather than panic mid-render.
+	if got := moveTargets(nil, "Doing"); got != nil {
+		t.Errorf("moveTargets(nil) = %v, want nil", got)
+	}
+	if got := moveTargets("not a column slice", "Doing"); got != nil {
+		t.Errorf("moveTargets(string) = %v, want nil", got)
+	}
+	// A single-column board has nowhere to move to.
+	if got := moveTargets([]ColumnView{{Name: "Doing"}}, "Doing"); got != nil {
+		t.Errorf("moveTargets(only current) = %v, want nil", got)
+	}
+}
+
+func TestViewCardCarriesColumnVersionAndDueState(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	past := now.Add(-2 * time.Hour)
+	future := now.Add(48 * time.Hour)
+
+	overdue := domain.TaskView{ProjectKey: "BMB", ColumnName: "Doing", ColumnKind: domain.KindActive}
+	overdue.Key = "BMB-1"
+	overdue.Priority = domain.PriorityCritical
+	overdue.Version = 12
+	overdue.DueAt = &past
+
+	ahead := overdue
+	ahead.Key = "BMB-2"
+	ahead.DueAt = &future
+	ahead.Priority = domain.PriorityLow
+
+	got := viewCard("BMB", overdue)
+	if !got.Overdue {
+		t.Error("a due date in the past must set Overdue")
+	}
+	if got.Due != "overdue" {
+		t.Errorf("Due = %q, want %q", got.Due, "overdue")
+	}
+	if got.PriorityBadge != "critical" {
+		t.Errorf("PriorityBadge = %q", got.PriorityBadge)
+	}
+	// data-version drives if_version on a drag; without it the move handler
+	// has to read the version itself, which reopens a TOCTOU window.
+	if got.Version != 12 {
+		t.Errorf("Version = %d, want 12", got.Version)
+	}
+	// ColumnName drives the move menu's "not where it already is" filter.
+	if got.ColumnName != "Doing" {
+		t.Errorf("ColumnName = %q, want %q", got.ColumnName, "Doing")
+	}
+
+	got = viewCard("BMB", ahead)
+	if got.Overdue {
+		t.Error("a due date in the future must not set Overdue")
+	}
+	if got.Due == "" || got.Due == "overdue" {
+		t.Errorf("Due = %q, want a relative future string", got.Due)
+	}
+	if got.PriorityBadge != "" {
+		t.Errorf("PriorityBadge = %q, want empty for low priority", got.PriorityBadge)
+	}
+
+	// No due date at all: no string, no mark.
+	none := overdue
+	none.DueAt = nil
+	if c := viewCard("BMB", none); c.Due != "" || c.Overdue {
+		t.Errorf("no due date: Due = %q, Overdue = %v", c.Due, c.Overdue)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Fixtures have to be rich enough to walk the branches that broke. If these
+// shrink, the template render suite quietly stops proving anything.
+// ---------------------------------------------------------------------------
+
+func TestSampleBoardHasAFullWIPColumnAndAnEmptyOne(t *testing.T) {
+	t.Parallel()
+	m, _, _ := SampleBoardModel()
+	var sawFullWIP, sawEmpty, sawBlocked, sawLease bool
+	for _, c := range m.Columns {
+		if wipFull(c.Count, c.WIP) {
+			sawFullWIP = true
+		}
+		if len(c.Tasks) == 0 {
+			sawEmpty = true
+		}
+		for _, task := range c.Tasks {
+			if task.Blocked {
+				sawBlocked = true
+			}
+			if task.Lease != nil {
+				sawLease = true
+			}
+		}
+	}
+	if !sawFullWIP {
+		t.Error("fixture has no column at its WIP limit — the badge that crashed is untested")
+	}
+	if !sawEmpty {
+		t.Error("fixture has no empty column")
+	}
+	if !sawBlocked {
+		t.Error("fixture has no blocked task")
+	}
+	if !sawLease {
+		t.Error("fixture has no leased task")
+	}
+	if m.Focus == nil {
+		t.Error("fixture has no focused task")
+	}
+}
+
+func TestSampleMinimalDrawerModelIsActuallyEmpty(t *testing.T) {
+	t.Parallel()
+	d := SampleMinimalDrawerModel()
+	if len(d.Acceptance) != 0 || len(d.Subtasks) != 0 || len(d.Notes) != 0 || len(d.History) != 0 {
+		t.Error("the minimal drawer fixture must have no optional sections")
+	}
+	if d.Task.Lease != nil || d.Task.Estimate != nil {
+		t.Error("the minimal drawer fixture must have no lease and no estimate")
+	}
+	if d.MarkdownHTML != "" {
+		t.Error("the minimal drawer fixture must have no rendered body")
+	}
+	if d.CanEdit {
+		t.Error("the minimal drawer fixture must be read-only so the disabled branch is exercised")
+	}
+}
+
+func TestSamplePageFillsTheChrome(t *testing.T) {
+	t.Parallel()
+	p := SamplePage("Title", "board", nil)
+	// Page.Layout and Page.CSRF were both missing from the original view
+	// model, and every template that reads them failed. A fixture that does
+	// not populate them cannot prove they still exist.
+	if p.CSRF == "" || p.CSRFToken == "" {
+		t.Error("SamplePage must carry a CSRF token")
+	}
+	if len(p.Layout.Projects) == 0 {
+		t.Error("SamplePage must populate Layout.Projects for the switcher")
+	}
+	if p.CurrentUser == "" {
+		t.Error("SamplePage must set CurrentUser so the signed-in chrome renders")
+	}
+	if a := SampleAnonymousPage("Sign in", "login", nil); a.CurrentUser != "" || len(a.Layout.Projects) != 0 {
+		t.Error("SampleAnonymousPage must have no user and no project switcher")
 	}
 }

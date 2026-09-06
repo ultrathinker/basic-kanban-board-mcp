@@ -26,9 +26,55 @@ permissions:
   contents: read
 
 jobs:
+  embed-mirror:
+    name: embed mirrors in sync
+    runs-on: ubuntu-latest
+    # Fail fast on drift before the heavier build job wastes 8 minutes of
+    # CI. The check is platform-agnostic (diff + find); ubuntu only because
+    # GNU make + diff are already there and the rest of CI uses the same
+    # runner. This is the early warning that catches the drift described
+    # in docs/tasks/E-review-2.md.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install make
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends make
+
+      - name: Check embed mirrors
+        run: |
+          set -euo pipefail
+          # Cross-platform diff: works on Linux + macOS. We deliberately avoid
+          # `make check-embed` here so the check runs even when make is
+          # missing (the job installs make too, but a script-only check
+          # doubles as documentation of what "in sync" means).
+          status=0
+          for pair in "web/static internal/web/static" "web/templates internal/web/templates"; do
+              set -- $pair
+              src=$1; dst=$2
+              if [ ! -d "$src" ] || [ ! -d "$dst" ]; then
+                  echo "::error::$src or $dst missing"
+                  status=1
+                  continue
+              fi
+              # diff -r --brief prints "Files X and Y differ" and "Only in ..."
+              # for any divergence. The templates.go file legitimately lives
+              # only in the embedded tree (it is the embed directive itself)
+              # so we filter it out.
+              out=$(diff -r --brief "$src" "$dst" 2>&1 \
+                  | grep -v "^Only in $dst: templates\.go$" || true)
+              if [ -n "$out" ]; then
+                  echo "::error::$dst is out of sync with $src"
+                  echo "$out"
+                  echo "Run 'make sync-embed' and commit the result."
+                  status=1
+              fi
+          done
+          exit $status
+
   build:
     name: build/test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    needs: embed-mirror
     strategy:
       fail-fast: false
       matrix:
@@ -92,6 +138,7 @@ jobs:
   css-freshness:
     name: web/static/app.css up to date
     runs-on: ubuntu-latest
+    needs: embed-mirror
     steps:
       - uses: actions/checkout@v4
 

@@ -1,34 +1,38 @@
-{{/* page entry points — each template opens the layout head, emits its body,
-   and closes the layout foot. */}}
+{{/* Page entry points — each template opens the layout head, emits its body,
+   and closes the layout foot.
+
+   Two rules that are easy to break here:
+     1. Every state-changing form carries `csrf_token` (auth.CSRFFieldName).
+        A form without it is refused with 403 by the handler, silently as far
+        as the user can tell.
+     2. No inline event handlers. The CSP is `script-src 'self'`, so an
+        onchange="" attribute never runs. Wire it from app.js instead. */}}
 
 {{define "page-board"}}
 {{template "layout-head" .}}
 {{with .Model}}
-<section class="row wrap" aria-label="Project actions">
-  <h1>{{.Project.Name}} <span class="text-muted mono text-xs">{{.Project.Key}}</span></h1>
+<header class="page-head">
+  <h1>{{.Project.Name}}</h1>
+  <span class="key mono">{{.Project.Key}}</span>
   <span class="spacer"></span>
+  {{template "live-status" .}}
   {{if .HideDone}}<a class="btn btn-sm" href="?hide_done=0">Show done</a>
   {{else}}<a class="btn btn-sm" href="?hide_done=1">Hide done</a>{{end}}
   <a class="btn btn-sm" href="{{activityURL .Project.Key}}">Activity</a>
-  <a class="btn btn-sm" href="/p/{{.Project.Key}}/export">Export</a>
-</section>
+  <form method="post" action="/p/{{.Project.Key}}/export" class="inline-form">
+    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+    <button type="submit" class="btn btn-sm">Export</button>
+  </form>
+</header>
 
 {{template "focus-banner" (dict "Focus" .Focus)}}
 
-<div class="row wrap text-muted text-xs" aria-label="Live updates status">
-  <span>Live updates:</span>
-  <span sse-connect="/events/p/{{.Project.Key}}"
-        sse-swap="board-update"
-        aria-live="polite"
-        hx-ext="sse">connecting…</span>
-</div>
+<div data-live-source="/events/p/{{.Project.Key}}" data-live-region="#board" hidden></div>
 
-<div class="board" role="list" aria-label="Board columns">
-  {{range .Columns}}{{template "column" (dict "Column" . "CSRF" $.CSRF)}}{{end}}
-</div>
+{{template "board-columns" (dict "Columns" .Columns "CSRF" $.CSRF)}}
 
 <noscript>
-  <p class="text-muted">Drag-and-drop, live updates, and move menus need JavaScript. The board still renders.</p>
+  <p class="text-subtle">Drag-and-drop, live updates and the move menu need JavaScript. The board itself renders without it.</p>
 </noscript>
 {{end}}
 {{template "layout-foot" .}}
@@ -37,45 +41,50 @@
 {{define "page-drawer"}}
 {{template "layout-head" .}}
 {{with .Model}}
-<a href="{{boardURL .Project.Key}}" class="btn btn-sm">← back to {{.Project.Key}}</a>
-<article style="margin-top:0.75rem">
-  <header class="row wrap">
-    <span class="key mono text-xs text-muted">{{.Task.Key}}</span>
-    <span class="badge-type type-{{.Task.Type}}">{{.Task.Type}}</span>
-    <span class="priority-stripe {{priorityClass .Task.Priority}}" title="priority: {{priorityName .Task.Priority}}"></span>
-    <span class="text-xs text-muted">v{{.Task.Version}}</span>
+<p><a href="{{boardURL .Project.Key}}">← {{.Project.Key}} board</a></p>
+<article>
+  <div class="task-head">
+    <span class="key mono">{{.Task.Key}}</span>
+    <span class="caps text-subtle">{{.Task.Type}}</span>
+    {{- if eq (priorityBadge .Task.Priority) "critical"}}
+      <span class="mark">critical</span>
+    {{- else if priorityBadge .Task.Priority}}
+      <span class="prio-label">{{priorityBadge .Task.Priority}}</span>
+    {{- end}}
+    <span class="mono text-subtle">v{{.Task.Version}}</span>
     {{if .Task.Lease}}
       <span class="lease {{.Task.Lease.State}}" title="Lease held by {{.Task.Lease.Actor}}">
-        <span class="dot"></span>{{.Task.Lease.Actor}} · {{.Task.Lease.Remain}}
+        <span class="dot" aria-hidden="true"></span>{{.Task.Lease.Actor}} {{.Task.Lease.Remain}}
       </span>
     {{end}}
     <span class="spacer"></span>
-    {{if .CanEdit}}<button class="btn btn-sm" data-edit-task="{{.Task.Key}}">Edit</button>{{end}}
-  </header>
-  <h1>{{.Task.Title}}</h1>
+    {{if .CanEdit}}<button type="button" class="btn btn-sm" data-edit-task="{{.Task.Key}}">Edit</button>{{end}}
+  </div>
+  <h1 class="task-title">{{.Task.Title}}</h1>
   <div class="meta-row">
-    {{if .Task.Estimate}}<span class="estimate-pill">est {{.Task.Estimate.Label}}</span>{{end}}
+    {{if .Task.Estimate}}<span class="estimate mono">est {{.Task.Estimate.Label}}</span>{{end}}
     {{if .Task.Assignee}}<span class="assignee">@{{.Task.Assignee}}</span>{{end}}
     {{range .Task.Tags}}<span class="tag">#{{.}}</span>{{end}}
-    {{if .Task.Due}}<span class="text-muted">due {{.Task.Due}}</span>{{end}}
-    <span class="text-muted">created {{.Task.CreatedAt}} by {{.Task.CreatedBy}}</span>
-    <span class="text-muted">updated {{.Task.UpdatedAt}} by {{.Task.UpdatedBy}}</span>
+    {{if .Task.Overdue}}<span class="mark">overdue</span>{{else if .Task.Due}}<span>due {{.Task.Due}}</span>{{end}}
+    <span class="spacer"></span>
+    <span class="mono text-subtle">created {{.Task.CreatedAt}} · {{.Task.CreatedBy}}</span>
+    <span class="mono text-subtle">updated {{.Task.UpdatedAt}} · {{.Task.UpdatedBy}}</span>
   </div>
 
-  <section class="body" aria-label="Task body">
-    {{.MarkdownHTML}}
+  <section class="body section" aria-label="Task body">
+    {{if .MarkdownHTML}}{{.MarkdownHTML}}{{else}}<p class="text-subtle">No description.</p>{{end}}
   </section>
 
   {{if hasAny .Acceptance}}
-  <section aria-label="Acceptance criteria">
-    <h2 style="margin-top:1.25rem;font-size:0.95rem">Acceptance</h2>
-    <ul class="acceptance">
+  <section class="section" aria-label="Acceptance criteria">
+    <h2>Acceptance</h2>
+    <ul class="list-plain acceptance">
       {{range .Acceptance}}
       <li>
-        <input type="checkbox" id="acc-{{$.Model.Task.Key}}-{{.Index}}" {{if .Done}}checked{{end}} {{if not $.CanEdit}}disabled{{end}}>
-        <label for="acc-{{$.Model.Task.Key}}-{{.Index}}">
-          {{if .Done}}<s>{{.Text}}</s>{{else}}{{.Text}}{{end}}
-        </label>
+        <input type="checkbox" id="acc-{{$.Model.Task.Key}}-{{.Index}}"
+               data-acceptance data-task-key="{{$.Model.Task.Key}}" data-index="{{.Index}}"
+               {{if .Done}}checked{{end}} {{if not $.Model.CanEdit}}disabled{{end}}>
+        <label for="acc-{{$.Model.Task.Key}}-{{.Index}}" {{if .Done}}class="done"{{end}}>{{.Text}}</label>
       </li>
       {{end}}
     </ul>
@@ -83,45 +92,45 @@
   {{end}}
 
   {{if hasAny .Blockers}}
-  <section aria-label="Blockers">
-    <h2 style="margin-top:1.25rem;font-size:0.95rem">Blocked by</h2>
-    <ul class="acceptance">
+  <section class="section" aria-label="Blockers">
+    <h2>Blocked by</h2>
+    <ul class="list-plain">
       {{range .Blockers}}
-      <li><a class="mono" href="{{.URL}}">{{.Key}}</a> — {{.Title}} <span class="badge-type type-{{.Type}}">{{.Type}}</span></li>
+      <li><a class="mono" href="{{.URL}}">{{.Key}}</a> <span class="caps text-subtle">{{.Type}}</span> {{.Title}}</li>
       {{end}}
     </ul>
   </section>
   {{end}}
 
   {{if hasAny .Blocking}}
-  <section aria-label="Blocking">
-    <h2 style="margin-top:1.25rem;font-size:0.95rem">Blocking</h2>
-    <ul class="acceptance">
+  <section class="section" aria-label="Blocking">
+    <h2>Blocking</h2>
+    <ul class="list-plain">
       {{range .Blocking}}
-      <li><a class="mono" href="{{.URL}}">{{.Key}}</a> — {{.Title}} <span class="badge-type type-{{.Type}}">{{.Type}}</span></li>
+      <li><a class="mono" href="{{.URL}}">{{.Key}}</a> <span class="caps text-subtle">{{.Type}}</span> {{.Title}}</li>
       {{end}}
     </ul>
   </section>
   {{end}}
 
   {{if hasAny .Subtasks}}
-  <section aria-label="Subtasks">
-    <h2 style="margin-top:1.25rem;font-size:0.95rem">Subtasks</h2>
-    <ul class="acceptance">
+  <section class="section" aria-label="Subtasks">
+    <h2>Subtasks</h2>
+    <ul class="list-plain">
       {{range .Subtasks}}
-      <li><a class="mono" href="{{.URL}}">{{.Key}}</a> — {{.Title}} <span class="badge-type type-{{.Type}}">{{.Type}}</span></li>
+      <li><a class="mono" href="{{.URL}}">{{.Key}}</a> <span class="caps text-subtle">{{.Type}}</span> {{.Title}}</li>
       {{end}}
     </ul>
   </section>
   {{end}}
 
   {{if hasAny .Notes}}
-  <section aria-label="Notes">
-    <h2 style="margin-top:1.25rem;font-size:0.95rem">Notes ({{len .Notes}})</h2>
+  <section class="section" aria-label="Notes">
+    <h2>Notes <span class="text-subtle tabular">{{len .Notes}}</span></h2>
     <div class="notes-timeline">
       {{range .Notes}}
       <div class="note">
-        <div class="who"><strong>{{.Author}}</strong> · {{.RelTime}} ({{.CreatedAt}})</div>
+        <div class="who"><strong>{{.Author}}</strong>{{if .RelTime}} · {{.RelTime}}{{end}}{{if .CreatedAt}} · <span class="mono">{{.CreatedAt}}</span>{{end}}</div>
         <div>{{.Body}}</div>
       </div>
       {{end}}
@@ -130,11 +139,11 @@
   {{end}}
 
   {{if hasAny .History}}
-  <section aria-label="History">
-    <h2 style="margin-top:1.25rem;font-size:0.95rem">History</h2>
+  <section class="section" aria-label="History">
+    <h2>History</h2>
     <div class="history">
       {{range .History}}
-      <div class="row"><span class="actor">{{.Actor}}</span> <span class="verb">{{.Verb}}</span> {{if .Detail}}<span>{{.Detail}}</span>{{end}} <span class="ts">{{.RelTime}}</span></div>
+      <div class="row"><span class="actor">{{.Actor}}</span> <span>{{.Verb}}</span> {{if .Detail}}<span class="text-subtle">{{.Detail}}</span>{{end}} <span class="ts">{{.RelTime}}</span></div>
       {{end}}
     </div>
   </section>
@@ -147,22 +156,17 @@
 {{define "page-activity"}}
 {{template "layout-head" .}}
 {{with .Model}}
-<header class="row wrap">
-  <h1>Activity · {{.Project.Name}}</h1>
+<header class="page-head">
+  <h1>Activity</h1>
+  <span class="key mono">{{.Project.Key}}</span>
   <span class="spacer"></span>
-  <a class="btn btn-sm" href="{{boardURL .Project.Key}}">← back to board</a>
+  {{template "live-status" .}}
+  <a class="btn btn-sm" href="{{boardURL .Project.Key}}">← board</a>
 </header>
 
-<div sse-connect="/events/p/{{.Project.Key}}" sse-swap="activity-feed" hx-ext="sse" class="text-xs text-muted"
-     style="margin-bottom:0.5rem">connecting live feed…</div>
+<div data-live-source="/events/p/{{.Project.Key}}" data-live-region="#activity-feed" hidden></div>
 
-<section class="activity" aria-live="polite" aria-label="Activity feed" id="activity-feed">
-  {{if hasAny .Events}}
-    {{range .Events}}{{template "activity-row" (dict "Event" .)}}{{end}}
-  {{else}}
-    <p class="text-muted">No activity yet.</p>
-  {{end}}
-</section>
+{{template "activity-list" (dict "Events" .Events)}}
 {{end}}
 {{template "layout-foot" .}}
 {{end}}
@@ -170,36 +174,33 @@
 {{define "page-overview"}}
 {{template "layout-head" .}}
 {{with .Model}}
-<header class="row wrap">
+<header class="page-head">
   <h1>Overview</h1>
   <span class="spacer"></span>
-  <span class="text-muted text-xs">{{.Total.Projects}} projects · {{.Total.Active}} active · {{.Total.Backlog}} backlog · {{.Total.Done}} done</span>
+  <span class="text-subtle text-xs tabular">{{.Total.Projects}} projects · {{.Total.Active}} active · {{.Total.Backlog}} backlog · {{.Total.Done}} done</span>
 </header>
 
-<section style="display:grid;grid-template-columns:repeat(auto-fit,minmax(18rem,1fr));gap:0.75rem;margin-top:0.75rem" aria-label="Projects">
+{{if hasAny .Projects}}
+<div class="project-grid">
   {{range .Projects}}
-  <article class="column" style="cursor:pointer">
-    <header class="column-head">
-      <span class="name">{{.Name}} <span class="text-muted mono text-xs">{{.Key}}</span></span>
-      <span class="wip tabular">{{.Active}}</span>
-    </header>
-    <p class="text-muted text-xs">{{.Description}}</p>
+  <article class="project-cell">
+    <h2><a href="{{.URL}}">{{.Name}}</a></h2>
+    <p class="mono text-subtle text-xs">{{.Key}}</p>
+    {{if .Description}}<p class="text-muted text-xs">{{.Description}}</p>{{end}}
     {{if .Focus}}
-    <div class="focus-banner" style="margin:0.25rem 0">
-      <span class="label">Now</span>
-      <a class="key mono" href="{{drawerURL .Focus}}">{{.Focus}}</a>
-    </div>
+    <p class="text-xs"><span class="mark">now</span> <a class="mono" href="{{drawerURL .Focus}}">{{.Focus}}</a></p>
     {{end}}
-    <div class="row text-xs text-muted" aria-label="Counts">
-      <span>backlog <strong class="tabular">{{.Backlog}}</strong></span>
-      <span>active <strong class="tabular">{{.Active}}</strong></span>
-      <span>done <strong class="tabular">{{.Done}}</strong></span>
-      <span class="spacer"></span>
-      <a class="btn btn-sm" href="{{.URL}}">Open</a>
+    <div class="counts">
+      <span>backlog <strong>{{.Backlog}}</strong></span>
+      <span>active <strong>{{.Active}}</strong></span>
+      <span>done <strong>{{.Done}}</strong></span>
     </div>
   </article>
   {{end}}
-</section>
+</div>
+{{else}}
+<p class="empty">No projects yet. An agent creates the first one with <code>project_upsert</code>, or run <code>kanban serve --demo</code> for sample data.</p>
+{{end}}
 {{end}}
 {{template "layout-foot" .}}
 {{end}}
@@ -207,9 +208,9 @@
 {{define "page-login"}}
 {{template "layout-head" .}}
 {{with .Model}}
-<section style="max-width:30rem;margin:3rem auto">
+<section style="margin-top:3rem">
   <h1>Sign in</h1>
-  <p class="text-muted">Paste an API token. Your session cookie lasts 7 days idle, 30 absolute.</p>
+  <p class="text-muted">Paste an API token. The session lasts 7 days idle, 30 days absolute.</p>
   {{if .Error}}<p class="error" role="alert">{{.Error}}</p>{{end}}
   <form method="post" action="/login" class="form" novalidate>
     <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
@@ -217,14 +218,14 @@
     <div class="field">
       <label for="token">Token</label>
       <input id="token" name="token" type="password" autocomplete="off" required minlength="16" autofocus>
-      <small class="text-subtle">kbn_… — copied from the token list or the startup banner.</small>
+      <small class="text-subtle">kbn_… — from the token list or the startup banner.</small>
     </div>
     <div class="row">
       <button class="btn btn-primary" type="submit">Sign in</button>
       <a class="btn btn-ghost" href="/">Cancel</a>
     </div>
   </form>
-  <p class="text-xs text-subtle">Don't have a token yet? Ask an admin, or see <a href="/agent-setup">agent setup</a> if this is your first run.</p>
+  <p class="text-xs text-subtle">No token yet? Ask an admin, or see <a href="/agent-setup">agent setup</a> if this is the first run.</p>
 </section>
 {{end}}
 {{template "layout-foot" .}}
@@ -233,21 +234,23 @@
 {{define "page-firstrun"}}
 {{template "layout-head" .}}
 {{with .Model}}
-<section style="max-width:48rem;margin:3rem auto">
-  <h1>Welcome — first run</h1>
-  <p>Your admin token was generated once and printed to the server logs. Rotate it the moment you have copied it:</p>
+<section style="margin-top:3rem">
+  <h1>First run</h1>
+  <p>The admin token was generated once and printed to the server log. Copy it now, then rotate it:</p>
   <pre class="code" aria-label="Bootstrap token">{{.Token}}</pre>
   <div class="row">
-    <button class="btn" data-copy="{{.Token}}">Copy token</button>
+    <button type="button" class="btn" data-copy="{{.Token}}">Copy token</button>
     <a class="btn btn-primary" href="{{loginURL "/"}}">Sign in</a>
   </div>
-  <h2 style="margin-top:1.5rem">Next steps</h2>
-  <ol>
-    <li>Sign in (paste the token above).</li>
-    <li>Create a project and a write token for each agent.</li>
-    <li>Distribute <a href="/agent-setup">/agent-setup</a> snippets — they include the <code>Authorization</code> header.</li>
-  </ol>
-  <p class="text-xs text-subtle">Base URL: <code class="mono">{{.BaseURL}}</code></p>
+  <div class="section">
+    <h2>Next</h2>
+    <ol>
+      <li>Sign in with the token above.</li>
+      <li>Create a project and one write token per agent.</li>
+      <li>Hand out the <a href="/agent-setup">/agent-setup</a> snippets — they include the <code>Authorization</code> header.</li>
+    </ol>
+    <p class="text-xs text-subtle">Base URL: <code class="mono">{{.BaseURL}}</code></p>
+  </div>
 </section>
 {{end}}
 {{template "layout-foot" .}}
@@ -256,34 +259,30 @@
 {{define "page-agent-setup"}}
 {{template "layout-head" .}}
 {{with .Model}}
-<header class="row wrap">
+<header class="page-head">
   <h1>Agent setup</h1>
   <span class="spacer"></span>
-  <span class="text-xs text-muted">Base URL: <code class="mono">{{.BaseURL}}</code></span>
+  <span class="text-xs text-subtle">Base URL <code class="mono">{{.BaseURL}}</code></span>
 </header>
-<p class="text-muted">Each block is paste-ready for a specific client. The <code>Authorization</code> header is the part everyone fumbles — it is in every block below.</p>
+<p class="text-muted">Each block is paste-ready for one client. The <code>Authorization</code> header is the part everyone fumbles — it is in every block.</p>
 
-<section class="snippet-grid" aria-label="Per-client setup snippets">
+<div class="snippet-grid">
   {{range .Snippets}}
-  <article class="snippet column" x-data="{ copied: false }">
+  <article class="snippet">
     <h3>{{.Title}}</h3>
     <p class="desc">{{.Description}}</p>
     <pre class="code" aria-label="{{.Title}} config">{{.Config}}</pre>
     <div class="row">
-      <button class="btn btn-sm" data-copy="{{.Config}}"
-              x-on:click="copied = true; setTimeout(() => copied = false, 1200)">
-        <span x-show="!copied">Copy</span>
-        <span x-show="copied" x-cloak>Copied</span>
-      </button>
-      <span class="text-xs text-subtle">format: {{.Format}}</span>
+      <button type="button" class="btn btn-sm" data-copy="{{.Config}}">Copy</button>
+      <span class="text-xs text-subtle">{{.Format}}</span>
     </div>
   </article>
   {{end}}
-</section>
+</div>
 
-<section style="margin-top:1.5rem">
+<section class="section">
   <h2>Verify</h2>
-  <p>Once your client is configured, the simplest smoke test is a <code>board_get</code> via the MCP endpoint:</p>
+  <p>Once the client is configured, the smoke test is one <code>board_get</code> over the MCP endpoint:</p>
   <pre class="code">curl -sS -H "Authorization: Bearer $KANBAN_TOKEN" \
   -H "Content-Type: application/json" \
   -H "Accept: application/json, text/event-stream" \
@@ -297,69 +296,96 @@
 {{define "page-admin"}}
 {{template "layout-head" .}}
 {{with .Model}}
-<header class="row wrap">
+<header class="page-head">
   <h1>Admin</h1>
   <span class="spacer"></span>
-  <a class="btn" href="/admin/export">Export JSON</a>
-  <a class="btn btn-primary" href="/admin/backup">Run backup</a>
+  {{/* Both of these do privileged work — a backup writes a file — so they
+       are POST forms with a CSRF token, never bare <a href> links. */}}
+  <form method="post" action="{{.ExportURL}}" class="inline-form">
+    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+    <button type="submit" class="btn btn-sm">Export JSON</button>
+  </form>
+  <form method="post" action="{{.BackupURL}}" class="inline-form">
+    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+    <button type="submit" class="btn btn-sm btn-primary">Run backup</button>
+  </form>
 </header>
 
-<section style="margin-top:1rem" aria-label="Tokens">
-  <h2 style="font-size:0.95rem">Tokens</h2>
+<section class="section" aria-label="Tokens">
+  <h2>Tokens</h2>
   <table class="table">
     <thead>
-      <tr><th>Name</th><th>Scope</th><th>Projects</th><th>Created</th><th>Last used</th><th>State</th><th></th></tr>
+      <tr><th>Name</th><th>Scope</th><th>Projects</th><th>Created</th><th>Last used</th><th>State</th><th><span class="sr-only">Actions</span></th></tr>
     </thead>
     <tbody>
       {{range .Tokens}}
-      <tr>
+      <tr class="{{if not .Active}}is-inactive{{end}}">
         <td class="mono">{{.Name}}</td>
         <td>{{.Scope}}</td>
         <td class="mono">{{.ProjectKeys}}</td>
-        <td>{{.CreatedAt}}</td>
-        <td>{{.LastUsed}}</td>
-        <td>{{if .Active}}<span class="text-success">active</span>{{else}}<span class="text-subtle">revoked</span>{{end}}</td>
-        <td class="row">
+        <td class="mono">{{.CreatedAt}}</td>
+        <td class="mono">{{.LastUsed}}</td>
+        <td>{{if .Active}}<span class="caps">active</span>{{else}}<span class="caps text-subtle">revoked</span>{{end}}</td>
+        <td class="actions">
           {{if .Active}}
-          <form method="post" action="/admin/tokens/{{.Name}}/rotate"><button class="btn btn-sm">Rotate</button></form>
-          <form method="post" action="/admin/tokens/{{.Name}}/revoke"><button class="btn btn-sm btn-danger">Revoke</button></form>
+          <form method="post" action="/admin/tokens/{{.Name}}/rotate" class="inline-form">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <button type="submit" class="btn btn-sm">Rotate</button>
+          </form>
+          <form method="post" action="/admin/tokens/{{.Name}}/revoke" class="inline-form">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <button type="submit" class="btn btn-sm btn-danger">Revoke</button>
+          </form>
           {{end}}
         </td>
       </tr>
+      {{else}}
+      <tr><td colspan="7" class="text-subtle">No tokens.</td></tr>
       {{end}}
-      <tr>
-        <form method="post" action="/admin/tokens">
-          <td><input name="name" required minlength="2" placeholder="claude@rog"></td>
-          <td>
-            <select name="scope">
-              <option value="read">read</option>
-              <option value="write" selected>write</option>
-              <option value="admin">admin</option>
-            </select>
-          </td>
-          <td><input name="projects" placeholder="BMB,KAN or empty"></td>
-          <td colspan="3" class="text-subtle">new</td>
-          <td><button class="btn btn-primary">Create</button></td>
-        </form>
-      </tr>
     </tbody>
   </table>
+
+  {{/* The create form lives outside the table on purpose: a <form> is not a
+       permitted child of <tr>, and browsers hoist it out of the table,
+       which silently detached every input from the form. */}}
+  <form method="post" action="/admin/tokens" class="row wrap" style="margin-top:1rem;align-items:flex-end;gap:0.75rem">
+    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+    <div class="field">
+      <label for="tok-name">Name</label>
+      <input id="tok-name" name="name" required minlength="2" placeholder="claude@rog">
+    </div>
+    <div class="field">
+      <label for="tok-scope">Scope</label>
+      <select id="tok-scope" name="scope">
+        <option value="read">read</option>
+        <option value="write" selected>write</option>
+        <option value="admin">admin</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="tok-projects">Projects</label>
+      <input id="tok-projects" name="projects" placeholder="BMB,KAN — or empty for all">
+    </div>
+    <button type="submit" class="btn btn-primary">Create token</button>
+  </form>
 </section>
 
-<section style="margin-top:1.5rem" aria-label="Projects">
-  <h2 style="font-size:0.95rem">Projects</h2>
+<section class="section" aria-label="Projects">
+  <h2>Projects</h2>
   <table class="table">
-    <thead><tr><th>Key</th><th>Name</th><th>Columns</th><th>Active tasks</th><th>Version</th><th></th></tr></thead>
+    <thead><tr><th>Key</th><th>Name</th><th>Columns</th><th>Active</th><th>Version</th><th><span class="sr-only">Actions</span></th></tr></thead>
     <tbody>
       {{range .Projects}}
       <tr>
         <td class="mono">{{.Key}}</td>
         <td>{{.Name}}</td>
-        <td class="tabular">{{.Columns}}</td>
-        <td class="tabular">{{.ActiveTasks}}</td>
-        <td class="tabular">v{{.Version}}</td>
+        <td class="num">{{.Columns}}</td>
+        <td class="num">{{.ActiveTasks}}</td>
+        <td class="mono num">v{{.Version}}</td>
         <td><a class="btn btn-sm" href="/admin/projects/{{.Key}}">Edit</a></td>
       </tr>
+      {{else}}
+      <tr><td colspan="6" class="text-subtle">No projects.</td></tr>
       {{end}}
     </tbody>
   </table>

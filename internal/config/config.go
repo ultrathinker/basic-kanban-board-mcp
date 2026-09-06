@@ -10,8 +10,8 @@ package config
 
 import (
 	"errors"
-	"fmt"
 	"flag"
+	"fmt"
 	"io"
 	"net"
 	"net/url"
@@ -216,18 +216,18 @@ func Build(in Inputs) (Config, *flag.FlagSet, error) {
 	}
 
 	var (
-		addr       = in.FS.String("addr", DefaultAddr, "Listen address (host:port). Loopback unless --insecure-http is set for remote binds.")
-		data       = in.FS.String("data", DefaultData, "Directory for the SQLite database.")
-		baseURL    = in.FS.String("base-url", "", "Public origin, e.g. https://kanban.example.com. Used for redirects and cookie Secure.")
-		authFlag   = in.FS.String("auth", string(DefaultAuth), "Auth mode: 'required' (default) or 'off'. --auth=off is refused unless the listener is loopback.")
-		insecure   = in.FS.Bool("insecure-http", false, "Allow a non-loopback HTTP listener. Required when base-url is not https:// and the listener is reachable remotely.")
-		proxies    = in.FS.String("trusted-proxies", "", "Comma-separated CIDRs allowed to set X-Forwarded-* (e.g. 10.0.0.0/8,127.0.0.1/32).")
-		logLevel   = in.FS.String("log-level", string(DefaultLogLevel), "Log level: debug|info|warn|error.")
-		logFormat  = in.FS.String("log-format", string(DefaultLogFormat), "Log format: text|json.")
-		demo       = in.FS.Bool("demo", false, "Seed the database with example data on first start.")
-		adminTok   = in.FS.String("admin-token", "", "Bootstrap admin token value. Prefer KANBAN_ADMIN_TOKEN env or _FILE path. If neither is set, one is auto-generated and printed once.")
-		adminFile  = in.FS.String("admin-token-file", "", "Path to a file containing the bootstrap admin token.")
-		claimTTL   = in.FS.Duration("claim-ttl", DefaultClaimTTL, "Default claim TTL, clamped to ["+domain.ClaimTTLMin.String()+", "+domain.ClaimTTLMax.String()+"].")
+		addr      = in.FS.String("addr", DefaultAddr, "Listen address (host:port). Loopback unless --insecure-http is set for remote binds.")
+		data      = in.FS.String("data", DefaultData, "Directory for the SQLite database.")
+		baseURL   = in.FS.String("base-url", "", "Public origin, e.g. https://kanban.example.com. Used for redirects and cookie Secure.")
+		authFlag  = in.FS.String("auth", string(DefaultAuth), "Auth mode: 'required' (default) or 'off'. --auth=off is refused unless the listener is loopback.")
+		insecure  = in.FS.Bool("insecure-http", false, "Allow a non-loopback HTTP listener. Required when base-url is not https:// and the listener is reachable remotely.")
+		proxies   = in.FS.String("trusted-proxies", "", "Comma-separated CIDRs allowed to set X-Forwarded-* (e.g. 10.0.0.0/8,127.0.0.1/32).")
+		logLevel  = in.FS.String("log-level", string(DefaultLogLevel), "Log level: debug|info|warn|error.")
+		logFormat = in.FS.String("log-format", string(DefaultLogFormat), "Log format: text|json.")
+		demo      = in.FS.Bool("demo", false, "Seed the database with example data on first start.")
+		adminTok  = in.FS.String("admin-token", "", "Bootstrap admin token value. Prefer KANBAN_ADMIN_TOKEN env or _FILE path. If neither is set, one is auto-generated and printed once.")
+		adminFile = in.FS.String("admin-token-file", "", "Path to a file containing the bootstrap admin token.")
+		claimTTL  = in.FS.Duration("claim-ttl", DefaultClaimTTL, "Default claim TTL, clamped to ["+domain.ClaimTTLMin.String()+", "+domain.ClaimTTLMax.String()+"].")
 	)
 	if err := in.FS.Parse(in.Args); err != nil {
 		return Config{}, in.FS, err

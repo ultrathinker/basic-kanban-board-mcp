@@ -82,7 +82,11 @@ func (r *tokenRepo) GetByName(tx Tx, name string) (*domain.Token, error) {
 	row := tw.tx.QueryRowContext(tw.ctx(), `
 		SELECT id, name, hash, scopes, project_keys, created_at, last_used_at, revoked_at
 		FROM tokens WHERE name = ? COLLATE NOCASE`, name)
-	return scanToken(row)
+	t, err := scanToken(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, domain.NotFound("token", name)
+	}
+	return t, err
 }
 
 // GetByHash is the auth hot path; the caller does the constant-time
@@ -96,7 +100,15 @@ func (r *tokenRepo) GetByHash(tx Tx, hash []byte) (*domain.Token, error) {
 	row := tw.tx.QueryRowContext(tw.ctx(), `
 		SELECT id, name, hash, scopes, project_keys, created_at, last_used_at, revoked_at
 		FROM tokens WHERE hash = ?`, hash)
-	return scanToken(row)
+	t, err := scanToken(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		// The identifier here is the caller's secret (well, its digest), and
+		// naming it would put a credential in an error message, a log line
+		// and possibly a bug report. Name the lookup instead — this is the
+		// one place where the thing asked for cannot be quoted back.
+		return nil, domain.NotFound("token", "the presented bearer token")
+	}
+	return t, err
 }
 
 func (r *tokenRepo) List(tx Tx) ([]*domain.Token, error) {
@@ -159,18 +171,24 @@ func (r *tokenRepo) Count(tx Tx) (int, error) {
 }
 
 // scanToken / scanTokenRows materialize a Token from a query.
+//
+// scanToken returns sql.ErrNoRows unchanged for a missing row: it is handed
+// a *sql.Row and does not know whether the caller queried by name or by
+// hash. Fabricating an identifier here (it used to build
+// domain.NotFound("token", "?")) produces a message that names nothing;
+// GetByName/GetByHash still hold the identifier and translate it there.
 func scanToken(row *sql.Row) (*domain.Token, error) {
 	var (
-		t         domain.Token
-		scopes    string
-		keys      string
-		created   string
-		lastUsed  sql.NullString
-		revoked   sql.NullString
+		t        domain.Token
+		scopes   string
+		keys     string
+		created  string
+		lastUsed sql.NullString
+		revoked  sql.NullString
 	)
 	if err := row.Scan(&t.ID, &t.Name, &t.Hash, &scopes, &keys, &created, &lastUsed, &revoked); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, domain.NotFound("token", "?")
+			return nil, err
 		}
 		return nil, fmt.Errorf("store: scan token: %w", err)
 	}

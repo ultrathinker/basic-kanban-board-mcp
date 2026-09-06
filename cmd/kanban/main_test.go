@@ -1,14 +1,21 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"flag"
 	"io"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/ultrathinker/basic-kanban-board-mcp/internal/auth"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/config"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/domain"
+	"github.com/ultrathinker/basic-kanban-board-mcp/internal/store"
 )
 
 // envMap builds an EnvLookup from a plain map. Tests use it so they never
@@ -298,4 +305,304 @@ func TestFlagConstructors(t *testing.T) {
 // this file in isolation (none are used directly after the rewrite).
 func TestPathImport(t *testing.T) {
 	_ = io.Discard
+}
+
+// ---------------------------------------------------------------------------
+// Store round-trip tests.
+//
+// These run the actual CLI commands against a real SQLite store in a temp
+// directory and assert the round-trip semantics. The previous round of
+// reviews caught a broken token rotate because no test exercised it against
+// a real store — `go test ./cmd/...` was green while the command could never
+// succeed. The tests below make that impossible to regress.
+//
+// We override the openStore seam to point at a temp-dir SQLite file, then
+// capture stdout to read the secret the command prints. The secret is never
+// reused elsewhere; once the test prints its single use, it is gone.
+// ---------------------------------------------------------------------------
+
+// withTempStore swaps openStore with one that uses a per-test temp dir,
+// opens the store at the standard path, and returns a teardown. Tests must
+// defer the returned func.
+func withTempStore(t *testing.T) (string, func()) {
+	t.Helper()
+	dir := t.TempDir()
+	prev := openStore
+	openStore = func(ctx context.Context, dataDir string) (store.Store, error) {
+		return store.Open(ctx, store.Config{Path: filepath.Join(dir, "kanban.db")})
+	}
+	return dir, func() { openStore = prev }
+}
+
+// captureStdout redirects os.Stdout for the duration of fn, returning the
+// captured output. The redirect is restored even if fn panics.
+func captureStdout(t *testing.T, fn func() error) (string, error) {
+	t.Helper()
+	orig := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stdout = w
+	defer func() { os.Stdout = orig }()
+
+	done := make(chan string)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, r)
+		done <- buf.String()
+	}()
+
+	fnErr := fn()
+	_ = w.Close()
+	out := <-done
+	_ = r.Close()
+	return out, fnErr
+}
+
+// secretRegex extracts a token secret from the create / rotate stdout. The
+// create command prints "Secret: …"; rotate prints "New secret: …". Any
+// stronger parser would couple the test to copy we own.
+var secretRegex = regexp.MustCompile(`(?m)^(?:Secret|New secret):\s+(kbn_[A-Za-z0-9]+)\s*$`)
+
+func mustExtractSecret(t *testing.T, out string) string {
+	t.Helper()
+	m := secretRegex.FindStringSubmatch(out)
+	if len(m) < 2 {
+		t.Fatalf("no Secret: / New secret: line in stdout:\n%s", out)
+	}
+	return m[1]
+}
+
+// openTempStore opens a fresh store at dataDir/kanban.db. Every caller MUST
+// defer Close: on Windows the writer pool keeps a file handle that blocks
+// t.TempDir cleanup.
+func openTempStore(t *testing.T, dataDir string) store.Store {
+	t.Helper()
+	st, err := store.Open(context.Background(), store.Config{Path: filepath.Join(dataDir, "kanban.db")})
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	return st
+}
+
+// readTokenByName fetches the persisted token row inside a single read tx.
+// It opens one store, runs the read, and closes — no handle leak across the
+// t.TempDir cleanup boundary.
+func readTokenByName(t *testing.T, dataDir, name string) *domain.Token {
+	t.Helper()
+	st := openTempStore(t, dataDir)
+	defer st.Close()
+	var out *domain.Token
+	err := st.Read(context.Background(), func(tx store.Tx) error {
+		tk, err := st.Tokens().GetByName(tx, name)
+		out = tk
+		return err
+	})
+	if err != nil {
+		t.Fatalf("read token: %v", err)
+	}
+	if out == nil {
+		t.Fatalf("token %q not found", name)
+	}
+	return out
+}
+
+// tokenAuthenticate verifies whether a candidate secret resolves to a live
+// token. It treats both "token not found" and "any other lookup error" as
+// a non-authenticating secret: the auth layer's contract is binary — either
+// the secret works or it does not — so this matches the caller's question
+// rather than the underlying error type.
+func tokenAuthenticate(t *testing.T, dataDir, secret string) bool {
+	t.Helper()
+	st := openTempStore(t, dataDir)
+	defer st.Close()
+	mgr := auth.NewManagerFromStore(st, nil, "", false, time.Now)
+	tok, err := mgr.VerifyToken(context.Background(), secret)
+	if err != nil {
+		// not_found on the row is the same outcome as "unknown token" for
+		// the caller: the secret does not authenticate. Anything else is a
+		// real failure (DB down, hash mismatch via store corruption).
+		var de *domain.Error
+		if errorsAs(err, &de) && de.Code == domain.CodeNotFound {
+			return false
+		}
+		t.Fatalf("verify: %v", err)
+	}
+	return tok != nil
+}
+
+// TestTokenCLI_RoundTrip_CreateRotateRevoke is the regression test for the
+// rotate defect: it creates a token, rotates it, asserts the same row was
+// updated (id and name preserved), and that the old secret no longer
+// authenticates while the new one does. Then it revokes the token and
+// confirms authentication fails.
+func TestTokenCLI_RoundTrip_CreateRotateRevoke(t *testing.T) {
+	dir, restore := withTempStore(t)
+	defer restore()
+
+	// Capture stdout for the create command and extract the first secret.
+	createOut, err := captureStdout(t, func() error {
+		return runToken([]string{"create", "--name", "test-cli", "--scope", "write",
+			"--data", dir})
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	original := mustExtractSecret(t, createOut)
+	originalRow := readTokenByName(t, dir, "test-cli")
+	if !tokenAuthenticate(t, dir, original) {
+		t.Fatalf("original secret does not authenticate right after create")
+	}
+
+	// Rotate. The new secret must be different from the original, the row
+	// must keep its id and name, and the new secret must authenticate while
+	// the old one must not.
+	rotateOut, err := captureStdout(t, func() error {
+		return runToken([]string{"rotate", "test-cli", "--data", dir})
+	})
+	if err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+	rotated := mustExtractSecret(t, rotateOut)
+	if rotated == original {
+		t.Fatalf("rotated secret is the same as the original")
+	}
+
+	rotatedRow := readTokenByName(t, dir, "test-cli")
+	if rotatedRow.ID != originalRow.ID {
+		t.Fatalf("rotation changed token id: %q -> %q", originalRow.ID, rotatedRow.ID)
+	}
+	if rotatedRow.Name != originalRow.Name {
+		t.Fatalf("rotation changed token name: %q -> %q", originalRow.Name, rotatedRow.Name)
+	}
+	if !rotatedRow.CreatedAt.Equal(originalRow.CreatedAt) {
+		t.Fatalf("rotation changed token created_at: %v -> %v",
+			originalRow.CreatedAt, rotatedRow.CreatedAt)
+	}
+	if bytesEqual(rotatedRow.Scopes, originalRow.Scopes) == false {
+		t.Fatalf("rotation changed token scopes")
+	}
+
+	if tokenAuthenticate(t, dir, original) {
+		t.Fatalf("old secret still authenticates after rotate")
+	}
+	if !tokenAuthenticate(t, dir, rotated) {
+		t.Fatalf("rotated secret does not authenticate")
+	}
+
+	// Revoke and confirm both secrets fail.
+	if err := runToken([]string{"revoke", "test-cli", "--data", dir}); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+	if tokenAuthenticate(t, dir, original) {
+		t.Fatalf("old secret authenticates after revoke")
+	}
+	if tokenAuthenticate(t, dir, rotated) {
+		t.Fatalf("rotated secret authenticates after revoke")
+	}
+}
+
+// bytesEqual reports whether two scope slices are identical.
+func bytesEqual(a, b domain.Scopes) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// TestTokenCLI_RotateMissingToken asserts the friendly error path: rotating
+// a token that does not exist returns a not-found error rather than
+// silently succeeding.
+func TestTokenCLI_RotateMissingToken(t *testing.T) {
+	dir, restore := withTempStore(t)
+	defer restore()
+
+	err := runToken([]string{"rotate", "no-such-token", "--data", dir})
+	if err == nil {
+		t.Fatalf("expected error for missing token")
+	}
+	var de *domain.Error
+	if !errorsAs(err, &de) {
+		t.Fatalf("expected *domain.Error, got %T: %v", err, err)
+	}
+	if de.Code != domain.CodeNotFound {
+		t.Fatalf("expected not_found, got %q", de.Code)
+	}
+}
+
+// TestTokenCLI_RotateTwice asserts successive rotations each succeed and
+// the older secret never re-authenticates. Catches a class of bugs where
+// rotation only works the first time because of state leaks in the
+// underlying repo.
+func TestTokenCLI_RotateTwice(t *testing.T) {
+	dir, restore := withTempStore(t)
+	defer restore()
+
+	out1, err := captureStdout(t, func() error {
+		return runToken([]string{"create", "--name", "twice", "--scope", "write",
+			"--data", dir})
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	s1 := mustExtractSecret(t, out1)
+	id1 := readTokenByName(t, dir, "twice").ID
+
+	out2, err := captureStdout(t, func() error {
+		return runToken([]string{"rotate", "twice", "--data", dir})
+	})
+	if err != nil {
+		t.Fatalf("rotate #1: %v", err)
+	}
+	s2 := mustExtractSecret(t, out2)
+	id2 := readTokenByName(t, dir, "twice").ID
+	if s1 == s2 || id1 != id2 {
+		t.Fatalf("first rotation: secret identical=%v, id changed=%v", s1 == s2, id1 != id2)
+	}
+
+	out3, err := captureStdout(t, func() error {
+		return runToken([]string{"rotate", "twice", "--data", dir})
+	})
+	if err != nil {
+		t.Fatalf("rotate #2: %v", err)
+	}
+	s3 := mustExtractSecret(t, out3)
+	id3 := readTokenByName(t, dir, "twice").ID
+	if s3 == s2 || id2 != id3 {
+		t.Fatalf("second rotation: secret identical=%v, id changed=%v", s3 == s2, id2 != id3)
+	}
+
+	if tokenAuthenticate(t, dir, s1) {
+		t.Fatalf("original secret authenticates after two rotations")
+	}
+	if tokenAuthenticate(t, dir, s2) {
+		t.Fatalf("first rotated secret still authenticates")
+	}
+	if !tokenAuthenticate(t, dir, s3) {
+		t.Fatalf("most-recent secret does not authenticate")
+	}
+}
+
+// errorsAs is a thin shim so the test does not import "errors" directly
+// (which is otherwise unused after the rewrite).
+func errorsAs(err error, target **domain.Error) bool {
+	for err != nil {
+		if de, ok := err.(*domain.Error); ok {
+			*target = de
+			return true
+		}
+		type unwrapper interface{ Unwrap() error }
+		u, ok := err.(unwrapper)
+		if !ok {
+			return false
+		}
+		err = u.Unwrap()
+	}
+	return false
 }

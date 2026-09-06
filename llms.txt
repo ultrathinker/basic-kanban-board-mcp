@@ -1,0 +1,38 @@
+# basic-kanban-board-mcp
+
+> A minimal, self-hosted kanban board for AI coding agents. One static Go binary, one SQLite file, one port. Native MCP over remote streamable-HTTP with mandatory bearer auth.
+
+## Core Agent Operating Loop
+
+1. **Read board:** `board_get(project: "KEY")` at session start. Default compact text format costs ~1 060 tokens for 30 tasks (~90% smaller than indented JSON).
+2. **Take work:** `task_next(project: "KEY", action: "start")` atomically claims the highest-priority unblocked task and moves it to Doing in one round trip. Use `action: "peek"` to inspect without claiming.
+3. **Log progress:** `task_update(patches: [{key: "KEY-1", note: "..."}])` appends progress notes. Notes never bump `version` and never conflict.
+4. **Mutate fields:** When editing mutable fields (title, body, column, acceptance criteria, etc.), always provide `if_version` from your previous read. If a conflict occurs, merge into `error.current` and retry with that version.
+5. **Finish work:** `task_update(patches: [{key: "KEY-1", column: "Done", if_version: N}])`.
+
+## The Nine MCP Tools
+
+- `board_get`: Read the board. Default is token-cheap compact text grammar (`compact_version=1`); `format: "json"` gives pretty JSON text. Output structuredContent always full JSON.
+- `task_next`: Find, claim, or start the next ready task. Algorithm orders by priority desc → due_at asc → rank asc. Returns `data.tasks[]` with `meta.reasons`.
+- `task_get`: Fetch tasks by key in request order. Missing keys are preserved in place with `ok: false`. Returns `data.items[]`.
+- `task_create`: Atomic all-or-nothing batch task creation (1–100 items). Supports symbolic intra-batch links via `@<ref>` (e.g. `blocked_by: ["@scaffold"]`). Returns `data.tasks[]`.
+- `task_update`: Batch task updates (1–100 items). Per-item results by default; `atomic: true` opt-in. Requires `if_version` for replacement fields. Returns `data.items[]`.
+- `task_link`: Atomically add or remove `blocks` dependencies. Enforces DAG structure and rejects cycles (including parent chains). Returns `data.tasks[]`.
+- `task_claim`: Atomically claim, renew, or release a task lease (CAS). Leases do not bump `version`.
+- `task_remove`: Soft archive (or restore) tasks in batches. Hard delete is CLI-only (`kanban task purge`). Returns `data.items[]`.
+- `project_upsert`: Create or update project configuration and workflow columns. Requires explicit `mode: "create"` or `mode: "update"` to prevent typos from forking the board.
+
+## Key Rules for AI Models
+
+- **Actor identity:** Derived automatically from your bearer token name. Never pass an `actor` parameter.
+- **Post-write versioning:** The returned `version` on every task is the authoritative post-write value. Chain your next `if_version` directly from it; never re-read just to get the version.
+- **Non-version-bumping operations:** `note`, leases (`task_claim`), and `focus` do not bump task `version`. An update response echoing the version you sent means the write landed successfully and the version legitimately did not change.
+- **Dependencies:** Blocked tasks cannot be started or moved into active columns unless `enforce_dependencies: false` or bypassed with `force: true` and `reason` (admin scope).
+- **Result shapes:** `task_next` and `task_create` return `data.tasks[]` (flat list); `task_get` and `task_update` return `data.items[]` (keyed list with `key` and `ok`).
+
+## Full Documentation
+
+- Comprehensive MCP Tool Reference & Schemas: [docs/MCP-TOOLS.md](docs/MCP-TOOLS.md)
+- Agent Configuration & Client Setup: [docs/AGENT-SETUP.md](docs/AGENT-SETUP.md)
+- Deployment & Server Flags: [docs/DEPLOY.md](docs/DEPLOY.md)
+- Security Model & Invariants: [docs/SECURITY.md](docs/SECURITY.md)

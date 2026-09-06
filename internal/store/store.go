@@ -91,22 +91,22 @@ type ColumnRepo interface {
 
 // TaskFilter mirrors board_get.filter (PLAN §6.1). Zero value means "no filter".
 type TaskFilter struct {
-	ProjectIDs   []string
-	ColumnIDs    []string // OR
-	Types        []domain.Type
-	PriorityMin  *domain.Priority
-	Tags         []string // OR
-	Assignee     *string
-	Claimed      ClaimedFilter
-	Blocked      *bool
-	Query        string // substring of title or body, case-insensitive
-	UpdatedSince *time.Time
-	IncludeDone  bool
-	DoneLimit    int
+	ProjectIDs      []string
+	ColumnIDs       []string // OR
+	Types           []domain.Type
+	PriorityMin     *domain.Priority
+	Tags            []string // OR
+	Assignee        *string
+	Claimed         ClaimedFilter
+	Blocked         *bool
+	Query           string // substring of title or body, case-insensitive
+	UpdatedSince    *time.Time
+	IncludeDone     bool
+	DoneLimit       int
 	IncludeArchived bool
-	ParentID     *string
-	Limit        int
-	Offset       int
+	ParentID        *string
+	Limit           int
+	Offset          int
 }
 
 type ClaimedFilter string

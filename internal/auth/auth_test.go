@@ -29,17 +29,27 @@ type memTokenStore struct {
 	seq   int
 }
 
-func newMemTokenStore() *memTokenStore { return &memTokenStore{byID: map[string]*domain.Token{}, byHsh: map[string]*domain.Token{}} }
+func newMemTokenStore() *memTokenStore {
+	return &memTokenStore{byID: map[string]*domain.Token{}, byHsh: map[string]*domain.Token{}}
+}
 
 func (m *memTokenStore) Create(ctx context.Context, t *domain.Token) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if t.ID == "" {
-		m.seq++
-		t.ID = "tok-" + itoa(m.seq)
+	// Same constraints as the real store.tokenRepo.Create (see
+	// internal/store/tokens_sessions_idempotency.go): required ID, name,
+	// hash; unique name; unique hash. Round 4 caught a mintAndStore bug
+	// exactly because the fake silently auto-filled IDs; this assert is
+	// what would have caught it.
+	if t.ID == "" || t.Name == "" || len(t.Hash) == 0 {
+		return domain.Invalid("token", "id, name and hash are required",
+			"Set those before calling token Create.")
 	}
 	if _, exists := m.byID[t.Name]; exists {
 		return errDuplicate("token")
+	}
+	if _, exists := m.byHsh[hexBytes(t.Hash)]; exists {
+		return errDuplicate("token hash")
 	}
 	cp := *t
 	m.byID[t.Name] = &cp
@@ -52,7 +62,10 @@ func (m *memTokenStore) GetByHash(ctx context.Context, hash []byte) (*domain.Tok
 	defer m.mu.Unlock()
 	t, ok := m.byHsh[hexBytes(hash)]
 	if !ok {
-		return nil, nil
+		// Match the real store's contract: absent row returns
+		// domain.NotFound, not (nil, nil). VerifyToken translates that
+		// back to (nil, nil) at the auth boundary; the fake must agree.
+		return nil, domain.NotFound("token", "?")
 	}
 	cp := *t
 	return &cp, nil
@@ -63,7 +76,7 @@ func (m *memTokenStore) GetByName(ctx context.Context, name string) (*domain.Tok
 	defer m.mu.Unlock()
 	t, ok := m.byID[name]
 	if !ok {
-		return nil, nil
+		return nil, domain.NotFound("token", name)
 	}
 	cp := *t
 	return &cp, nil
@@ -137,7 +150,9 @@ func (m *memSessionStore) GetSession(ctx context.Context, id string) (*domain.Se
 	defer m.mu.Unlock()
 	s, ok := m.byID[id]
 	if !ok || m.deleted[id] {
-		return nil, nil
+		// Match real store: absent row -> domain.NotFound. See the
+		// matching comment on memTokenStore.GetByHash.
+		return nil, domain.NotFound("session", id)
 	}
 	cp := *s
 	return &cp, nil
@@ -168,7 +183,7 @@ func (m *memSessionStore) DeleteSession(ctx context.Context, id string) error {
 
 type stubErr struct{ s string }
 
-func (e stubErr) Error() string { return e.s }
+func (e stubErr) Error() string   { return e.s }
 func errDuplicate(s string) error { return stubErr{s: "duplicate " + s} }
 
 func itoa(i int) string {
@@ -279,8 +294,8 @@ func TestVerifyToken_RejectsUnknownAndMalformed(t *testing.T) {
 	cases := []string{
 		"",
 		"not-a-token",
-		"kbn_short",       // right shape, wrong bytes
-		"Bearer kbn_xyz",  // with prefix
+		"kbn_short",      // right shape, wrong bytes
+		"Bearer kbn_xyz", // with prefix
 	}
 	for _, s := range cases {
 		t.Run(s, func(t *testing.T) {
@@ -436,17 +451,19 @@ type fakeStore struct {
 	// job is to prove the adapter routes through Read and Write.
 	store.Store
 
-	mu        sync.Mutex
-	tokens    map[string]*domain.Token
-	sessions  map[string]*domain.Session
-	readCalls int
-	wrCalls   int
+	mu           sync.Mutex
+	tokens       map[string]*domain.Token
+	tokensByHash map[string]*domain.Token
+	sessions     map[string]*domain.Session
+	readCalls    int
+	wrCalls      int
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
-		tokens:   map[string]*domain.Token{},
-		sessions: map[string]*domain.Session{},
+		tokens:       map[string]*domain.Token{},
+		tokensByHash: map[string]*domain.Token{},
+		sessions:     map[string]*domain.Session{},
 	}
 }
 
@@ -483,11 +500,24 @@ type fakeTokenRepo struct {
 func (r *fakeTokenRepo) Create(_ store.Tx, t *domain.Token) error {
 	r.f.mu.Lock()
 	defer r.f.mu.Unlock()
+	// Same constraints as the real store.tokenRepo.Create. See the
+	// matching comment on memTokenStore.Create — round 4's regression
+	// only happened because the previous fake auto-filled IDs. We now
+	// refuse to, so any future call that omits ID/name/hash fails here
+	// rather than certifying a bug in production.
+	if t.ID == "" || t.Name == "" || len(t.Hash) == 0 {
+		return domain.Invalid("token", "id, name and hash are required",
+			"Set those before calling token Create.")
+	}
 	if _, ok := r.f.tokens[t.Name]; ok {
 		return errDuplicate("token")
 	}
+	if _, ok := r.f.tokensByHash[hexBytes(t.Hash)]; ok {
+		return errDuplicate("token hash")
+	}
 	cp := *t
 	r.f.tokens[t.Name] = &cp
+	r.f.tokensByHash[hexBytes(t.Hash)] = &cp
 	return nil
 }
 
@@ -500,7 +530,12 @@ func (r *fakeTokenRepo) GetByHash(_ store.Tx, hash []byte) (*domain.Token, error
 			return &cp, nil
 		}
 	}
-	return nil, nil
+	// Match the real store: absent row returns a domain.NotFound error,
+	// not (nil, nil). auth.VerifyToken translates that back to (nil, nil)
+	// before RequireAuth turns it into 403; the fake must reproduce the
+	// wire shape so the in-package tests exercise the same code path as
+	// production.
+	return nil, domain.NotFound("token", "?")
 }
 
 func (r *fakeTokenRepo) GetByName(_ store.Tx, name string) (*domain.Token, error) {
@@ -508,7 +543,7 @@ func (r *fakeTokenRepo) GetByName(_ store.Tx, name string) (*domain.Token, error
 	defer r.f.mu.Unlock()
 	t, ok := r.f.tokens[name]
 	if !ok {
-		return nil, nil
+		return nil, domain.NotFound("token", name)
 	}
 	cp := *t
 	return &cp, nil
@@ -538,9 +573,20 @@ func (r *fakeTokenRepo) Revoke(_ store.Tx, name string) error {
 func (r *fakeTokenRepo) UpdateHash(_ store.Tx, id string, hash []byte) error {
 	r.f.mu.Lock()
 	defer r.f.mu.Unlock()
+	// Match the real store's UNIQUE constraint on hash: a Rotate must not
+	// produce a hash that is already in use by a different row. We do not
+	// need to maintain tokensByHash on Rotate here because we rewrite the
+	// map key below.
+	for other, ot := range r.f.tokensByHash {
+		if ot.ID != id && hexBytes(hash) == other {
+			return errDuplicate("token hash")
+		}
+	}
 	for _, t := range r.f.tokens {
 		if t.ID == id {
+			delete(r.f.tokensByHash, hexBytes(t.Hash))
 			t.Hash = append([]byte(nil), hash...)
+			r.f.tokensByHash[hexBytes(t.Hash)] = t
 			return nil
 		}
 	}
@@ -573,7 +619,9 @@ func (r *fakeSessionRepo) Get(_ store.Tx, id string) (*domain.Session, error) {
 	defer r.f.mu.Unlock()
 	s, ok := r.f.sessions[id]
 	if !ok {
-		return nil, nil
+		// Match real store: absent row -> domain.NotFound. See the comment
+		// on fakeTokenRepo.GetByHash.
+		return nil, domain.NotFound("session", id)
 	}
 	cp := *s
 	return &cp, nil
@@ -645,6 +693,7 @@ func TestScopes_ImplicationAndProjectRestriction(t *testing.T) {
 
 	// Project restriction: token bound to BMB must not see KANBAN.
 	tok := &domain.Token{
+		ID:          "id-scoped",
 		Name:        "scoped",
 		Hash:        HashToken("kbn_xx"),
 		Scopes:      write,
@@ -664,7 +713,7 @@ func TestScopes_ImplicationAndProjectRestriction(t *testing.T) {
 
 	// Unrestricted token sees everything.
 	all := &domain.Token{
-		Name: "all", Hash: HashToken("kbn_yy"),
+		ID: "id-all", Name: "all", Hash: HashToken("kbn_yy"),
 		Scopes: write, CreatedAt: m.Now(),
 	}
 	if err := m.Tokens.Create(ctx, all); err != nil {
@@ -945,7 +994,7 @@ func TestMiddleware_RequireScope(t *testing.T) {
 	// Add a read-only token.
 	const readSecret = "kbn_readonlyxxxx00xx00xx00xx00xx00xx00xx00xx"
 	readTok := &domain.Token{
-		Name: "reader", Hash: HashToken(readSecret),
+		ID: "id-reader", Name: "reader", Hash: HashToken(readSecret),
 		Scopes: domain.Scopes{domain.ScopeRead}, CreatedAt: m.Now(),
 	}
 	if err := m.Tokens.Create(ctx, readTok); err != nil {
@@ -1096,10 +1145,10 @@ func TestRedact_StripsAuthorizationAndCookies(t *testing.T) {
 
 func TestRedactString_Variants(t *testing.T) {
 	cases := map[string]string{
-		"Bearer kbn_supersecret1234567890":  "Bearer kbn_",
-		"kbn_supersecret1234567890":         "kbn_",
+		"Bearer kbn_supersecret1234567890":      "Bearer kbn_",
+		"kbn_supersecret1234567890":             "kbn_",
 		"kanban_session=abcdef0123; theme=dark": "kanban_session=***",
-		"theme=dark": "theme=dark",
+		"theme=dark":                            "theme=dark",
 	}
 	for in, wantPrefix := range cases {
 		out := RedactString(in)
@@ -1195,6 +1244,12 @@ func TestCSRF_FormValueMatchesCookie(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// CSRFFieldName must match the field name the templates emit. The web
+	// agent's forms use the literal "csrf_token" — if either side drifts
+	// apart this test will fail with a clear field-name mismatch message.
+	if CSRFFieldName != "csrf_token" {
+		t.Fatalf("CSRFFieldName = %q, want csrf_token (the templates use this)", CSRFFieldName)
+	}
 	body := CSRFFieldName + "=" + tok
 	req := httptest.NewRequest("POST", "/", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -1209,7 +1264,7 @@ func TestCSRF_RejectsMissingOrWrongToken(t *testing.T) {
 	tok, _ := m.IssueCSRF()
 
 	cases := []struct {
-		name string
+		name  string
 		build func() *http.Request
 	}{
 		{"no cookie", func() *http.Request {

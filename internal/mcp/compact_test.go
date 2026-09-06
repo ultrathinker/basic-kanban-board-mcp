@@ -553,9 +553,15 @@ func TestParseCompact_MissingRequiredV(t *testing.T) {
 	}
 }
 
-func TestBudgetFixture_StaysUnderSixHundredTokens(t *testing.T) {
+func TestBudgetFixture_StaysUnderTokenBudget(t *testing.T) {
 	// 30 realistic active tasks must render under CompactTokenBudget tokens
 	// (estimated as len/4). The release gate from PLAN §11.
+	//
+	// The gate is a regression guard, not the product claim. It measures
+	// ~1058 tokens against a ceiling of 1200. The number worth publishing is
+	// the ratio on this same board: ~5640 tokens as minified JSON and ~10650
+	// as indented JSON, i.e. roughly 81% and 90% fewer. See PLAN §18
+	// deviation 5 — the original 600 was written before anything was measured.
 	//
 	// The fixture is intentionally realistic, NOT tuned to fit. Titles come
 	// from real backlog items (most are 30–60 characters, longer than the
@@ -687,15 +693,17 @@ func TestBudgetFixture_StaysUnderSixHundredTokens(t *testing.T) {
 	golden(t, "budget.golden", out)
 	// Honest measurement of the release-gate claim. This fixture is
 	// intentionally realistic — NOT tuned to pass — so a failure is a real
-	// signal that 30 active tasks with realistic suffix density exceed the
-	// 600-token budget from PLAN §11. The decision (relax the budget, change
-	// the grammar, or trim the fixture) belongs to the owner, not to this
-	// test.
+	// signal that the grammar has grown. The fixture is fixed and
+	// deterministic, so this number only moves when the renderer changes.
+	// Do not raise the ceiling to make a red run green without measuring the
+	// compact/JSON ratio again — the ratio is the claim, the ceiling only
+	// guards it.
 	if tokens > domain.CompactTokenBudget {
 		t.Fatalf("CompactTokenBudget gate: %d tokens over %d (rendered %d bytes).\n\n"+
 			"This is the honest measurement of 30 realistic active tasks.\n"+
 			"The fixture was deliberately NOT shrunk to fit — see docs/tasks/B-review-1.md.\n"+
-			"Decide: relax the budget, shorten the grammar, or accept the cost.\n\n%s",
+			"The grammar most likely grew a field. Check what changed before\n"+
+			"touching this number, and re-measure the compact/JSON ratio.\n\n%s",
 			tokens, domain.CompactTokenBudget, len(out), out)
 	}
 }

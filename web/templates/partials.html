@@ -1,77 +1,122 @@
-{{/* partials: focused on single-fragment rendering so htmx can swap them. */}}
+{{/* Fragments. Each one renders standalone so a swap can target it by name.
+
+   Reading the board without colour:
+     - the rule at the card's left margin carries priority (width + tone),
+     - the type is a WORD in a fixed-width slot, so the words line up down
+       the column and you scan one list instead of hunting,
+     - anything you must not miss (critical, blocked, overdue, a full WIP
+       limit) is an inverted block — paper on ink.
+   See the header comment in web/static/app.css for the full argument. */}}
 
 {{define "card"}}
-{{- /* expects .Card (TaskCard) and .CSRF */ -}}
-<article class="card {{priorityClass .Card.Priority}}" data-task-key="{{.Card.Key}}" data-card-id="{{.Card.Key}}"
-         aria-label="Task {{.Card.Key}}: {{.Card.Title}}">
-  <header class="head">
-    <a class="key mono" href="{{.Card.URL}}">{{.Card.Key}}</a>
-    <span class="badge-type type-{{.Card.Type}}">{{.Card.Type}}</span>
+{{- /* expects .Card (TaskCard); optional .CSRF and .Columns ([]ColumnView)
+       for the keyboard move menu */ -}}
+<article class="card {{.Card.PriorityCSS}}"
+         data-task-key="{{.Card.Key}}"
+         data-version="{{.Card.Version}}"
+         data-column="{{.Card.ColumnName}}"
+         aria-label="{{.Card.Key}} — {{.Card.Title}} · {{.Card.Type}} · priority {{priorityName .Card.Priority}}">
+  <div class="head">
+    <a class="key" href="{{.Card.URL}}">{{.Card.Key}}</a>
+    <span class="type">{{.Card.Type}}</span>
+    {{- if eq .Card.PriorityBadge "critical"}}
+      <span class="mark">critical</span>
+    {{- else if .Card.PriorityBadge}}
+      <span class="prio-label">{{.Card.PriorityBadge}}</span>
+    {{- end}}
+    <span class="spacer"></span>
     {{if .Card.Lease}}
       <span class="lease {{.Card.Lease.State}}" title="Lease held by {{.Card.Lease.Actor}}">
-        <span class="dot" aria-hidden="true"></span>{{.Card.Lease.Actor}} · {{.Card.Lease.Remain}}
+        <span class="dot" aria-hidden="true"></span>{{.Card.Lease.Actor}} {{.Card.Lease.Remain}}
       </span>
     {{end}}
-    <span class="spacer"></span>
-    <span class="text-xs text-subtle">v{{.Card.Version}}</span>
-  </header>
+    <span class="mono text-subtle" title="version">v{{.Card.Version}}</span>
+  </div>
   <div class="title"><a href="{{.Card.URL}}">{{.Card.Title}}</a></div>
   <div class="meta">
-    {{if .Card.Estimate}}<span class="estimate-pill">est {{.Card.Estimate.Label}}</span>{{end}}
+    {{if .Card.Estimate}}<span class="estimate">{{.Card.Estimate.Label}}</span>{{end}}
     {{if .Card.Assignee}}<span class="assignee">@{{.Card.Assignee}}</span>{{end}}
-    {{if .Card.SubTotal}}<span class="sub-progress {{if eq .Card.SubDone .Card.SubTotal}}done{{end}}">sub {{.Card.SubDone}}/{{.Card.SubTotal}}</span>{{end}}
+    {{if .Card.SubTotal}}<span class="sub-progress {{if eq .Card.SubDone .Card.SubTotal}}done{{end}}">{{.Card.SubDone}}/{{.Card.SubTotal}}</span>{{end}}
     {{range .Card.Tags}}<span class="tag">#{{.}}</span>{{end}}
-    {{if .Card.Blocked}}<span class="blocked-indicator" title="Blocked by {{commaKeys .Card.BlockedBy}}">blocked · {{commaKeys .Card.BlockedBy}}</span>{{end}}
-    {{if .Card.Age}}<span class="text-xs text-subtle">age {{.Card.Age}}</span>{{end}}
+    {{if .Card.Blocked}}<span class="mark" title="Blocked by {{commaKeys .Card.BlockedBy}}">blocked</span>{{end}}
+    {{if .Card.Overdue}}<span class="mark">overdue</span>{{else if .Card.Due}}<span class="text-subtle">due {{.Card.Due}}</span>{{end}}
+    {{if .Card.Age}}<span class="age" title="time in this column">{{.Card.Age}}</span>{{end}}
   </div>
   {{template "card-move-menu" (dict "Card" .Card "CSRF" .CSRF "Columns" .Columns)}}
 </article>
 {{end}}
 
 {{define "card-move-menu"}}
-{{- /* keyboard-accessible alternative to drag-and-drop. The actual POST is
-       wired by app.js when the select changes. */ -}}
-{{- if .Columns}}
-<div class="row" style="margin-top:0.25rem">
-  <label class="sr-only" for="move-{{.Card.Key}}">Move {{.Card.Key}}</label>
-  <select id="move-{{.Card.Key}}" data-move-menu data-move-url="/fragments/move" class="btn btn-sm" style="font-size:0.7rem">
+{{- /* The keyboard-operable alternative to drag-and-drop (PLAN §9). app.js
+       posts on change; the card's own data-version rides along as
+       if_version so a move never clobbers a concurrent edit. The current
+       column is omitted — "move it where it already is" is not an option. */ -}}
+{{- $card := .Card -}}
+{{- $targets := moveTargets .Columns $card.ColumnName -}}
+{{- if $targets}}
+<div class="move-menu">
+  <label class="sr-only" for="move-{{$card.Key}}">Move {{$card.Key}}</label>
+  <select id="move-{{$card.Key}}" class="btn btn-sm" data-move-menu data-move-url="/fragments/move">
     <option value="">move to…</option>
-    {{range .Columns}}
-      <option value="{{.Name}}">{{.Name}}</option>
-    {{end}}
+    {{range $targets}}<option value="{{.}}">{{.}}</option>{{end}}
   </select>
 </div>
 {{- end}}
 {{end}}
 
 {{define "column"}}
-{{- /* expects .Column (ColumnView) and .CSRF */ -}}
-<section class="column {{if eq .Column.Kind "done"}}done{{end}}"
-         id="column-{{.Column.Name}}" data-column-name="{{.Column.Name}}"
-         data-sortable data-sortable-url="/fragments/move" data-sortable-group="cards"
+{{- /* expects .Column (ColumnView); optional .CSRF and .Columns (all
+       columns, so each card can build its move menu) */ -}}
+<section class="column {{if eq .Column.Kind "done"}}is-done{{end}}"
+         id="column-{{.Column.Name}}"
          aria-label="Column {{.Column.Name}}">
   <header class="column-head">
-    <span class="name">{{.Column.Name}}</span>
-    {{if .Column.WIP}}<span class="wip {{if ge .Column.Count (index .Column.WIP 0 | int) }}{{else}}{{end}}{{if and .Column.WIP (ge .Column.Count (index .Column.WIP 0))}}full{{end}} tabular">
-      {{.Column.Count}}{{if .Column.WIP}}/{{index .Column.WIP 0}}{{end}}
-    </span>{{else}}<span class="wip tabular">{{.Column.Count}}</span>{{end}}
-  </header>
-  <div class="column-list">
-    {{if hasAny .Column.Tasks}}
-      {{range .Column.Tasks}}{{template "card" (dict "Card" . "CSRF" $.CSRF "Columns" $.Columns)}}{{end}}
+    <span class="name caps">{{.Column.Name}}</span>
+    {{if .Column.WIP}}
+      <span class="wip {{if wipFull .Column.Count .Column.WIP}}full{{end}}"
+            title="{{.Column.Count}} of a WIP limit of {{.Column.WIP | int}}">{{.Column.Count}}/{{.Column.WIP | int}}</span>
     {{else}}
-      <p class="column-empty">No tasks</p>
+      <span class="wip">{{.Column.Count}}</span>
     {{end}}
+  </header>
+  {{- if .Column.Hidden}}
+  <p class="column-collapsed">{{.Column.Count}} hidden — <a href="?hide_done=0">show done</a></p>
+  {{- else}}
+  <div class="column-list" data-sortable data-sortable-group="cards"
+       data-sortable-url="/fragments/move" data-column-name="{{.Column.Name}}">
+    {{- if hasAny .Column.Tasks}}
+      {{range .Column.Tasks}}{{template "card" (dict "Card" . "CSRF" $.CSRF "Columns" $.Columns)}}{{end}}
+    {{- else}}
+      <p class="column-empty">No tasks</p>
+    {{- end}}
   </div>
+  {{- end}}
 </section>
+{{end}}
+
+{{define "board-columns"}}
+{{- /* The swappable board region. app.js replaces this element's contents
+       when an SSE event says the board changed, so its id is a contract.
+
+       Deliberately NOT aria-live: re-announcing an entire board on every
+       agent write is unusable. The small live-status element in the page
+       header is the polite region, and app.js announces "updated" there. */ -}}
+<div class="board" id="board" aria-label="Board columns">
+  {{- if hasAny .Columns}}
+    {{range .Columns}}{{template "column" (dict "Column" . "CSRF" $.CSRF "Columns" $.Columns)}}{{end}}
+  {{- else}}
+    <p class="empty">This project has no columns yet. Create one with <code>project_upsert</code>.</p>
+  {{- end}}
+</div>
 {{end}}
 
 {{define "focus-banner"}}
 {{- if .Focus}}
 <section class="focus-banner" aria-label="Project focus">
-  <span class="label">Now</span>
-  <a class="key mono" href="{{drawerURL .Focus.Key}}">{{.Focus.Key}}</a>
+  <span class="mark">now</span>
+  <a class="mono" href="{{drawerURL .Focus.Key}}">{{.Focus.Key}}</a>
   <span class="title">{{.Focus.Title}}</span>
+  <span class="caps text-subtle">{{.Focus.Type}}</span>
 </section>
 {{end}}
 {{end}}
@@ -81,8 +126,27 @@
 <div class="row {{if .Event.IsNew}}new{{end}}">
   <span class="actor">{{.Event.Actor}}</span>
   <span class="verb">{{.Event.Verb}}</span>
-  <a class="target mono" href="{{drawerURL .Event.Target}}">{{.Event.Target}}</a>
-  <span class="text-subtle">{{.Event.TargetTitle}}</span>
+  {{if .Event.Target}}<a class="target" href="{{drawerURL .Event.Target}}">{{.Event.Target}}</a>{{end}}
+  <span class="subject">{{.Event.TargetTitle}}</span>
   <span class="ts">{{.Event.RelTime}}</span>
 </div>
+{{end}}
+
+{{define "activity-list"}}
+{{- /* The swappable activity region; the id is a contract with app.js. */ -}}
+<section class="activity" id="activity-feed" aria-live="polite" aria-label="Activity feed">
+  {{- if hasAny .Events}}
+    {{range .Events}}{{template "activity-row" (dict "Event" .)}}{{end}}
+  {{- else}}
+    <p class="empty">No activity yet. It appears here the moment an agent touches the board.</p>
+  {{- end}}
+</section>
+{{end}}
+
+{{define "live-status"}}
+{{- /* The connection indicator. app.js owns .Text and data-state; this is
+       only the initial, JavaScript-off rendering. */ -}}
+<span class="live-status" data-live-status data-state="idle" role="status" aria-live="polite">
+  <span class="dot" aria-hidden="true"></span><span data-live-label>live</span>
+</span>
 {{end}}

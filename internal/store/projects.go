@@ -120,7 +120,11 @@ func (r *projectRepo) GetByKey(tx Tx, key string) (*domain.Project, error) {
 		       focus_task_id, estimate_unit, enforce_dependencies, strict_done,
 		       claim_ttl_seconds, archived_at, created_at, updated_at
 		FROM projects WHERE key = ? COLLATE NOCASE`, key)
-	return scanProject(row)
+	p, err := scanProject(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, errProject(key)
+	}
+	return p, err
 }
 
 func (r *projectRepo) GetByID(tx Tx, id string) (*domain.Project, error) {
@@ -133,7 +137,11 @@ func (r *projectRepo) GetByID(tx Tx, id string) (*domain.Project, error) {
 		       focus_task_id, estimate_unit, enforce_dependencies, strict_done,
 		       claim_ttl_seconds, archived_at, created_at, updated_at
 		FROM projects WHERE id = ?`, id)
-	return scanProject(row)
+	p, err := scanProject(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, errProject(id)
+	}
+	return p, err
 }
 
 func (r *projectRepo) List(tx Tx, includeArchived bool) ([]*domain.Project, error) {
@@ -267,7 +275,9 @@ func (r *projectRepo) Delete(tx Tx, projectID string) error {
 // helpers
 // ---------------------------------------------------------------------------
 
-// errProject is the project-scoped NotFound builder.
+// errProject is the project-scoped NotFound builder. Only a caller that
+// still holds the identifier it looked the row up by may call it — see the
+// note on scanProject.
 var errProject = func(key string) *domain.Error { return domain.NotFound("project", key) }
 
 // internalErrorf wraps an *Error with an extra message context for
@@ -276,6 +286,14 @@ var errProject = func(key string) *domain.Error { return domain.NotFound("projec
 // methods on a non-local type).
 
 // scanProject / scanProjectRows materialize a Project from a query.
+//
+// scanProject deliberately passes sql.ErrNoRows straight back instead of
+// turning it into a domain error: it is handed a *sql.Row and has no idea
+// which key or id the caller queried with. It used to answer with
+// domain.NotFound("project", "?"), and that literal "?" travelled all the
+// way out to the MCP client as `project "?" not found` — an error naming
+// nothing an agent could act on. Only GetByKey/GetByID, which still hold the
+// identifier, may build the NotFound.
 func scanProject(row *sql.Row) (*domain.Project, error) {
 	var (
 		p             domain.Project
@@ -290,7 +308,7 @@ func scanProject(row *sql.Row) (*domain.Project, error) {
 		&p.ClaimTTLSeconds, &archived, &created, &upd,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, errProject("?")
+		return nil, err
 	}
 	if err != nil {
 		return nil, fmt.Errorf("store: scan project: %w", err)

@@ -14,9 +14,11 @@ import (
 const CSRFCookieName = "kanban_csrf"
 
 // CSRFFieldName is the hidden form field the browser-side template emits.
-// The web layer renders `<input type="hidden" name="kanban_csrf" value="…">`
-// inside every state-changing form.
-const CSRFFieldName = "kanban_csrf"
+// The web layer renders `<input type="hidden" name="csrf_token" value="…">`
+// inside every state-changing form. The value chosen here ("csrf_token")
+// matches the templates the web agent shipped, so there is exactly one
+// field name on both sides of the boundary.
+const CSRFFieldName = "csrf_token"
 
 // CSRFHeaderName is the alternative header (htmx and fetch callers prefer
 // headers over hidden inputs; both must work).

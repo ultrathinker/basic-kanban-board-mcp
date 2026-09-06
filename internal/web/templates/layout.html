@@ -1,7 +1,11 @@
 {{/* The layout is split into head/foot blocks so each page template can wrap
-   its own content without using a template.Funcs helper. The head block
-   opens <html> and <body>; the foot block closes them and includes the
-   static assets. */}}
+   its own content without a template.Funcs helper. The head block opens
+   <html> and <body>; the foot block closes them and pulls in the static
+   assets.
+
+   No inline <script> and no inline event handlers anywhere: the CSP is
+   `script-src 'self'`, so an onclick= or onchange= attribute is silently
+   dead. Everything interactive is wired from app.js by data- attribute. */}}
 
 {{define "layout-head"}}
 <!doctype html>
@@ -24,10 +28,12 @@
   </main>
   {{template "footer" .}}
   <div class="toast-region" id="toasts" role="status" aria-live="polite"></div>
-  <script src="/static/vendor/htmx.min.js" defer></script>
-  <script src="/static/vendor/sse.min.js" defer></script>
+  {{/* Only two scripts, and both of them do something. htmx, its SSE
+       extension and Alpine are still vendored under web/static/vendor but
+       are NOT loaded: none of the three can run in this build. See the
+       notes in web/static/vendor/LICENSES.md — restoring any of them is one
+       <script> tag here. */}}
   <script src="/static/vendor/sortable.min.js" defer></script>
-  <script src="/static/vendor/alpine.min.js" defer></script>
   <script src="/static/app.js" defer></script>
 </body>
 </html>
@@ -42,24 +48,31 @@
   <nav aria-label="Sections">
     <a href="/" class="{{if eq .Nav "overview"}}active{{end}}">Overview</a>
     {{if .CurrentUser}}
+      <a href="/agent-setup" class="{{if eq .Nav "agent-setup"}}active{{end}}">Agents</a>
       <a href="/admin" class="{{if eq .Nav "admin"}}active{{end}}">Admin</a>
     {{end}}
   </nav>
   <span class="spacer"></span>
-  <button type="button" class="icon-btn" data-theme-toggle aria-label="Toggle color theme" title="Toggle theme">
+  <button type="button" class="icon-btn" data-theme-toggle aria-pressed="false"
+          aria-label="Toggle colour theme" title="Toggle theme">
     <span aria-hidden="true">◐</span>
   </button>
   {{if .CurrentUser}}
-    <span class="text-muted text-xs">{{.CurrentUser}}</span>
+    <span class="mono text-xs text-muted" title="Signed in as {{.CurrentUser}}">{{.CurrentUser}}</span>
+    <form method="post" action="/logout" class="inline-form">
+      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+      <button type="submit" class="btn btn-sm btn-ghost">Sign out</button>
+    </form>
   {{else}}
     <a href="{{loginURL "/"}}" class="btn btn-sm">Sign in</a>
   {{end}}
 </header>{{end}}
 
 {{define "project-switcher"}}
-  <form method="get" action="/" class="project-switcher" role="search">
+  {{- if hasAny .Layout.Projects}}
+  <form method="get" action="/" class="project-switcher">
     <label for="project" class="sr-only">Switch project</label>
-    <select id="project" name="p" onchange="this.form.submit()">
+    <select id="project" name="p" data-auto-submit>
       <option value="">All projects</option>
       {{range .Layout.Projects}}
         <option value="{{.Key}}" {{if eq .Key $.Layout.CurrentKey}}selected{{end}}>{{.Key}} — {{.Name}}</option>
@@ -67,11 +80,10 @@
     </select>
     <noscript><button type="submit" class="btn btn-sm">Go</button></noscript>
   </form>
+  {{- end}}
 {{end}}
 
-{{define "footer"}}<footer class="container text-subtle text-xs" style="padding:1rem 0 2rem">
-  <hr>
+{{define "footer"}}<footer class="container site-footer">
   <span>One board · Every agent · Nine tools</span>
-  <span class="spacer" style="display:inline-block;width:1rem"></span>
   <a href="/agent-setup">Agent setup</a>
 </footer>{{end}}

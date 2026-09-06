@@ -13,9 +13,9 @@ import (
 // fakeHistory is the in-memory HistoryLoader used by the tests. It mirrors
 // what the SQLite EventRepo would answer, with no on-disk side effects.
 type fakeHistory struct {
-	mu      sync.Mutex
-	events  []domain.Event
-	minID   int64
+	mu       sync.Mutex
+	events   []domain.Event
+	minID    int64
 	failNext atomic.Bool
 }
 

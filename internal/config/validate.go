@@ -94,9 +94,9 @@ func validateTLSForRemote(c Config) error {
 	scheme, err := BaseURLTLS(c.BaseURL)
 	if err != nil {
 		return &RefusalError{
-			Code: RefuseInsecureHTTP,
+			Code:    RefuseInsecureHTTP,
 			Message: fmt.Sprintf("--base-url: %s. Either set base-url to https://… or pass --insecure-http. The two-minute Caddy path is in docs/DEPLOY.md.", err.Error()),
-			Flag: "insecure-http",
+			Flag:    "insecure-http",
 		}
 	}
 	if scheme == "https" {

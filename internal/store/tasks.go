@@ -88,7 +88,14 @@ func (r *taskRepo) Create(tx Tx, t *domain.Task) error {
 				"Verify type, priority and (column_id) project/column match.")
 		}
 		if IsForeignKeyViolation(err) {
-			return domain.NotFound("task", "parent or column")
+			parent := "none"
+			if t.ParentID != nil {
+				parent = *t.ParentID
+			}
+			return missingRef(
+				fmt.Sprintf("task %q references a column (%s) or a parent (%s) that does not exist",
+					t.Key, t.ColumnID, parent),
+				"Create the column with project_upsert, or check the parent task key, then retry.")
 		}
 		return fmt.Errorf("store: insert task: %w", err)
 	}
