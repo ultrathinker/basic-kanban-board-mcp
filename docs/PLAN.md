@@ -5,6 +5,29 @@
 > `docs/reviews/`. v2 integrates them — §17 lists every change and how disagreements were
 > resolved. Language of all code, docs, UI, commits: English.
 
+## How to use this plan (governance)
+
+- **This document is the spec of record**, not a contract carved in stone. It was written before
+  a line of code existed; implementation *will* surface facts the plan did not know (SDK
+  behaviour, SQLite quirks, client incompatibilities, wrong assumptions about agents).
+- **Deviate when the facts demand it — but never silently.** Any implementation that departs
+  from what a section here says must, in the same change:
+  1. add a row to **§18 Deviations log** (date · section · planned · actual · the new fact that
+     forced it · impact on other sections);
+  2. edit the affected section so the plan again describes reality, marking the edit
+     `(changed YYYY-MM-DD, see §18 #N)`.
+  A deviation without a logged reason is a bug, not a decision.
+- **What the plan deliberately leaves to implementation** (derivable, would only rot here):
+  the nine tools' concrete JSON Schemas and the compact-grammar regex (`docs/MCP-TOOLS.md`,
+  produced in M1 *before* any UI work, with golden tests), migration DDL (derived from §5),
+  the exact `instructions` text, the export JSON format, the SSE fragment protocol, and the
+  repository's own `AGENTS.md` for implementing agents (M0).
+- **What must not change without the owner's explicit decision:** the goals order (§1),
+  name/license (§2), nine tools as the public surface, MIT, "MCP + UI + CLI only" for v1.0.
+- The **decision log (§16)** records *why* choices were made; the **deviations log (§18)**
+  records *where reality overrode them*. Keep both current; they are what makes the plan
+  trustworthy six months from now.
+
 ---
 
 ## 0. The pitch
@@ -527,7 +550,7 @@ criteria (Backlog.md), dependency-gated moves (agent-board), WIP limits (Vikunja
 
 | Milestone | Scope | Exit criterion |
 |---|---|---|
-| **M0 Skeleton** | repo, CI, `serve`/`healthz`/`readyz`/`healthcheck`, SQLite pools + migrations, config with bind/auth/TLS rules, token bootstrap, `doctor` | `docker run` prints the banner; refusal cases tested |
+| **M0 Skeleton** | repo, `AGENTS.md` for implementing agents, CI, `serve`/`healthz`/`readyz`/`healthcheck`, SQLite pools + migrations, config with bind/auth/TLS rules, token bootstrap, `doctor` | `docker run` prints the banner; refusal cases tested |
 | **M1 Core + MCP** | domain, store, service; **compact grammar + claim/version golden tests first**; all 9 tools; `instructions`; `/mcp` + `/mcp/readonly` + stdio bridge; idempotency | Claude Code and Codex create/start/update tasks end-to-end; invariants 1–7, 10, 12 green |
 | **M2 Web UI** | board, drawer, activity, overview, login, admin, SSE + resync, drag-and-drop, theme, `/agent-setup` | owner replaces the HTML page in daily use |
 | **M3 Dogfood + polish** | export/import/backup/purge, `--demo`, `agent-config`/`agent-md`, verified-client matrix, docs set | three machines, three agents, one board — for a week without a manual fix |
@@ -601,3 +624,14 @@ related updates reintroduces one-item batches); claim-moves-or-not (explicit `st
 both camps); link types (`blocks` only, 2/3); priority representation (names, one spelling);
 REST in v1 (cut — MCP is the product; UI uses internal endpoints); naming (owner's explicit
 choice kept; concern recorded; revisit v1.1).
+
+---
+
+## 18. Deviations log
+
+Every departure from this plan discovered during implementation goes here (see "How to use
+this plan"). Newest last. Empty at v2.
+
+| # | Date | Section | Planned | Actual | New fact that forced it | Impact |
+|---|---|---|---|---|---|---|
+| — | — | — | — | — | — | — |
