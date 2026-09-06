@@ -2,6 +2,7 @@ package web
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -17,17 +18,18 @@ import (
 // token holders exchange a one-time ticket via POST /events/ticket rather
 // than ever putting a bearer token in a URL (PLAN §8).
 //
-// Note on the fragment protocol: PLAN explicitly leaves "the SSE fragment
+// Note on the wire protocol: PLAN explicitly leaves "the SSE fragment
 // protocol" to implementation. This handler implements the transport layer
 // precisely (Last-Event-ID replay, the resync sentinel on a gap, per-project
-// fan-out, non-blocking publish) and emits each domain.Event under its own
-// type name plus the "board-update"/"activity-feed" aliases the board and
-// activity page markup declare via `sse-swap`. The payload is the
-// JSON-encoded event, not a pre-rendered HTML fragment: wiring a real
-// swappable fragment requires an `hx-target` on the actual board columns /
-// activity list in web/templates (currently `sse-swap` sits on a small
-// status span), which is outside this package's ownership. See the task
-// report for the follow-up.
+// fan-out, non-blocking publish) and dispatches every domain.Event under the
+// single canonical name sseChangeEvent. One name per frame is not a stylistic
+// choice: the W3C parser overwrites the event-type buffer for every "event:"
+// field inside a frame, so several names in one frame collapse to the last
+// one — exactly the bug independent review #6 found here. The concrete domain
+// type rides inside the JSON payload ("Type" field) for clients that want
+// it; web/static/app.js treats any event as a change signal and re-fetches
+// the page's live regions, which is the only contract the shipped client
+// needs.
 func (w *Web) handleEvents(rw http.ResponseWriter, r *http.Request) {
 	tok, ok := w.requireAPIAuth(rw, r, domain.ScopeRead)
 	if !ok {
@@ -138,16 +140,26 @@ func lastEventID(r *http.Request) int64 {
 	return id
 }
 
+// sseChangeEvent is the one event name every domain event is dispatched
+// under. web/static/app.js registers listeners for "board-update" and
+// "activity-feed" that both mean "re-fetch the live regions", so this name
+// keeps the shipped client working unchanged; the extra alias listener on
+// the client is harmless redundancy.
+const sseChangeEvent = "board-update"
+
+// sseResyncEvent is the resync sentinel's wire name. app.js reloads the whole
+// page on it, because a gap the replay buffer cannot cover means the page's
+// state is untrustworthy.
+const sseResyncEvent = "resync"
+
 func writeSSEEvent(rw http.ResponseWriter, e domain.Event) {
 	payload, err := json.Marshal(e)
 	if err != nil {
 		payload = []byte(`{}`)
 	}
-	var names []string
+	name := sseChangeEvent
 	if e.Type == events.ResyncSentinel {
-		names = []string{"resync"}
-	} else {
-		names = []string{string(e.Type), "board-update", "activity-feed"}
+		name = sseResyncEvent
 	}
 	var b strings.Builder
 	if e.ID > 0 {
@@ -155,11 +167,9 @@ func writeSSEEvent(rw http.ResponseWriter, e domain.Event) {
 		b.WriteString(strconv.FormatInt(e.ID, 10))
 		b.WriteString("\n")
 	}
-	for _, n := range names {
-		b.WriteString("event: ")
-		b.WriteString(n)
-		b.WriteString("\n")
-	}
+	b.WriteString("event: ")
+	b.WriteString(name)
+	b.WriteString("\n")
 	for _, line := range strings.Split(string(payload), "\n") {
 		b.WriteString("data: ")
 		b.WriteString(line)
@@ -173,17 +183,34 @@ func writeSSERaw(rw http.ResponseWriter, s string) {
 	_, _ = rw.Write([]byte(s))
 }
 
-// snapshotEvents drains a project's replay (via a throwaway subscription) to
-// build the activity page's initial server-rendered list. events.Bus has no
-// synchronous "give me the latest N" query outside Subscribe's async replay
-// stream, so this uses a short idle-timeout heuristic: once ~150ms passes
-// with nothing new arriving, the replay is assumed complete. See the task
-// report — a direct HistoryLoader.Latest-backed method on Bus would be
-// cleaner and is a reasonable follow-up for whoever owns internal/events.
-func (w *Web) snapshotEvents(projectID string, limit int) []domain.Event {
+// snapshotEvents builds the activity page's initial server-rendered list.
+//
+// With Deps.History wired this is a direct, synchronous read of committed
+// events — no subscription, no waiting. Since's limit is oldest-first ("up
+// to limit from the start of the table"), which is the wrong end for a feed,
+// so the read is unbounded and capped newest-first afterwards; that is the
+// same volume the replay path below ever delivered.
+//
+// The bus-drain path is the fallback for a History that is not wired (yet).
+// It is what the hardcoded ~150ms idle window was papering over: events.Bus
+// delivers its replay asynchronously and signals nothing when the replay is
+// done, so the drain has to guess from silence (review #13). Removing the
+// wait without changing the data path would not fix that — it would make the
+// initial feed intermittently empty whenever the replay goroutine had not
+// delivered yet. The fallback stays so an unwired History degrades to the
+// pre-seam behaviour instead of breaking the page.
+func (w *Web) snapshotEvents(projectID string, limit int) ([]domain.Event, error) {
+	if w.d.History != nil {
+		evs, err := w.d.History.Since(projectID, 0, 0)
+		if err != nil {
+			return nil, fmt.Errorf("web: read activity history for %q: %w", projectID, err)
+		}
+		return capNewestFirst(evs, limit), nil
+	}
+
 	sub, err := w.d.Bus.Subscribe(projectID, 0)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("web: subscribe for activity snapshot on %q: %w", projectID, err)
 	}
 	defer sub.Cancel()
 
@@ -196,7 +223,7 @@ func (w *Web) snapshotEvents(projectID string, limit int) []domain.Event {
 		select {
 		case e, ok := <-sub.Events:
 			if !ok {
-				return capNewestFirst(out, limit)
+				return capNewestFirst(out, limit), nil
 			}
 			if e.Type != events.ResyncSentinel {
 				out = append(out, e)
@@ -206,9 +233,9 @@ func (w *Web) snapshotEvents(projectID string, limit int) []domain.Event {
 			}
 			idle.Reset(150 * time.Millisecond)
 		case <-idle.C:
-			return capNewestFirst(out, limit)
+			return capNewestFirst(out, limit), nil
 		case <-overall.C:
-			return capNewestFirst(out, limit)
+			return capNewestFirst(out, limit), nil
 		}
 	}
 }

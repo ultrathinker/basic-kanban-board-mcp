@@ -232,6 +232,11 @@ func (a *actor) MayAccessProject(key string) bool {
 // Bootstrap
 // ---------------------------------------------------------------------------
 
+// adminTokenName is the name of the row Bootstrap owns. `name` carries a
+// UNIQUE index, so this constant is also the question "has this database been
+// bootstrapped already?" — asked by name rather than by counting rows.
+const adminTokenName = "admin"
+
 // BootstrapError is returned by Bootstrap when no admin token was supplied
 // AND one cannot be created externally. BootstrapToken is the secret value
 // the operator must record — it is returned only once.
@@ -246,15 +251,17 @@ func (e *BootstrapError) Error() string { return "auth: bootstrap: " + e.Reason 
 //  1. Uses supplied if non-empty.
 //  2. Generates a new secret and stores the hash, returning the secret.
 //
-// The caller is responsible for printing the returned secret exactly once and
-// for warning the operator to rotate it (PLAN §8: "this token is now in your
-// logs — rotate it").
+// It is idempotent, and has to be: the documented Docker deployment restarts
+// the same container against the same volume, so every start after the first
+// runs Bootstrap against a table that already holds the admin row.
+//
+// The returned secret is non-empty only when this call actually created the
+// row. The caller is responsible for printing it exactly once and for warning
+// the operator to rotate it (PLAN §8: "this token is now in your logs —
+// rotate it").
 func (m *Manager) Bootstrap(ctx context.Context, supplied string) (token string, err error) {
 	if supplied != "" {
-		if err := m.mintAndStore(ctx, "admin", domain.Scopes{domain.ScopeAdmin}, supplied); err != nil {
-			return "", err
-		}
-		return supplied, nil
+		return m.bootstrapSupplied(ctx, supplied)
 	}
 	count, err := m.Tokens.Count(ctx)
 	if err != nil {
@@ -267,10 +274,79 @@ func (m *Manager) Bootstrap(ctx context.Context, supplied string) (token string,
 	if err != nil {
 		return "", err
 	}
-	if err := m.mintAndStore(ctx, "admin", domain.Scopes{domain.ScopeAdmin}, secret); err != nil {
+	if err := m.mintAndStore(ctx, adminTokenName, domain.Scopes{domain.ScopeAdmin}, secret); err != nil {
 		return "", err
 	}
 	return secret, nil
+}
+
+// bootstrapSupplied is the KANBAN_ADMIN_TOKEN path.
+//
+// The interesting case is the second start, where the admin row already
+// exists. Three outcomes, and the reasoning behind each is the whole design
+// of this function:
+//
+//   - Same secret: reuse the row untouched. The environment and the database
+//     agree, so there is nothing to do and nothing to announce — an empty
+//     secret is returned so the startup banner does not reprint a credential
+//     the operator already has in their compose file.
+//
+//   - Different secret: refuse, loudly. Overwriting the stored hash from an
+//     environment variable would silently undo a deliberate `token rotate` —
+//     the operator who rotates after a leak, then reboots the host, would
+//     have the leaked secret reinstated by a stale compose file with nothing
+//     in the logs to say so. Two sources of truth disagree about an admin
+//     credential; that is a decision for a human, not a default.
+//
+//   - Revoked row: refuse too. Reusing it would hand back a secret that
+//     cannot authenticate, and un-revoking would resurrect a credential
+//     someone deliberately killed.
+//
+// Both refusals stop startup, which is only correct because neither can
+// happen in the steady state: an unchanged KANBAN_ADMIN_TOKEN takes the reuse
+// path forever. The message says what to change, since the CLI prints
+// Message and not Remediation.
+func (m *Manager) bootstrapSupplied(ctx context.Context, supplied string) (string, error) {
+	if !strings.HasPrefix(supplied, TokenPrefix) {
+		// Validated before the lookup so a typo in the environment is
+		// reported identically on the first start and on the hundredth.
+		return "", &BootstrapError{Reason: fmt.Sprintf("supplied token for %q does not start with %q", adminTokenName, TokenPrefix)}
+	}
+
+	existing, err := m.Tokens.GetByName(ctx, adminTokenName)
+	if err != nil {
+		// A missing row is the first start, not a failure. Anything else
+		// (connection lost, schema drift, …) must propagate.
+		if e := domain.AsError(err); e == nil || e.Code != domain.CodeNotFound {
+			return "", err
+		}
+		existing = nil
+	}
+
+	if existing == nil {
+		if err := m.mintAndStore(ctx, adminTokenName, domain.Scopes{domain.ScopeAdmin}, supplied); err != nil {
+			return "", err
+		}
+		return supplied, nil
+	}
+
+	if !existing.Active() {
+		return "", domain.Forbidden(
+			fmt.Sprintf("token %q already exists in this database but is revoked; "+
+				"remove KANBAN_ADMIN_TOKEN and create a fresh admin token with `kanban token create`", adminTokenName),
+			"Unset KANBAN_ADMIN_TOKEN and run `kanban token create` to issue a new admin credential.")
+	}
+
+	// Constant-time even though both sides are local: the comparison rule
+	// belongs to the secret, not to the context it is compared in.
+	if subtle.ConstantTimeCompare(existing.Hash, HashToken(supplied)) == 1 {
+		return "", nil // already bootstrapped with this exact secret
+	}
+
+	return "", domain.Forbidden(
+		fmt.Sprintf("token %q already exists in this database with a different secret; "+
+			"KANBAN_ADMIN_TOKEN will not overwrite it", adminTokenName),
+		"Restore the previous value of KANBAN_ADMIN_TOKEN, or unset it and rotate with `kanban token rotate admin`.")
 }
 
 // mintAndStore creates a single token row. The hash, scopes and timestamp

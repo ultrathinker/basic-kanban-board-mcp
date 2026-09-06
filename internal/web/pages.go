@@ -219,7 +219,12 @@ func (w *Web) handleActivity(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	events := w.snapshotEvents(projectID, 50)
+	// A failed history read must not render as a confident empty feed.
+	events, err := w.snapshotEvents(projectID, 50)
+	if err != nil {
+		w.pageError(rw, r, err)
+		return
+	}
 	model := view.ActivityModel{Project: view.ProjectSummary{Key: key}}
 	now := w.d.Now()
 	for _, e := range events {

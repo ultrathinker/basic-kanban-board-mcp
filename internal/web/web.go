@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/auth"
+	"github.com/ultrathinker/basic-kanban-board-mcp/internal/domain"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/events"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/service"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/web/templates"
@@ -27,6 +28,20 @@ import (
 // the deviation note in the task report for why this seam exists at all.
 type ProjectResolver interface {
 	ProjectIDForKey(ctx context.Context, key string) (string, bool, error)
+}
+
+// EventHistory reads committed events for server-rendered snapshots (the
+// activity page's initial list). It exists for the same reason as
+// ProjectResolver: the frozen service.Service interface has no events read,
+// and events.Bus — the other in-process source — can only hand history over
+// as an asynchronous replay with no completion signal. The method set
+// intentionally matches events.HistoryLoader's Since so the composition root
+// can wire the very same store-backed adapter the bus already uses.
+type EventHistory interface {
+	// Since returns events with ID greater than afterID, oldest first. The
+	// limit semantics are events.HistoryLoader's: afterID zero reads from
+	// the start of the table, limit zero returns everything available.
+	Since(projectID string, afterID int64, limit int) ([]domain.Event, error)
 }
 
 // Deps are the dependencies the composition root wires together. Every field
@@ -47,6 +62,14 @@ type Deps struct {
 	ClaimTTLDefault time.Duration
 
 	ProjectLookup ProjectResolver
+
+	// History reads committed events for the activity page's initial
+	// server-rendered snapshot. Optional: when nil, snapshotEvents falls
+	// back to draining a throwaway bus subscription (an idle-timed guess at
+	// replay completion — the slow path review #13 is about), so a build
+	// whose composition root has not wired this yet keeps working. Wire it
+	// to the same loader events.Bus was constructed with.
+	History EventHistory
 
 	// Backup performs a VACUUM INTO copy for "GET /admin/backup"; BackupDir
 	// names the destination directory. The composition root wires Backup

@@ -39,16 +39,15 @@ func testConfig(t *testing.T, dir string) config.Config {
 }
 
 // preSeedAdminToken inserts an admin token into the token table directly via
-// the store layer. internal/auth's Bootstrap helper has not historically
-// assigned a token ID before insertion, so when it runs against the real
-// SQLite store the store's "id, name and hash are required" check fires.
-// Pre-seeding lets Bootstrap observe a non-empty token table and short-circuit
-// to "no secret to mint", so these tests exercise the rest of New() against
-// a real on-disk store without depending on the auth path that the auth
-// owner is currently fixing.
+// the store layer, so a test knows the secret it can authenticate with.
 //
-// When Bootstrap is repaired upstream, this helper can be deleted and the
-// tests can rely on a fresh bootstrap per test.
+// It originally existed as a workaround: Bootstrap could not run against a
+// real SQLite store at all, because mintAndStore built a token with no ID and
+// the store rejects that. That is fixed — Bootstrap now works on a fresh
+// database and survives a restart with a supplied secret. The helper stays
+// only because these tests want a *known* secret without reading one back out
+// of a banner, which keeps them focused on what New() wires rather than on
+// credential plumbing.
 func preSeedAdminToken(t *testing.T, dir string, secret string) {
 	t.Helper()
 	dbPath := filepath.Join(dir, "kanban.db")
@@ -77,10 +76,8 @@ func preSeedAdminToken(t *testing.T, dir string, secret string) {
 
 // TestNew_OpensStoreAndConfirmsShape confirms the composition root opens
 // the store, runs migrations, builds the handler tree and produces a banner.
-// Because Bootstrap against a fresh SQLite database is currently broken
-// (the auth layer's mintAndStore does not assign a token UUID), this test
-// pre-seeds an admin row so Bootstrap sees a non-empty token table and
-// short-circuits without trying to mint.
+// It pre-seeds an admin row so the test holds a known secret; Bootstrap then
+// sees a non-empty table and mints nothing.
 func TestNew_OpensStoreAndConfirmsShape(t *testing.T) {
 	dir := t.TempDir()
 	const secret = "kbn_preseeded00xx00xx00xx00xx00xx00xx00xx"

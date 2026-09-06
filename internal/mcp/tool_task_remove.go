@@ -19,7 +19,7 @@ type removeItemIn struct {
 
 type taskRemoveInput struct {
 	Items           []removeItemIn `json:"items"`
-	CascadeSubtasks bool           `json:"cascade_subtasks,omitempty" jsonschema:"also archive subtasks of an archived parent"`
+	CascadeSubtasks *bool          `json:"cascade_subtasks,omitempty" jsonschema:"also archive subtasks of an archived parent"`
 	Restore         bool           `json:"restore,omitempty" jsonschema:"restore instead of archive"`
 }
 
@@ -79,9 +79,13 @@ func registerTaskRemove(s *gomcp.Server, svc service.Service) {
 		}
 
 		if len(toSend) > 0 {
+			cascade := true
+			if in.CascadeSubtasks != nil {
+				cascade = *in.CascadeSubtasks
+			}
 			res, err := svc.TaskRemove(ctx, actor, service.TaskRemoveInput{
 				Items:           toSend,
-				CascadeSubtasks: in.CascadeSubtasks,
+				CascadeSubtasks: cascade,
 				Restore:         in.Restore,
 			})
 			if err != nil {

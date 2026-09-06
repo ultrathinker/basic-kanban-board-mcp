@@ -16,6 +16,12 @@
 //     the oldest event the events table still retains, the bus delivers a
 //     ResyncSentinel and closes the channel so the caller must reload. The
 //     result is explicit, not a comment.
+//   - Ordering: a subscriber's channel carries strictly increasing event ids.
+//     Replay comes first, live events after — never the other way round. A
+//     client that renders a live event and only then the older event it
+//     supersedes shows the wrong board until it reloads, so the bus parks live
+//     events (subscription.pending) for the short window in which the history
+//     read is still running.
 //
 // Concurrency model — every channel send and every channel close happens under
 // the same mutex. The channel is buffered, so the send is non-blocking and the
@@ -116,6 +122,13 @@ type subscription struct {
 	ch      chan domain.Event
 	done    chan struct{}
 
+	// replaying is set from registration until the historical replay has been
+	// written to ch. While it is set Publish parks events in pending instead
+	// of sending them, so a live event published mid-replay cannot overtake
+	// the older events it depends on.
+	replaying bool
+	pending   []domain.Event
+
 	// needsResync, canceled and chClosed are only flipped by code paths
 	// that hold mu, so any test for "should we still send/close?" is safe
 	// under the same lock.
@@ -146,47 +159,63 @@ func New(history HistoryLoader, subBuffer int) *Bus {
 // If lastEventID is older than the oldest event retained, the bus delivers a
 // single ResyncSentinel event and then closes the channel — the caller MUST
 // detect ResyncSentinel and reload.
+//
+// Everything on the returned channel is in increasing id order: the replay is
+// written before Subscribe returns, and any event published while the history
+// read was still running is flushed behind it.
 func (b *Bus) Subscribe(projectID string, lastEventID int64) (*Subscriber, error) {
-	replay, err := b.loadReplay(projectID, lastEventID)
-	if err != nil {
-		return nil, err
+	if b.history == nil {
+		return nil, ErrHistoryUnavailable
 	}
 
+	// Register BEFORE reading history, with replaying set. Registration and
+	// the history read cannot both be atomic with respect to Publish — one
+	// has to go first — and this is the order that neither loses nor
+	// reorders an event:
+	//
+	//   read first  -> an event committed after the read but published
+	//                  before registration is in neither the query result
+	//                  nor the fan-out set: lost.
+	//   register first, sending live immediately -> that event reaches the
+	//                  consumer ahead of the older replayed ones: inverted.
+	//   register first, parking live events (this) -> the event is held in
+	//                  sub.pending and flushed after the replay: in order.
 	b.mu.Lock()
 	sub := &subscription{
-		id:      b.nextID + 1,
-		project: projectID,
-		ch:      make(chan domain.Event, b.subBuffer),
-		done:    make(chan struct{}),
+		id:        b.nextID + 1,
+		project:   projectID,
+		ch:        make(chan domain.Event, b.subBuffer),
+		done:      make(chan struct{}),
+		replaying: true,
 	}
 	b.nextID = sub.id
 	b.subs = append(b.subs, sub)
 	b.mu.Unlock()
 
-	if replay.NeedsResync {
-		// The resync path closes the channel under the lock, so any later
-		// Publish that started before this point cannot observe an
-		// inconsistent state. We mark needsResync up-front so Publish
-		// skips it even before the goroutine runs.
-		sub.needsResync = true
-		go b.deliverResyncAndClose(sub, "history_gap", replay.LastEventID, replay.MinID)
-		return &Subscriber{
-			Events: sub.ch,
-			Done:   sub.done,
-			Cancel: func() { b.removeSub(sub) },
-		}, nil
+	replay, err := b.loadReplay(projectID, lastEventID)
+	if err != nil {
+		// The caller never receives this Subscriber, so tear the slot down
+		// instead of leaving an orphan in the fan-out set.
+		b.removeSub(sub)
+		return nil, err
 	}
 
-	// Replay historical events on a separate goroutine so the call returns
-	// immediately. Live events accumulate in the channel buffer behind the
-	// replay; the consumer reads them in order.
-	go b.deliverReplay(sub, replay)
-
-	return &Subscriber{
+	out := &Subscriber{
 		Events: sub.ch,
 		Done:   sub.done,
 		Cancel: func() { b.removeSub(sub) },
-	}, nil
+	}
+
+	if replay.NeedsResync {
+		// Synchronous: the marker and the close both happen under the lock
+		// before the caller can read the channel, so no Publish can slip an
+		// event in front of a resync the consumer must act on.
+		b.deliverResyncAndClose(sub, "history_gap", replay.LastEventID, replay.MinID)
+		return out, nil
+	}
+
+	b.deliverReplayAndGoLive(sub, replay)
+	return out, nil
 }
 
 func (b *Bus) loadReplay(projectID string, lastEventID int64) (Replay, error) {
@@ -243,27 +272,63 @@ func (b *Bus) Publish(e domain.Event) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	for _, s := range b.subs {
+	// Iterate a copy. Dropping a slow subscriber removes it from b.subs by
+	// shifting the tail of the backing array left — under a range over
+	// b.subs itself that silently skips the next subscriber (it never sees
+	// this event) and visits the one after twice (it sees the event twice,
+	// so its stream is no longer monotonic). The copy costs one small
+	// allocation per committed write and makes the pass visit every
+	// subscriber exactly once whatever the loop body does.
+	fanout := make([]*subscription, len(b.subs))
+	copy(fanout, b.subs)
+
+	for _, s := range fanout {
 		if s.needsResync || s.canceled {
 			continue
 		}
 		if !(s.project == "" || s.project == e.ProjectID) {
 			continue
 		}
-		select {
-		case s.ch <- e:
-		default:
-			// Buffer full — drop. Mark + close the channel under the same
-			// lock so a concurrent removeSub (also under the same lock)
-			// sees the closed state and does not double-close.
-			b.dropSlowLocked(s)
+		if s.replaying {
+			// The replay is not on the channel yet; sending now would put a
+			// newer event in front of older ones. Park it — Subscribe
+			// flushes pending the moment the replay is written. The park is
+			// bounded by the same budget as the channel: a subscriber that
+			// cannot be caught up is dropped, not grown without limit.
+			if len(s.pending) >= b.subBuffer {
+				b.dropLocked(s, "replay_backlog")
+				continue
+			}
+			s.pending = append(s.pending, e)
+			continue
 		}
+		// sendLocked drops the subscriber when its buffer is full; either
+		// way Publish moves on without blocking.
+		b.sendLocked(s, e, "slow_consumer")
 	}
 }
 
-// dropSlowLocked claims the right to drop s. Only the first caller wins;
-// every subsequent call sees needsResync=true and returns. Caller holds mu.
-func (b *Bus) dropSlowLocked(s *subscription) {
+// sendLocked pushes e onto s.ch without blocking, and reports whether it
+// landed. A full buffer means the consumer cannot keep up: the subscriber is
+// dropped and marked for resync rather than stalling the publisher. Caller
+// holds mu.
+func (b *Bus) sendLocked(s *subscription, e domain.Event, reason string) bool {
+	select {
+	case s.ch <- e:
+		return true
+	default:
+		// Mark + close the channel under the same lock so a concurrent
+		// removeSub (also under the same lock) sees the closed state and
+		// does not double-close.
+		b.dropLocked(s, reason)
+		return false
+	}
+}
+
+// dropLocked claims the right to drop s, recording why in the resync marker.
+// Only the first caller wins; every subsequent call sees needsResync=true and
+// returns. Caller holds mu.
+func (b *Bus) dropLocked(s *subscription, reason string) {
 	if s.needsResync || s.canceled {
 		return
 	}
@@ -276,7 +341,7 @@ func (b *Bus) dropSlowLocked(s *subscription) {
 	select {
 	case s.ch <- domain.Event{
 		Type:    ResyncSentinel,
-		Payload: map[string]any{"reason": "slow_consumer"},
+		Payload: map[string]any{"reason": reason},
 	}:
 	default:
 	}
@@ -324,38 +389,50 @@ func (b *Bus) closeChannelsLocked(s *subscription) {
 	close(s.done)
 }
 
-// deliverReplay pushes the replay slice onto the channel under the lock so
-// the race detector stays happy. The channel is buffered so a few hundred
-// replay events cost nothing.
-func (b *Bus) deliverReplay(sub *subscription, replay Replay) {
+// deliverReplayAndGoLive writes the replay slice to the channel, flushes the
+// live events Publish parked during the history read, and takes the
+// subscription live. It holds the lock for the whole sequence: every send is
+// non-blocking, and an interleaved Publish would be exactly the reordering
+// this function exists to prevent.
+func (b *Bus) deliverReplayAndGoLive(sub *subscription, replay Replay) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	// Whatever happens below, the subscription stops parking events: either
+	// they are on the channel, or the subscriber has been dropped and
+	// Publish skips it entirely. Leaving replaying set would silently
+	// swallow every later event.
+	defer func() {
+		sub.replaying = false
+		sub.pending = nil
+	}()
+
+	if sub.canceled || sub.chClosed {
+		return
+	}
+
+	var highest int64
 	for _, e := range replay.Events {
-		b.mu.Lock()
-		if sub.canceled || sub.chClosed {
-			b.mu.Unlock()
+		if !b.sendLocked(sub, e, "replay_overflow") {
 			return
 		}
-		// Buffered channel + default: the consumer may be slow; we
-		// never block here.
-		select {
-		case sub.ch <- e:
-		default:
-			// Drop the rest of the replay and mark for resync: the
-			// consumer cannot keep up even with history.
-			sub.needsResync = true
-			b.closeChannelsLocked(sub)
-			b.mu.Unlock()
-			// Best-effort: the consumer will see ResyncSentinel and
-			// reload from the source of truth.
-			func() {
-				defer func() { _ = recover() }()
-				sub.ch <- domain.Event{
-					Type:    ResyncSentinel,
-					Payload: map[string]any{"reason": "replay_overflow"},
-				}
-			}()
+		if e.ID > highest {
+			highest = e.ID
+		}
+	}
+	// An event committed just before the history read and published just
+	// after it appears in both the replay and pending. Skipping ids the
+	// replay already carried leaves the consumer with each event exactly
+	// once, still in increasing order.
+	for _, e := range sub.pending {
+		if e.ID != 0 && e.ID <= highest {
+			continue
+		}
+		if !b.sendLocked(sub, e, "replay_overflow") {
 			return
 		}
-		b.mu.Unlock()
+		if e.ID > highest {
+			highest = e.ID
+		}
 	}
 }
 
@@ -381,6 +458,11 @@ func (b *Bus) deliverResyncAndClose(sub *subscription, reason string, lastEventI
 	}
 	sub.needsResync = true
 	sub.canceled = true
+	// Anything Publish parked during the history read dies with the
+	// subscription: the consumer has been told to reload from the source of
+	// truth, which is newer than any event we could still hand it.
+	sub.replaying = false
+	sub.pending = nil
 	b.removeFromSliceLocked(sub)
 	b.closeChannelsLocked(sub)
 }

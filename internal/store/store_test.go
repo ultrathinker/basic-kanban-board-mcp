@@ -1134,6 +1134,168 @@ func TestToken_GetByHash(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Cycle detection across the parent hierarchy (PLAN §11 invariant 5)
+// ---------------------------------------------------------------------------
+
+// setParent reparents child under parent through the normal Update path.
+func setParent(t *testing.T, s Store, child, parent *domain.Task) {
+	t.Helper()
+	if err := s.Write(context.Background(), func(tx Tx) error {
+		cur, err := s.Tasks().GetByID(tx, child.ID)
+		if err != nil {
+			return err
+		}
+		cur.ParentID = &parent.ID
+		return s.Tasks().Update(tx, cur, &cur.Version)
+	}); err != nil {
+		t.Fatalf("reparent %s under %s: %v", child.Key, parent.Key, err)
+	}
+}
+
+// addBlocks adds a blocks link and returns whatever Add reported.
+func addBlocks(s Store, blocker, blocked *domain.Task) error {
+	return s.Write(context.Background(), func(tx Tx) error {
+		return s.Links().Add(tx, &domain.Link{
+			BlockerID: blocker.ID,
+			BlockedID: blocked.ID,
+			Type:      domain.LinkBlocks,
+			CreatedBy: "alice",
+		})
+	})
+}
+
+// wouldCycle runs WouldCycle for one candidate edge.
+func wouldCycle(t *testing.T, s Store, blocker, blocked *domain.Task) (bool, []string) {
+	t.Helper()
+	var cyc bool
+	var path []string
+	if err := s.Write(context.Background(), func(tx Tx) error {
+		var err error
+		cyc, path, err = s.Links().WouldCycle(tx, blocker.ID, blocked.ID)
+		return err
+	}); err != nil {
+		t.Fatalf("WouldCycle(%s -> %s): %v", blocker.Key, blocked.Key, err)
+	}
+	return cyc, path
+}
+
+// TestWouldCycle_ThroughSubtaskOfABlockedParent covers the deadlock a
+// blocks-only walk misses: A blocks B, C is a subtask of B, and C is then
+// allowed to block A. task_next never offers a subtask whose parent has
+// open blockers, so C waits on A; A waits on C by the new link; B waits on
+// A. All three are stuck for good and nothing refused the link.
+func TestWouldCycle_ThroughSubtaskOfABlockedParent(t *testing.T) {
+	ts := openTestStore(t)
+	p, cols := seedProject(t, ts)
+	a := seedTask(t, ts, p, cols["Backlog"], "A", "alice")
+	b := seedTask(t, ts, p, cols["Backlog"], "B", "alice")
+	c := seedTask(t, ts, p, cols["Backlog"], "C", "alice")
+
+	setParent(t, ts, c, b)
+	if err := addBlocks(ts, a, b); err != nil {
+		t.Fatalf("add A blocks B: %v", err)
+	}
+
+	cyc, path := wouldCycle(t, ts, c, a)
+	if !cyc {
+		t.Fatalf("C blocks A should be a cycle: A blocks B, C is a subtask of B")
+	}
+	if len(path) < 3 {
+		t.Fatalf("path = %v, want the three-node loop", path)
+	}
+	if path[0] != c.Key || path[len(path)-1] != c.Key {
+		t.Fatalf("path = %v, want it to open and close at %s", path, c.Key)
+	}
+
+	// Add must refuse it, not just WouldCycle.
+	err := addBlocks(ts, c, a)
+	de := domain.AsError(err)
+	if de == nil || de.Code != domain.CodeCycle {
+		t.Fatalf("Add(C blocks A) error = %v, want cycle", err)
+	}
+}
+
+// TestWouldCycle_ThroughParentOfABlockingSubtask is the other hierarchy
+// edge: a parent is never offered while it still has unfinished subtasks,
+// so P waits on its child C. With P blocking A, adding "A blocks C" closes
+// A -> C -> P -> A.
+func TestWouldCycle_ThroughParentOfABlockingSubtask(t *testing.T) {
+	ts := openTestStore(t)
+	p, cols := seedProject(t, ts)
+	parent := seedTask(t, ts, p, cols["Backlog"], "P", "alice")
+	child := seedTask(t, ts, p, cols["Backlog"], "C", "alice")
+	other := seedTask(t, ts, p, cols["Backlog"], "A", "alice")
+
+	setParent(t, ts, child, parent)
+	if err := addBlocks(ts, parent, other); err != nil {
+		t.Fatalf("add P blocks A: %v", err)
+	}
+
+	if cyc, path := wouldCycle(t, ts, other, child); !cyc {
+		t.Fatalf("A blocks C should be a cycle (P blocks A, C is a subtask of P); path = %v", path)
+	}
+}
+
+// TestWouldCycle_SiblingSubtasksStayLinkable pins the other side of the
+// rule. Collapsing a whole subtree into one node would be the easy way to
+// catch the cases above, and it would wrongly refuse this one: A blocks C1
+// and C2 blocks A, with C1 and C2 both subtasks of P, schedules fine as
+// C2, then A, then C1, then P.
+func TestWouldCycle_SiblingSubtasksStayLinkable(t *testing.T) {
+	ts := openTestStore(t)
+	p, cols := seedProject(t, ts)
+	parent := seedTask(t, ts, p, cols["Backlog"], "P", "alice")
+	c1 := seedTask(t, ts, p, cols["Backlog"], "C1", "alice")
+	c2 := seedTask(t, ts, p, cols["Backlog"], "C2", "alice")
+	other := seedTask(t, ts, p, cols["Backlog"], "A", "alice")
+
+	setParent(t, ts, c1, parent)
+	setParent(t, ts, c2, parent)
+	if err := addBlocks(ts, other, c1); err != nil {
+		t.Fatalf("add A blocks C1: %v", err)
+	}
+	if err := addBlocks(ts, c2, other); err != nil {
+		t.Fatalf("add C2 blocks A: %v — sibling subtasks must stay linkable", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GetManyByKeys
+// ---------------------------------------------------------------------------
+
+// TestGetManyByKeys_MatchesCaseInsensitively pins the batch lookup to the
+// same case-insensitive contract as GetByKey. GetManyByKeys has no caller
+// yet — it is part of the frozen TaskRepo interface — so without a test
+// nothing would notice if it drifted, and the collation it relies on lives
+// in the schema rather than in the query.
+func TestGetManyByKeys_MatchesCaseInsensitively(t *testing.T) {
+	ts := openTestStore(t)
+	p, cols := seedProject(t, ts)
+	one := seedTask(t, ts, p, cols["Backlog"], "one", "alice")
+	two := seedTask(t, ts, p, cols["Backlog"], "two", "alice")
+
+	var got map[string]*domain.Task
+	if err := ts.Read(context.Background(), func(tx Tx) error {
+		var err error
+		got, err = ts.Tasks().GetManyByKeys(tx, []string{
+			strings.ToLower(one.Key), two.Key, "BMB-9999", "",
+		})
+		return err
+	}); err != nil {
+		t.Fatalf("GetManyByKeys: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d tasks, want 2 (%v)", len(got), got)
+	}
+	if got[one.Key] == nil {
+		t.Fatalf("%s missing when asked for in lower case", one.Key)
+	}
+	if got[two.Key] == nil {
+		t.Fatalf("%s missing", two.Key)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
 

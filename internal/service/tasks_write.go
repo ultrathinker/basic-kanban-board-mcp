@@ -416,19 +416,20 @@ func (s *svc) resolveBlockerID(tx store.Tx, raw string, refToKey, refToID map[st
 //
 // Atomic semantics (PLAN §6.5):
 //   - Atomic == true  → the first item error returned from the closure
-//     rolls back the entire transaction. Every other item gets a
-//     synthetic ItemResult{Err: <closure error>}. We never apply a
-//     partial batch.
-//   - Atomic == false → per-item results. A mutating repo call that
-//     fails for one item is recorded in that item's ItemResult.Err and
-//     the loop continues. The `prepared` snapshot guarantees that
-//     every decision that could fail has already been validated
-//     against the loaded task state, so a true mid-loop failure
-//     should be rare.
+//     rolls back the entire transaction. We never apply a partial batch.
+//   - Atomic == false → per-item results. An item that fails validation
+//     or a mutating repo call is recorded in that item's ItemResult.Err
+//     and the loop continues with the next patch.
 //
-// store.Tx gives us no savepoints, so even under Atomic=false we cannot
-// "roll back just this item". The only safe pattern is validate first,
-// then write — exactly what the two-phase shape below does.
+// Each patch is validated and applied before the next one is looked at.
+// Validating the whole batch first and only then writing reads more
+// tidily, but it turns every check into a time-of-check/time-of-use race
+// against the batch itself: two patches moving into the same column both
+// read the pre-batch occupancy, both pass a WIP limit with room for one,
+// and both land. PLAN §11 invariant 6 ("WIP / dependency / strict_done
+// enforced inside the transaction, no TOCTOU") forbids exactly that, so
+// patch N is checked against the state patches 1..N-1 have already
+// written into this same transaction.
 // ---------------------------------------------------------------------------
 
 func (s *svc) TaskUpdate(ctx context.Context, a Actor, in TaskUpdateInput) (*TaskUpdateResult, error) {
@@ -453,9 +454,7 @@ func (s *svc) TaskUpdate(ctx context.Context, a Actor, in TaskUpdateInput) (*Tas
 		now := tx.Now()
 		cc := newColumnCache(s, tx)
 		pc := newProjectCache(s, tx)
-		prepareds := make([]*prepared, len(in.Patches))
 
-		// ----- Phase 1: validate each patch in isolation -----
 		for i, patch := range in.Patches {
 			results[i].Key = patch.Key
 			if patch.Key == "" {
@@ -465,6 +464,9 @@ func (s *svc) TaskUpdate(ctx context.Context, a Actor, in TaskUpdateInput) (*Tas
 				}
 				continue
 			}
+			// prepareUpdate re-reads the task, its project and the target
+			// column's occupancy every time, so the checks below see the
+			// writes made by the earlier patches of this same batch.
 			prep, err := s.prepareUpdate(tx, a, patch)
 			if err != nil {
 				results[i].Err = domain.AsError(err)
@@ -473,19 +475,13 @@ func (s *svc) TaskUpdate(ctx context.Context, a Actor, in TaskUpdateInput) (*Tas
 				}
 				continue
 			}
-			prepareds[i] = prep
-		}
-
-		// ----- Phase 2: apply each prepared patch -----
-		for i, patch := range in.Patches {
-			if results[i].Err != nil {
-				continue
-			}
-			prep := prepareds[i]
 			results[i].Key = prep.task.Key
 			tv, err := s.applyUpdate(tx, prep, patch, a, &pending, cc, pc, now)
 			if err != nil {
 				results[i].Err = domain.AsError(err)
+				if in.Atomic {
+					return err
+				}
 				continue
 			}
 			results[i].OK = true
@@ -816,17 +812,25 @@ func (s *svc) applyUpdate(
 	}
 
 	if patch.Focus != nil {
-		var newFocus *string
-		if *patch.Focus {
-			id := t.ID
-			newFocus = &id
-		}
-		if err := s.store.Projects().SetFocus(tx, prep.project.ID, newFocus); err != nil {
-			return nil, err
-		}
-		if err := s.emit(tx, pending, a.Name, domain.EventFocusChanged, prep.project.ID, &t.ID,
-			map[string]any{"key": t.Key, "focus": *patch.Focus}); err != nil {
-			return nil, err
+		holdsFocus := prep.project.FocusTaskID != nil && *prep.project.FocusTaskID == t.ID
+		// PLAN §6.5: "focus:false clears focus only if this task holds it".
+		// Clearing unconditionally would let a routine edit of task B drop the
+		// focus banner task A had set — and bump the project version for a
+		// change nobody asked for. Focus is project state, so the only task
+		// allowed to release it is the one holding it.
+		if *patch.Focus || holdsFocus {
+			var newFocus *string
+			if *patch.Focus {
+				id := t.ID
+				newFocus = &id
+			}
+			if err := s.store.Projects().SetFocus(tx, prep.project.ID, newFocus); err != nil {
+				return nil, err
+			}
+			if err := s.emit(tx, pending, a.Name, domain.EventFocusChanged, prep.project.ID, &t.ID,
+				map[string]any{"key": t.Key, "focus": *patch.Focus}); err != nil {
+				return nil, err
+			}
 		}
 	}
 

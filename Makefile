@@ -4,17 +4,12 @@
 #   build          compile the binary into ./bin/kanban
 #   test           run `go test ./... -race` (Linux/macOS only — race needs cgo)
 #   lint           run go vet + gofmt check
-#   css            regenerate web/static/app.css using the Tailwind standalone CLI
 #   docker         build the multi-arch image
 #   run            build and run `kanban serve`
 #   demo           build and run `kanban demo --help` to confirm wiring seams
 #   sync-embed     copy web/static -> internal/web/static and web/templates -> internal/web/templates
 #   check-embed    fail when the two trees differ (CI runs this on every PR)
 #   clean          remove ./bin and ./.tools
-#
-# The Tailwind CSS regeneration is OPTIONAL: a developer who never changes
-# the templates can ignore `make css` entirely. The committed app.css must
-# stay in sync, so CI checks it (see .github/workflows/ci.yml).
 #
 # The embed-mirror step (sync-embed / check-embed) exists because Go's
 # //go:embed cannot traverse "..", so internal/web/{static,templates} are
@@ -28,13 +23,6 @@ BIN         ?= $(BIN_DIR)/kanban
 VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 BUILD_DATE  ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 
-TOOLS_DIR   ?= .tools
-TAILWIND    ?= $(TOOLS_DIR)/tailwindcss
-TAILWIND_VERSION ?= v4.3.3
-
-CSS_SRC      := web/templates
-CSS_OUT      := web/static/app.css
-
 # Embed-mirror pairs (canonical -> embedded). `make sync-embed` overwrites
 # the destination; `make check-embed` asserts they are byte-identical.
 EMBED_STATIC_SRC  := web/static
@@ -46,20 +34,19 @@ EMBED_TPL_DST     := internal/web/templates
 # directive itself, package doc, build glue). The check ignores them.
 EMBED_EXTRA := internal/web/templates/templates.go
 
-.PHONY: build test lint css docker run demo sync-embed check-embed clean help
+.PHONY: build test lint docker run demo sync-embed check-embed clean help
 
 help:
 	@echo "Targets:"
 	@echo "  build        - compile ./$(BIN)"
 	@echo "  test         - run go test ./... -race"
 	@echo "  lint         - go vet + gofmt check"
-	@echo "  css          - regenerate $(CSS_OUT) via the Tailwind standalone binary"
 	@echo "  sync-embed   - mirror web/{static,templates} into internal/web/{static,templates}"
 	@echo "  check-embed  - fail when the two trees differ (CI)"
 	@echo "  docker       - build the multi-arch image (buildx)"
 	@echo "  run          - build and run 'kanban serve'"
 	@echo "  demo         - print the demo seed wiring status"
-	@echo "  clean        - remove ./$(BIN_DIR) and ./$(TOOLS_DIR)"
+	@echo "  clean        - remove ./$(BIN_DIR) and ./.tools"
 
 build: sync-embed
 	mkdir -p $(BIN_DIR)
@@ -77,28 +64,6 @@ lint:
 	$(GO) vet ./...
 	@gofmt -l . | tee /tmp/gofmt-issues.txt && \
 	    test ! -s /tmp/gofmt-issues.txt || (echo "gofmt diffs above" && exit 1)
-
-# Regenerate web/static/app.css from the templates via the Tailwind v4.3.3
-# standalone CLI. The binary is downloaded into .tools/ on first use. CI
-# runs this and checks the committed file matches.
-css: $(TAILWIND)
-	$(TAILWIND) -i $(CSS_SRC)/**/*.html -o $(CSS_OUT) --minify
-
-$(TAILWIND):
-	mkdir -p $(TOOLS_DIR)
-	@if [ "$$(uname -s)" = "Linux" ]; then \
-	    arch=$$(uname -m); case $$arch in x86_64) arch=amd64;; aarch64) arch=arm64;; esac; \
-	    curl -fsSL -o $(TAILWIND) \
-	        https://github.com/tailwindlabs/tailwindcss/releases/download/$(TAILWIND_VERSION)/tailwindcss-linux-$$arch; \
-	elif [ "$$(uname -s)" = "Darwin" ]; then \
-	    arch=$$(uname -m); case $$arch in x86_64) arch=x64;; aarch64) arch=arm64;; esac; \
-	    curl -fsSL -o $(TAILWIND) \
-	        https://github.com/tailwindlabs/tailwindcss/releases/download/$(TAILWIND_VERSION)/tailwindcss-macos-$$arch; \
-	else \
-	    echo "OS unsupported by this Makefile; download Tailwindcss $(TAILWIND_VERSION) manually."; \
-	    exit 1; \
-	fi
-	chmod +x $(TAILWIND)
 
 # sync-embed mirrors web/{static,templates} into internal/web/{static,templates}.
 # Files that exist only in the embedded tree (the embed-directive Go file

@@ -283,6 +283,11 @@ func (r *taskRepo) GetByID(tx Tx, id string) (*domain.Task, error) {
 	return t, err
 }
 
+// GetManyByKeys resolves several task keys in one round trip. Keys match
+// case-insensitively, the same way GetByKey does, and the returned map is
+// keyed by the uppercase key so a caller that asked for "bmb-14" can still
+// find the row. Keys with no row are simply absent — this is a lookup, not
+// an assertion that every key exists.
 func (r *taskRepo) GetManyByKeys(tx Tx, keys []string) (map[string]*domain.Task, error) {
 	if len(keys) == 0 {
 		return map[string]*domain.Task{}, nil
@@ -299,7 +304,14 @@ func (r *taskRepo) GetManyByKeys(tx Tx, keys []string) (map[string]*domain.Task,
 		return map[string]*domain.Task{}, nil
 	}
 	placeholders, args := makeInClause(norm)
-	q := `SELECT ` + taskColumns + ` FROM tasks WHERE key IN (` + placeholders + `) COLLATE NOCASE`
+	// COLLATE binds to the expression on its left, so the trailing
+	// "key IN (?,?) COLLATE NOCASE" this used to carry applied the collation
+	// to the comparison's boolean result — a no-op dressed up as a rule.
+	// The case-insensitive match actually comes from the column (tasks.key
+	// is declared COLLATE NOCASE in 0001_init.sql); stating it on the left
+	// operand makes the query mean what it says and keeps this lookup
+	// agreeing with GetByKey if that declaration ever changes.
+	q := `SELECT ` + taskColumns + ` FROM tasks WHERE key COLLATE NOCASE IN (` + placeholders + `)`
 	rows, err := tw.tx.QueryContext(tw.ctx(), q, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: get many tasks: %w", err)

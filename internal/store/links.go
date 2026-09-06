@@ -129,7 +129,9 @@ func (r *linkRepo) Blocks(tx Tx, taskID string) ([]string, error) {
 //     domain error path)
 //  2. parent/child chain — a task may not block anything in its own
 //     subtree, and may not be blocked by anything in its own ancestry
-//  3. transitive blocks-graph cycles
+//  3. transitive wait-for cycles, over blocks links AND the parent
+//     hierarchy — see waitsForEdgesCTE for why the hierarchy belongs in
+//     the same walk
 //
 // The returned path is the full closed cycle starting and ending at
 // blocker, e.g. ["BMB-3","BMB-7","BMB-3"] for a 2-step cycle, so the
@@ -179,79 +181,87 @@ func (r *linkRepo) WouldCycle(tx Tx, blockerID, blockedID string) (bool, []strin
 		return true, keys, nil
 	}
 
-	// Case 3: transitive blocks-graph cycle. Adding the edge
-	// blocker -> blocked would create a cycle iff there is already a
-	// path blocked -> ... -> blocker in the EXISTING blocks graph
-	// (because the new edge closes the loop: blocker -> blocked -> ...
-	// -> blocker). Each step follows the "blocks" direction: if X
-	// blocks Y then (blocker_id=X, blocked_id=Y); to walk FROM X we
-	// want rows where blocker_id = current, taking the next blocked_id.
-	tw_ := tw
-	var hit string
-	err = tw_.tx.QueryRowContext(tw.ctx(), `
-		WITH RECURSIVE walk(curr, depth) AS (
-		    SELECT ?, 0
+	// Case 3: a transitive wait-for cycle. Adding "blocker blocks blocked"
+	// says blocked waits on blocker, so it closes a loop iff blocker
+	// already waits — directly or transitively — on blocked.
+	var path string
+	err = tw.tx.QueryRowContext(tw.ctx(), `
+		WITH RECURSIVE `+waitsForEdgesCTE+`,
+		walk(curr, depth, path) AS (
+		    SELECT ?, 0, ',' || ? || ','
 		    UNION ALL
-		    SELECT l.blocked_id, w.depth + 1
-		      FROM links l JOIN walk w ON l.blocker_id = w.curr
-		     WHERE l.type = 'blocks' AND w.depth < 16
+		    SELECT e.dst, w.depth + 1, w.path || e.dst || ','
+		      FROM edges e JOIN walk w ON e.src = w.curr
+		     WHERE w.depth < ? AND instr(w.path, ',' || e.dst || ',') = 0
 		)
-	    SELECT 1 FROM walk WHERE curr = ? LIMIT 1`, blockedID, blockerID).Scan(&hit)
+		SELECT path FROM walk WHERE curr = ? ORDER BY depth ASC LIMIT 1`,
+		blockedID, blockedID, maxWaitsForDepth, blockerID).Scan(&path)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil, nil
 	}
 	if err != nil {
-		return false, nil, fmt.Errorf("store: walk blocks: %w", err)
+		return false, nil, fmt.Errorf("store: walk wait-for graph: %w", err)
 	}
-	// Build the full path: [blocker, blocked, ..., blocker] using the
-	// SAME recursive walk so each step is the actual edge that exists
-	// in the graph. The walk starts at `blocked` and follows outgoing
-	// blocks edges (blocker_id = current, taking blocked_id as next).
-	rows, err := tw_.tx.QueryContext(tw.ctx(), `
-		WITH RECURSIVE walk(curr, depth) AS (
-		    SELECT ?, 0
-		    UNION ALL
-		    SELECT l.blocked_id, w.depth + 1
-		      FROM links l JOIN walk w ON l.blocker_id = w.curr
-		     WHERE l.type = 'blocks' AND w.depth < 16
-		)
-	    SELECT curr, depth FROM walk ORDER BY depth ASC`, blockedID)
-	if err != nil {
-		return false, nil, fmt.Errorf("store: walk path: %w", err)
-	}
-	defer rows.Close()
-	keys := []string{blockerKey, blockedKey}
-	visited := map[string]bool{blockedID: true}
-	for rows.Next() {
-		var curr string
-		var depth int
-		if err := rows.Scan(&curr, &depth); err != nil {
-			return false, nil, fmt.Errorf("store: scan walk row: %w", err)
-		}
-		if depth == 0 {
+	// path is ",<blocked>,...,<blocker>,". The edge being added closes the
+	// loop, so the reported cycle starts at the blocker and — because the
+	// walk stopped there — already ends at it too.
+	keys := []string{blockerKey}
+	for _, id := range strings.Split(strings.Trim(path, ","), ",") {
+		if id == "" {
 			continue
 		}
-		if visited[curr] {
-			// The walk can revisit nodes; report the cycle path up
-			// to the first repeat, then close the loop.
-			keys = append(keys, blockerKey)
-			return true, keys, nil
-		}
-		visited[curr] = true
-		k, err := r.taskKey(tw, curr)
+		k, err := r.taskKey(tw, id)
 		if err != nil {
 			return false, nil, err
 		}
 		keys = append(keys, k)
-		if curr == blockerID {
-			return true, keys, nil
-		}
 	}
-	// Defensive fallback: cycle was confirmed but the path walk didn't
-	// close cleanly. Return what we have, closed at the blocker.
-	keys = append(keys, blockerKey)
 	return true, keys, nil
 }
+
+// maxWaitsForDepth bounds the wait-for walk. The simple-path test in the
+// query is what actually terminates the recursion; this is the belt to its
+// braces, and generous enough that no realistic board hits it.
+const maxWaitsForDepth = 16
+
+// waitsForEdgesCTE is the "Y waits on X" relation that cycle detection
+// walks, as a non-recursive CTE body meant to be spliced into a
+// WITH RECURSIVE list. It is wider than the links table alone because
+// task_next gates readiness on the parent hierarchy too (domain.NextReady):
+//
+//	E1  X blocks Y                    → Y waits on X
+//	E2  X blocks P, C is a child of P → C waits on X, because NextReady's
+//	    ParentBlocked rule never offers a subtask while its parent has
+//	    open blockers
+//	E3  C is a child of P             → P waits on C, because NextReady's
+//	    NotLeaf rule never offers a parent with unfinished subtasks
+//
+// Following E1 alone — as this walk used to — misses "A blocks B, C is a
+// subtask of B, C blocks A": all three tasks become permanently unofferable
+// and nothing refused the link that caused it. PLAN §11 invariant 5 asks
+// for cycle detection including parent chains.
+//
+// E2 and E3 are deliberately not one hierarchy edge traversed both ways. A
+// bare parent→child edge would collapse a subtree into a single node and
+// reject "A blocks C1, C2 blocks A" for two siblings under one parent —
+// which schedules fine as C2, A, C1. E2 reaches a child only through a
+// blocks edge into its parent, which is precisely what ParentBlocked
+// propagates.
+const waitsForEdgesCTE = `
+		edges(src, dst) AS (
+		    SELECT l.blocker_id, l.blocked_id
+		      FROM links l
+		     WHERE l.type = 'blocks'
+		    UNION
+		    SELECT l.blocker_id, c.id
+		      FROM links l
+		      JOIN tasks c ON c.parent_id = l.blocked_id
+		     WHERE l.type = 'blocks'
+		    UNION
+		    SELECT t.id, t.parent_id
+		      FROM tasks t
+		     WHERE t.parent_id IS NOT NULL
+		)`
 
 // ancestorChain walks the parent_id chain of start and returns the
 // sequence of ancestor keys (excluding start) that lead to target. If
@@ -408,8 +418,5 @@ func (r *linkRepo) ListForTasks(tx Tx, taskIDs []string) (map[string][]domain.Li
 	}
 	return out, rows.Err()
 }
-
-// _ keeps strings imported for query building.
-var _ = strings.HasPrefix
 
 // (wrapf now lives in scan.go.)

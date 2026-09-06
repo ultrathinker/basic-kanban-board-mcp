@@ -1,7 +1,9 @@
 package web
 
 import (
+	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -170,22 +172,31 @@ func (w *Web) handleAdminExport(rw http.ResponseWriter, r *http.Request) {
 	writeJSONIndent(rw, board)
 }
 
-// handleAdminBackup is "GET /admin/backup". The board template links to it
-// as a plain <a href> (a GET), not a form post — so it runs as a read-ish
-// navigation rather than a CSRF-guarded form, even though it writes a file.
-// See the task report: this is the UI agent's existing markup, not this
-// package's design choice; a POST form would be the safer shape.
+// handleAdminBackup is "POST /admin/backup": a VACUUM INTO copy of the
+// database under BackupDir, then back to /admin. It is a POST behind the
+// CSRF gate, never a GET: the route writes to disk and runs a VACUUM on
+// every call, and a GET would let any foreign page spray both at the server
+// via an <img src="/admin/backup"> tag (independent review #10).
 func (w *Web) handleAdminBackup(rw http.ResponseWriter, r *http.Request) {
 	if _, ok := w.requireSessionPage(rw, r, domain.ScopeAdmin); !ok {
 		return
 	}
-	// This writes a file on the server, so it is a state change and needs the
-	// same CSRF gate as any other admin mutation.
+	r.Body = http.MaxBytesReader(rw, r.Body, domain.MaxRequestBodyBytes)
 	if err := w.verifyCSRF(r); err != nil {
 		w.pageError(rw, r, err)
 		return
 	}
-	dest := filepath.Join(w.d.BackupDir(), time.Now().UTC().Format("20060102-150405")+".db")
+	// Nothing at startup creates the backups directory (the composition root
+	// creates the data dir only), and VACUUM INTO refuses to open a file in a
+	// missing directory — so a clean install's very first backup click used
+	// to 500. Creating it here, right before the backup, keeps that first
+	// click working without giving this package a startup side effect.
+	dir := w.d.BackupDir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		w.pageError(rw, r, fmt.Errorf("web: create backup directory %s: %w", dir, err))
+		return
+	}
+	dest := filepath.Join(dir, time.Now().UTC().Format("20060102-150405")+".db")
 	if err := w.d.Backup(r.Context(), dest); err != nil {
 		w.pageError(rw, r, err)
 		return

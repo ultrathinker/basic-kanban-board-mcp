@@ -174,7 +174,12 @@ func New(ctx context.Context, cfg config.Config, opts ...Option) (*App, error) {
 		return nil, fmt.Errorf("app: bootstrap admin token: %w", err)
 	}
 
-	bus := events.New(&storeHistory{st: st}, 64)
+	// One value, two consumers: the bus replays from it on reconnect, and the
+	// web layer reads the activity snapshot from it directly. Before this was
+	// shared, the activity page drained the bus instead and needed a 150ms
+	// sleep to paper over the race (independent review #13).
+	history := &storeHistory{st: st}
+	bus := events.New(history, 64)
 
 	svc := o.service
 	if o.serviceFactory != nil {
@@ -230,6 +235,7 @@ func New(ctx context.Context, cfg config.Config, opts ...Option) (*App, error) {
 		Service:            svc,
 		Auth:               mgr,
 		Bus:                bus,
+		History:            history,
 		Templates:          tpl,
 		BaseURL:            publicURL,
 		ClaimTTLDefault:    cfg.ClaimTTL,

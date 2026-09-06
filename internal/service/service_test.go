@@ -733,3 +733,269 @@ func TestTaskCreate_ScopeRestrictedActor(t *testing.T) {
 		t.Fatalf("code = %v, want forbidden", de)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Batch invariants — no TOCTOU inside a single call (PLAN §11 invariant 6)
+// ---------------------------------------------------------------------------
+
+// moveTo builds a move patch for a task, reading its current version first so
+// the caller does not have to track version bumps by hand.
+func (env *testEnv) moveTo(t *testing.T, key, column string) TaskPatch {
+	t.Helper()
+	got, err := env.svc.TaskGet(context.Background(), env.actor, TaskGetInput{Keys: []string{key}})
+	if err != nil || len(got.Tasks) != 1 {
+		t.Fatalf("read %s: %v / %d", key, err, len(got.Tasks))
+	}
+	v := got.Tasks[0].Version
+	return TaskPatch{Key: key, IfVersion: &v, Column: column}
+}
+
+// countIn returns the live occupancy of a column straight from the store, so
+// the assertion does not lean on the code path it is checking.
+func (env *testEnv) countIn(t *testing.T, col *domain.Column) int {
+	t.Helper()
+	var n int
+	if err := env.Read(context.Background(), func(tx store.Tx) error {
+		var err error
+		n, err = env.Columns().CountTasks(tx, col.ID, "")
+		return err
+	}); err != nil {
+		t.Fatalf("count %s: %v", col.Name, err)
+	}
+	return n
+}
+
+// TestTaskUpdate_BatchCannotOverfillWIP is the regression test for the
+// intra-batch WIP bypass: validating every patch against the pre-batch
+// occupancy let two moves share the one free slot, so a limit of 3 ended
+// up holding 4.
+func TestTaskUpdate_BatchCannotOverfillWIP(t *testing.T) {
+	env := openTestEnv(t)
+	doing := env.cols["Doing"]
+	if doing.WIPLimit == nil || *doing.WIPLimit != 3 {
+		t.Fatalf("Doing WIP limit = %v, want 3", doing.WIPLimit)
+	}
+	tasks := make([]*domain.Task, 4)
+	for i := range tasks {
+		tasks[i] = makeBacklogTask(t, env, "task")
+	}
+
+	// Fill Doing to 2 of 3, one move per call, leaving a single slot.
+	for _, tk := range tasks[:2] {
+		res, err := env.svc.TaskUpdate(context.Background(), env.actor, TaskUpdateInput{
+			Patches: []TaskPatch{env.moveTo(t, tk.Key, "Doing")},
+		})
+		if err != nil {
+			t.Fatalf("seed move %s: %v", tk.Key, err)
+		}
+		if !res.Items[0].OK {
+			t.Fatalf("seed move %s refused: %v", tk.Key, res.Items[0].Err)
+		}
+	}
+	if got := env.countIn(t, doing); got != 2 {
+		t.Fatalf("Doing holds %d before the batch, want 2", got)
+	}
+
+	// One call, two moves, one free slot.
+	res, err := env.svc.TaskUpdate(context.Background(), env.actor, TaskUpdateInput{
+		Patches: []TaskPatch{
+			env.moveTo(t, tasks[2].Key, "Doing"),
+			env.moveTo(t, tasks[3].Key, "Doing"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("batch update: %v", err)
+	}
+	ok, refused := 0, 0
+	for _, it := range res.Items {
+		switch {
+		case it.OK:
+			ok++
+		case it.Err != nil && it.Err.Code == domain.CodeWIPExceeded:
+			refused++
+		default:
+			t.Fatalf("unexpected item %+v", it)
+		}
+	}
+	if ok != 1 || refused != 1 {
+		t.Fatalf("ok=%d wip_exceeded=%d, want 1/1", ok, refused)
+	}
+	if got := env.countIn(t, doing); got != 3 {
+		t.Fatalf("Doing holds %d after the batch, want 3 (the limit)", got)
+	}
+}
+
+// TestTaskUpdate_AtomicBatchOverfillingWIPLandsNothing is the atomic
+// counterpart: the whole call is refused instead of half-applied.
+func TestTaskUpdate_AtomicBatchOverfillingWIPLandsNothing(t *testing.T) {
+	env := openTestEnv(t)
+	doing := env.cols["Doing"]
+	tasks := make([]*domain.Task, 4)
+	for i := range tasks {
+		tasks[i] = makeBacklogTask(t, env, "task")
+	}
+	for _, tk := range tasks[:2] {
+		if _, err := env.svc.TaskUpdate(context.Background(), env.actor, TaskUpdateInput{
+			Patches: []TaskPatch{env.moveTo(t, tk.Key, "Doing")},
+		}); err != nil {
+			t.Fatalf("seed move %s: %v", tk.Key, err)
+		}
+	}
+
+	_, err := env.svc.TaskUpdate(context.Background(), env.actor, TaskUpdateInput{
+		Atomic: true,
+		Patches: []TaskPatch{
+			env.moveTo(t, tasks[2].Key, "Doing"),
+			env.moveTo(t, tasks[3].Key, "Doing"),
+		},
+	})
+	if err == nil {
+		t.Fatalf("atomic batch overfilling WIP succeeded")
+	}
+	if de := domain.AsError(err); de == nil || de.Code != domain.CodeWIPExceeded {
+		t.Fatalf("code = %v, want wip_exceeded", de)
+	}
+	if got := env.countIn(t, doing); got != 2 {
+		t.Fatalf("Doing holds %d, want 2 — a refused atomic batch must land nothing", got)
+	}
+}
+
+// TestTaskUpdate_ConcurrentMovesRespectWIP is the same invariant across
+// requests rather than within one call: six real goroutines against the
+// real on-disk store, each moving its own task into a column with room
+// for three.
+func TestTaskUpdate_ConcurrentMovesRespectWIP(t *testing.T) {
+	env := openTestEnv(t)
+	doing := env.cols["Doing"]
+	const movers = 6
+	tasks := make([]*domain.Task, movers)
+	patches := make([]TaskPatch, movers)
+	for i := range tasks {
+		tasks[i] = makeBacklogTask(t, env, "task")
+	}
+	for i, tk := range tasks {
+		patches[i] = env.moveTo(t, tk.Key, "Doing")
+	}
+
+	var wins, refusals atomic.Int64
+	var start sync.WaitGroup
+	var done sync.WaitGroup
+	start.Add(1)
+	for i := 0; i < movers; i++ {
+		done.Add(1)
+		go func(p TaskPatch) {
+			defer done.Done()
+			start.Wait()
+			res, err := env.svc.TaskUpdate(context.Background(), env.actor, TaskUpdateInput{
+				Patches: []TaskPatch{p},
+			})
+			if err != nil {
+				return
+			}
+			switch {
+			case res.Items[0].OK:
+				wins.Add(1)
+			case res.Items[0].Err != nil && res.Items[0].Err.Code == domain.CodeWIPExceeded:
+				refusals.Add(1)
+			}
+		}(patches[i])
+	}
+	start.Done()
+	done.Wait()
+
+	if wins.Load() != 3 || refusals.Load() != movers-3 {
+		t.Fatalf("wins=%d refusals=%d, want 3/%d", wins.Load(), refusals.Load(), movers-3)
+	}
+	if got := env.countIn(t, doing); got != 3 {
+		t.Fatalf("Doing holds %d, want 3 (the limit)", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// focus:false clears only the focus the patched task holds (PLAN §6.5)
+// ---------------------------------------------------------------------------
+
+// projectFocus returns the project's current focus task id, or "" when unset.
+func (env *testEnv) projectFocus(t *testing.T) string {
+	t.Helper()
+	var out string
+	if err := env.Read(context.Background(), func(tx store.Tx) error {
+		p, err := env.Projects().GetByID(tx, env.proj.ID)
+		if err != nil {
+			return err
+		}
+		if p.FocusTaskID != nil {
+			out = *p.FocusTaskID
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("read focus: %v", err)
+	}
+	return out
+}
+
+// projectVersion reads the project's version straight from the store.
+func (env *testEnv) projectVersion(t *testing.T) int {
+	t.Helper()
+	var v int
+	if err := env.Read(context.Background(), func(tx store.Tx) error {
+		p, err := env.Projects().GetByID(tx, env.proj.ID)
+		if err != nil {
+			return err
+		}
+		v = p.Version
+		return nil
+	}); err != nil {
+		t.Fatalf("read project version: %v", err)
+	}
+	return v
+}
+
+func (env *testEnv) setFocus(t *testing.T, key string, on bool) {
+	t.Helper()
+	res, err := env.svc.TaskUpdate(context.Background(), env.actor, TaskUpdateInput{
+		Patches: []TaskPatch{{Key: key, Focus: &on}},
+	})
+	if err != nil {
+		t.Fatalf("focus=%v on %s: %v", on, key, err)
+	}
+	if !res.Items[0].OK {
+		t.Fatalf("focus=%v on %s refused: %v", on, key, res.Items[0].Err)
+	}
+}
+
+func TestTaskUpdate_FocusFalseDoesNotClearAnotherTasksFocus(t *testing.T) {
+	env := openTestEnv(t)
+	a := makeBacklogTask(t, env, "A holds focus")
+	b := makeBacklogTask(t, env, "B does not")
+
+	env.setFocus(t, a.Key, true)
+	if got := env.projectFocus(t); got != a.ID {
+		t.Fatalf("focus = %q after A claimed it, want %q", got, a.ID)
+	}
+	before := env.projectVersion(t)
+
+	// B sends focus:false. B never held focus, so this is a no-op — not a
+	// way to knock A's focus banner off the board.
+	env.setFocus(t, b.Key, false)
+	if got := env.projectFocus(t); got != a.ID {
+		t.Fatalf("focus = %q after B sent focus:false, want A (%q) to keep it", got, a.ID)
+	}
+	if after := env.projectVersion(t); after != before {
+		t.Fatalf("project version %d -> %d for a no-op focus:false", before, after)
+	}
+}
+
+func TestTaskUpdate_FocusFalseClearsOwnFocus(t *testing.T) {
+	env := openTestEnv(t)
+	a := makeBacklogTask(t, env, "A holds focus")
+
+	env.setFocus(t, a.Key, true)
+	if got := env.projectFocus(t); got != a.ID {
+		t.Fatalf("focus = %q, want %q", got, a.ID)
+	}
+	env.setFocus(t, a.Key, false)
+	if got := env.projectFocus(t); got != "" {
+		t.Fatalf("focus = %q after the holder cleared it, want empty", got)
+	}
+}

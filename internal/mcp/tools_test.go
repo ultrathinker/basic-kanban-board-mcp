@@ -565,6 +565,61 @@ func TestRoundTrip_TaskRemove_Success(t *testing.T) {
 	if got := svc.LastTaskRemove.Items[0].Key; got != "BMB-1" {
 		t.Errorf("normalized key = %q, want BMB-1", got)
 	}
+	if !svc.LastTaskRemove.CascadeSubtasks {
+		t.Errorf("CascadeSubtasks = false, want true when omitted")
+	}
+}
+
+// TestRoundTrip_TaskRemove_CascadeSubtasksDefaultsToTrue verifies finding #11:
+// PLAN §6.8 specifies cascade_subtasks defaults to true so removing a parent
+// archives its subtasks rather than silently orphaning them.
+func TestRoundTrip_TaskRemove_CascadeSubtasksDefaultsToTrue(t *testing.T) {
+	t.Parallel()
+	cs, svc := roundtripServer(t, NewServer)
+	parent := fixedTask("BMB-1")
+	svc.DefaultTaskRemove = &service.TaskRemoveResult{
+		Items: []service.ItemResult{{Key: "BMB-1", OK: true, Task: &parent}},
+	}
+
+	_, sc := callTool(t, cs, "task_remove", map[string]any{
+		"items": []map[string]any{{"key": "BMB-1"}},
+	})
+	expectOK(t, sc, "task_remove")
+	if !svc.LastTaskRemove.CascadeSubtasks {
+		t.Fatalf("CascadeSubtasks was false; expected default true when omitted")
+	}
+}
+
+func TestRoundTrip_TaskRemove_CascadeSubtasksExplicit(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		val  bool
+	}{
+		{"explicit_false", false},
+		{"explicit_true", true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cs, svc := roundtripServer(t, NewServer)
+			parent := fixedTask("BMB-1")
+			svc.DefaultTaskRemove = &service.TaskRemoveResult{
+				Items: []service.ItemResult{{Key: "BMB-1", OK: true, Task: &parent}},
+			}
+
+			_, sc := callTool(t, cs, "task_remove", map[string]any{
+				"items":            []map[string]any{{"key": "BMB-1"}},
+				"cascade_subtasks": tc.val,
+			})
+			expectOK(t, sc, "task_remove")
+			if got := svc.LastTaskRemove.CascadeSubtasks; got != tc.val {
+				t.Fatalf("CascadeSubtasks = %v, want %v", got, tc.val)
+			}
+		})
+	}
 }
 
 // ---------------------------------------------------------------------------
