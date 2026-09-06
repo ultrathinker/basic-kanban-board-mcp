@@ -107,21 +107,26 @@ mobile · OAuth/SSO · email · multi-tenant SaaS · AI features inside the boar
 
 **One process, one port, one file.**
 
-- **Go 1.25**, `CGO_ENABLED=0`, stdlib `net/http` (1.22+ routing). No framework.
+- **Go 1.27**, `CGO_ENABLED=0`, stdlib `net/http` (1.22+ routing). No framework.
+  *(changed 2026-09-06, see §18 #3)*
 - **SQLite via `modernc.org/sqlite`** (pure Go). Discipline (§7): two `*sql.DB` handles on the
   same file — writer `SetMaxOpenConns(1)`, reader `SetMaxOpenConns(NumCPU*2)`; pragmas
   per-connection via DSN (`_pragma=journal_mode(WAL)`, `busy_timeout(5000)`,
   `foreign_keys(1)`, `synchronous(NORMAL)`); `BEGIN IMMEDIATE` for writes; periodic
   `wal_checkpoint(TRUNCATE)`; migrations under an exclusive startup lock; **one writer process
   per file** (documented; the stdio bridge is an HTTP client whenever `--url` is set).
-- **MCP:** `github.com/modelcontextprotocol/go-sdk`, pinned exact version, protocol
-  conformance tests. Every tool declares `outputSchema`; every result carries **both** text
+- **MCP:** `github.com/modelcontextprotocol/go-sdk` **v1.7.0** (stable, past 1.0 — *changed
+  2026-09-06, see §18 #1*), pinned exactly, protocol conformance tests. Every tool declares `outputSchema`; every result carries **both** text
   content (compact where defined) **and** `structuredContent`; failures set `isError`. Server
   `instructions` (returned at `initialize`) state the operating policy: project keys, actor
   identity = token name, lease TTL, the start-work convention, compact grammar version.
-- **Web UI:** server-rendered `html/template` + **htmx** (+ `sse` ext) + **SortableJS**, all
-  vendored, embedded via `embed.FS`, exact versions + license notices, CSP-compatible init.
-  **No npm, no bundler.** Markdown: `goldmark` render + `bluemonday` sanitize on render.
+- **Web UI** *(changed 2026-09-06, see §18 #2)*: server-rendered `html/template` +
+  **Tailwind CSS v4.3.3** (standalone CLI binary — **no Node, no npm, no node_modules**) +
+  **htmx v4.0.0** (+ `sse` ext) + **Alpine.js v3.17.1** (small local interactivity) +
+  **SortableJS v1.15.7** (drag). All JS vendored and embedded via `embed.FS`; the generated
+  `app.css` is **committed**, so a plain `go build` never needs the Tailwind binary — only
+  `make css` / CI regenerates it. Exact versions + license notices, CSP-compatible init.
+  Markdown: `goldmark` render + `bluemonday` sanitize on render.
 - **Events bus:** in-process fan-out after commit → SSE, activity feed. Append-only `events`.
 - **Config:** flags + `KANBAN_*` env. Zero-config default: `kanban serve` →
   `http://127.0.0.1:8080`, data `./data/kanban.db`, auth required, bootstrap token printed once.
@@ -434,9 +439,12 @@ a batch;** `task_claim`, `task_link`, `project_upsert` are single-intent operati
   Cursor / generic, each including the `Authorization` header — the part everyone fumbles.
 - **Live updates:** htmx `sse` on `/events`, targeted fragment swaps; small reconnect wrapper in
   `app.js`; every reverse-proxy example includes `proxy_buffering off` / `X-Accel-Buffering: no`.
-- **Visual language:** ported from the owner's HTML status page — CSS custom properties,
-  light/dark, priority stripes, type badges, estimate pills, collapsible done, `tabular-nums`.
-  Quiet and dense. Keyboard-operable move menu, focus states, `prefers-reduced-motion`.
+- **Visual language** *(changed 2026-09-06, see §18 #2)*: Tailwind v4 with a small theme layer
+  (`@theme` tokens) carrying the owner's HTML-status-page language — light/dark via
+  `prefers-color-scheme` + manual toggle, priority stripes, type badges, estimate pills,
+  collapsible done section, `tabular-nums`. Quiet and dense: this is a dashboard people glance
+  at, not a landing page. Keyboard-operable move menu, visible focus states,
+  `prefers-reduced-motion`. Alpine handles drawer/menu state; htmx handles all server traffic.
 
 ---
 
@@ -634,4 +642,6 @@ this plan"). Newest last. Empty at v2.
 
 | # | Date | Section | Planned | Actual | New fact that forced it | Impact |
 |---|---|---|---|---|---|---|
-| — | — | — | — | — | — | — |
+| 1 | 2026-09-06 | §4, §11 | "go-sdk is pre-1.0, the API moves — pin and treat upgrades as deliberate" | `github.com/modelcontextprotocol/go-sdk` **v1.7.0** (2026-07-27) — past 1.0, stable API | Checked the module proxy before writing contracts | Lower risk than planned. Still pinned exactly; the "protocol conformance test" stays, the "expect churn" caveat is dropped |
+| 2 | 2026-09-06 | §4, §9 | Hand-written `app.css` + htmx + SortableJS, "no build step at all" | **Tailwind CSS v4.3.3 via the standalone CLI binary** (no Node/npm) + htmx v4.0.0 + **Alpine.js v3.17.1** + SortableJS v1.15.7; generated CSS is committed and embedded | Owner's instruction: use the most popular technologies that produce a good-looking UI quickly. Tailwind is that, and its standalone binary keeps the no-npm rule intact | One build step in CI (download one binary, run it) — **not** an npm toolchain. Contributors still need no Node. Single Go binary unchanged. Generated CSS committed so `go build` alone always works |
+| 3 | 2026-09-06 | §4 | Go 1.25 | **Go 1.27.0** | Latest stable at implementation time | None |
