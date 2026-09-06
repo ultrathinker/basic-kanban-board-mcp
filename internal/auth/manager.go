@@ -48,6 +48,9 @@ type TokenLookup interface {
 	List(ctx context.Context) ([]*domain.Token, error)
 	Count(ctx context.Context) (int, error)
 	Create(ctx context.Context, t *domain.Token) error
+	// UpdateHash replaces the stored secret hash of an existing token; see
+	// Manager.Rotate.
+	UpdateHash(ctx context.Context, id string, hash []byte) error
 	Revoke(ctx context.Context, name string) error
 }
 
@@ -318,9 +321,10 @@ func (m *Manager) Rotate(ctx context.Context, name string) (string, error) {
 		return "", err
 	}
 	tok.Hash = HashToken(secret)
-	if err := m.Tokens.Create(ctx, tok); err != nil {
-		// Create is upsert-style on hash collision; if the store rejects it
-		// we want the operator to know the rotation did not land.
+	// Rotation replaces the hash on the existing row. It cannot go through
+	// Create: name and hash both carry UNIQUE indexes, so re-creating the token
+	// is a constraint violation, not an upsert.
+	if err := m.Tokens.UpdateHash(ctx, tok.ID, tok.Hash); err != nil {
 		return "", err
 	}
 	return secret, nil

@@ -86,6 +86,21 @@ func (m *memTokenStore) Count(ctx context.Context) (int, error) {
 	return len(m.byID), nil
 }
 
+func (m *memTokenStore) UpdateHash(ctx context.Context, id string, hash []byte) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, t := range m.byID {
+		if t.ID != id {
+			continue
+		}
+		delete(m.byHsh, hexBytes(t.Hash))
+		t.Hash = append([]byte(nil), hash...)
+		m.byHsh[hexBytes(t.Hash)] = t
+		return nil
+	}
+	return stubErr{s: "token not found"}
+}
+
 func (m *memTokenStore) Revoke(ctx context.Context, name string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -390,11 +405,11 @@ func TestRotate_InvalidatesOldSecret(t *testing.T) {
 	if original == newSecret {
 		t.Fatal("rotation returned the same secret")
 	}
-	if _, ok := m.VerifyToken(ctx, original); ok {
+	if tok, err := m.VerifyToken(ctx, original); err == nil && tok != nil {
 		t.Fatal("old secret still verifies after rotation")
 	}
-	if _, ok := m.VerifyToken(ctx, newSecret); !ok {
-		t.Fatal("new secret does not verify after rotation")
+	if tok, err := m.VerifyToken(ctx, newSecret); err != nil || tok == nil {
+		t.Fatalf("new secret does not verify after rotation: (%v, %v)", tok, err)
 	}
 }
 
@@ -416,6 +431,11 @@ func TestRotate_UnknownToken(t *testing.T) {
 // cover every method — the contract is exercised by the production wiring.
 
 type fakeStore struct {
+	// Embedding the interface gives us every method we do not care about;
+	// calling one panics, which is the right outcome for a fake whose only
+	// job is to prove the adapter routes through Read and Write.
+	store.Store
+
 	mu        sync.Mutex
 	tokens    map[string]*domain.Token
 	sessions  map[string]*domain.Session
@@ -434,39 +454,47 @@ func (f *fakeStore) Read(ctx context.Context, fn func(store.Tx) error) error {
 	f.mu.Lock()
 	f.readCalls++
 	f.mu.Unlock()
-	return fn(fakeTx{f: f})
+	return fn(fakeTx{})
 }
 
 func (f *fakeStore) Write(ctx context.Context, fn func(store.Tx) error) error {
 	f.mu.Lock()
 	f.wrCalls++
 	f.mu.Unlock()
-	return fn(fakeTx{f: f})
+	return fn(fakeTx{})
 }
 
-func (f *fakeStore) Tokens() store.TokenRepo   { return f }
-func (f *fakeStore) Sessions() store.SessionRepo { return f }
+// Tokens and Sessions must return distinct types: TokenRepo.Create and
+// SessionRepo.Create share a name but not a signature, so a single type
+// cannot satisfy both.
+func (f *fakeStore) Tokens() store.TokenRepo     { return &fakeTokenRepo{f: f} }
+func (f *fakeStore) Sessions() store.SessionRepo { return &fakeSessionRepo{f: f} }
 
-// fakeTx exposes a Tx-shaped view backed by the store's in-memory maps.
-type fakeTx struct{ f *fakeStore }
+// fakeTx carries the fixed clock the adapter reads.
+type fakeTx struct{}
 
 func (fakeTx) Now() time.Time { return time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC) }
 
-func (f *fakeStore) Create(tx store.Tx, t *domain.Token) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if _, ok := f.tokens[t.Name]; ok {
+type fakeTokenRepo struct {
+	store.TokenRepo // unimplemented methods panic if the adapter grows a new call
+	f               *fakeStore
+}
+
+func (r *fakeTokenRepo) Create(_ store.Tx, t *domain.Token) error {
+	r.f.mu.Lock()
+	defer r.f.mu.Unlock()
+	if _, ok := r.f.tokens[t.Name]; ok {
 		return errDuplicate("token")
 	}
 	cp := *t
-	f.tokens[t.Name] = &cp
+	r.f.tokens[t.Name] = &cp
 	return nil
 }
 
-func (f *fakeStore) GetByHash(tx store.Tx, hash []byte) (*domain.Token, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	for _, t := range f.tokens {
+func (r *fakeTokenRepo) GetByHash(_ store.Tx, hash []byte) (*domain.Token, error) {
+	r.f.mu.Lock()
+	defer r.f.mu.Unlock()
+	for _, t := range r.f.tokens {
 		if bytes.Equal(t.Hash, hash) {
 			cp := *t
 			return &cp, nil
@@ -475,10 +503,10 @@ func (f *fakeStore) GetByHash(tx store.Tx, hash []byte) (*domain.Token, error) {
 	return nil, nil
 }
 
-func (f *fakeStore) GetByName(tx store.Tx, name string) (*domain.Token, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	t, ok := f.tokens[name]
+func (r *fakeTokenRepo) GetByName(_ store.Tx, name string) (*domain.Token, error) {
+	r.f.mu.Lock()
+	defer r.f.mu.Unlock()
+	t, ok := r.f.tokens[name]
 	if !ok {
 		return nil, nil
 	}
@@ -486,46 +514,64 @@ func (f *fakeStore) GetByName(tx store.Tx, name string) (*domain.Token, error) {
 	return &cp, nil
 }
 
-func (f *fakeStore) List(tx store.Tx) ([]*domain.Token, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	out := make([]*domain.Token, 0, len(f.tokens))
-	for _, t := range f.tokens {
+func (r *fakeTokenRepo) List(_ store.Tx) ([]*domain.Token, error) {
+	r.f.mu.Lock()
+	defer r.f.mu.Unlock()
+	out := make([]*domain.Token, 0, len(r.f.tokens))
+	for _, t := range r.f.tokens {
 		cp := *t
 		out = append(out, &cp)
 	}
 	return out, nil
 }
 
-func (f *fakeStore) Revoke(tx store.Tx, name string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if t, ok := f.tokens[name]; ok {
+func (r *fakeTokenRepo) Revoke(_ store.Tx, name string) error {
+	r.f.mu.Lock()
+	defer r.f.mu.Unlock()
+	if t, ok := r.f.tokens[name]; ok {
 		now := time.Now().UTC()
 		t.RevokedAt = &now
 	}
 	return nil
 }
 
-func (f *fakeStore) TouchLastUsed(tx store.Tx, id string) error { return nil }
-func (f *fakeStore) Count(tx store.Tx) (int, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return len(f.tokens), nil
+func (r *fakeTokenRepo) UpdateHash(_ store.Tx, id string, hash []byte) error {
+	r.f.mu.Lock()
+	defer r.f.mu.Unlock()
+	for _, t := range r.f.tokens {
+		if t.ID == id {
+			t.Hash = append([]byte(nil), hash...)
+			return nil
+		}
+	}
+	return stubErr{s: "token not found"}
 }
 
-func (f *fakeStore) CreateSession(tx store.Tx, s *domain.Session) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
+func (r *fakeTokenRepo) TouchLastUsed(_ store.Tx, _ string) error { return nil }
+
+func (r *fakeTokenRepo) Count(_ store.Tx) (int, error) {
+	r.f.mu.Lock()
+	defer r.f.mu.Unlock()
+	return len(r.f.tokens), nil
+}
+
+type fakeSessionRepo struct {
+	store.SessionRepo
+	f *fakeStore
+}
+
+func (r *fakeSessionRepo) Create(_ store.Tx, s *domain.Session) error {
+	r.f.mu.Lock()
+	defer r.f.mu.Unlock()
 	cp := *s
-	f.sessions[s.ID] = &cp
+	r.f.sessions[s.ID] = &cp
 	return nil
 }
 
-func (f *fakeStore) Get(tx store.Tx, id string) (*domain.Session, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	s, ok := f.sessions[id]
+func (r *fakeSessionRepo) Get(_ store.Tx, id string) (*domain.Session, error) {
+	r.f.mu.Lock()
+	defer r.f.mu.Unlock()
+	s, ok := r.f.sessions[id]
 	if !ok {
 		return nil, nil
 	}
@@ -533,19 +579,19 @@ func (f *fakeStore) Get(tx store.Tx, id string) (*domain.Session, error) {
 	return &cp, nil
 }
 
-func (f *fakeStore) Touch(tx store.Tx, id string, now time.Time) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if s, ok := f.sessions[id]; ok {
+func (r *fakeSessionRepo) Touch(_ store.Tx, id string, now time.Time) error {
+	r.f.mu.Lock()
+	defer r.f.mu.Unlock()
+	if s, ok := r.f.sessions[id]; ok {
 		s.LastSeenAt = now
 	}
 	return nil
 }
 
-func (f *fakeStore) Delete(tx store.Tx, id string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	delete(f.sessions, id)
+func (r *fakeSessionRepo) Delete(_ store.Tx, id string) error {
+	r.f.mu.Lock()
+	defer r.f.mu.Unlock()
+	delete(r.f.sessions, id)
 	return nil
 }
 

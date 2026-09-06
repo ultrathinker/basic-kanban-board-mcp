@@ -202,6 +202,11 @@ type TokenRepo interface {
 	// candidate hash must be constant-time at the call site.
 	GetByHash(tx Tx, hash []byte) (*domain.Token, error)
 	List(tx Tx) ([]*domain.Token, error)
+	// UpdateHash replaces a token's secret hash in place, for `kanban token
+	// rotate`. Rotation cannot go through Create: name and hash both carry
+	// UNIQUE indexes, so re-creating an existing token is a constraint
+	// violation rather than an upsert.
+	UpdateHash(tx Tx, id string, hash []byte) error
 	Revoke(tx Tx, name string) error
 	TouchLastUsed(tx Tx, id string) error
 	Count(tx Tx) (int, error)

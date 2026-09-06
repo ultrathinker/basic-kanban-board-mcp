@@ -89,6 +89,12 @@ func (a *StoreAdapter) Create(ctx context.Context, t *domain.Token) error {
 	})
 }
 
+func (a *StoreAdapter) UpdateHash(ctx context.Context, id string, hash []byte) error {
+	return a.S.Write(ctx, func(tx store.Tx) error {
+		return a.S.Tokens().UpdateHash(tx, id, hash)
+	})
+}
+
 func (a *StoreAdapter) Revoke(ctx context.Context, name string) error {
 	return a.S.Write(ctx, func(tx store.Tx) error {
 		return a.S.Tokens().Revoke(tx, name)

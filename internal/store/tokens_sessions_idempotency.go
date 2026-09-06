@@ -15,6 +15,30 @@ import (
 
 type tokenRepo struct{ s *sqlStore }
 
+// UpdateHash replaces the secret hash of an existing token, which is how
+// rotation works: `name` and `hash` both carry UNIQUE indexes, so re-inserting
+// the token would violate a constraint instead of upserting.
+func (r *tokenRepo) UpdateHash(tx Tx, id string, hash []byte) error {
+	if id == "" || len(hash) == 0 {
+		return domain.Invalid("token", "id and hash are required",
+			"Pass the token UUID and the new hash.")
+	}
+	tw := tx.(*txWrap)
+	res, err := tw.tx.ExecContext(tw.ctx(),
+		`UPDATE tokens SET hash = ? WHERE id = ? AND revoked_at IS NULL`, hash, id)
+	if err != nil {
+		return fmt.Errorf("store: token.UpdateHash: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: token.UpdateHash rows: %w", err)
+	}
+	if n == 0 {
+		return domain.NotFound("token", id)
+	}
+	return nil
+}
+
 func (r *tokenRepo) Create(tx Tx, t *domain.Token) error {
 	if t == nil {
 		return errors.New("store: token.Create: nil token")
