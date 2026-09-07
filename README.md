@@ -76,6 +76,58 @@ client you use.
 
 There will not be a tenth. Everything else is a plugin.
 
+## Two agents, one task
+
+`agent-a` and `agent-b` — two agents, each with its own bearer token — share one board, and
+both ask for work at the same moment:
+
+```json
+// agent-a
+task_next({ "project": "BMB", "action": "start" })
+
+// agent-b, a moment later
+task_next({ "project": "BMB", "action": "start" })
+```
+
+One round trip each: claim the top ready task and move it into `Doing`. One wins, one does not.
+
+```json
+// agent-a's response (trimmed)
+{
+  "ok": true,
+  "op": "task_next",
+  "data": {
+    "tasks": [
+      {
+        "key": "BMB-1", "column": "Doing", "claimed_by": "agent-a",
+        "lease_remaining_seconds": 3600, "version": 2
+      }
+    ]
+  },
+  "meta": { "count": 1, "started_key": "BMB-1" }
+}
+
+// agent-b's response: nothing ready to start
+{
+  "ok": true,
+  "op": "task_next",
+  "data": { "tasks": [] },
+  "meta": {
+    "reasons": {
+      "blocked_dependency": 0, "wip_full": 0, "claimed_by_other": 0,
+      "parent_incomplete": 0, "not_leaf": 0
+    }
+  }
+}
+```
+
+`start` claimed `BMB-1` and moved it into `Doing` in the same atomic transaction, so by the time
+`agent-b`'s call runs the backlog holds nothing ready and it is handed an empty list — not an
+error, not `agent-a`'s task. There is never a moment when both agents believe they own `BMB-1`;
+the loser simply asks again and gets the next task. `BMB-1` now sits in `Doing` on `agent-a`'s
+lease (an hour by default, clamped 1m–24h) and is out of every other agent's `task_next`, which
+draws only from the backlog. No coordination protocol, no lock file, no double work.
+
 ## What makes it safe for several agents at once
 
 - **Leases.** Claiming a task is a single atomic compare-and-swap. Two agents calling
