@@ -70,7 +70,7 @@ jobs:
       # The verify job downloads this. Without the upload it downloaded nothing
       # and the release went out unverified.
       - name: Upload dist for verification
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
