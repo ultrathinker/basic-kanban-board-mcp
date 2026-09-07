@@ -36,6 +36,20 @@ Every task write is a batch, every read defaults to a token-efficient compact te
    - **Step 4:** When editing mutable fields (`title`, `body`, `type`, `priority`, `estimate`, `tags`, `assignee`, `column`, `rank`, `parent`, `acceptance`, `due_at`, `metadata`), always supply `if_version` set to the version returned by your last read.
    - **Step 5:** When finished, transition the task to Done: `task_update(patches: [{key: "KEY-1", column: "Done", if_version: N}])`.
 
+   **Canonical loop — one task, zero wasted reads.** The next `if_version` always comes from the `version` field of your most recent response for that task, never from a fresh `task_get`:
+   ```jsonc
+   // 1. take the next ready task; data.tasks[0] is the started task, post-mutation
+   task_next({ "project": "BMB", "action": "start" })
+   //   → data.tasks[0] = { "key": "BMB-14", "column": "Doing", "version": 6, ... }
+
+   // 2. log progress — note never bumps the version, so you still hold v6
+   task_update({ "patches": [{ "key": "BMB-14", "note": "scaffolding done" }] })
+
+   // 3. finish — chain if_version from the version you last saw (6)
+   task_update({ "patches": [{ "key": "BMB-14", "column": "Done", "if_version": 6 }] })
+   //   → data.items[0].task.version = 7   (chain your NEXT edit from 7)
+   ```
+
 3. **Authoritative Post-Write Versioning (`versionEchoRule`):**
    The `version` integer returned on every task object is the value **AFTER** the call completes, and it is **authoritative**. Chain your next `if_version` directly from this value without re-reading the task.
    

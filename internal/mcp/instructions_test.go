@@ -32,6 +32,8 @@ func TestInstructions_ExactRender(t *testing.T) {
 		"",
 		"Compact grammar: board_get's default text output is compact_version=" + strconv.Itoa(domain.CompactVersion) + ". Every task line ends in `v<version>`, so a read-modify-write needs no follow-up task_get just to learn the version to echo back.",
 		"",
+		"Optional research/review fields: a normal task needs only title, body, acceptance and priority. Four fields exist for review and research work and stay empty/unset until they apply — reach for them only when they do. reviewer is who signs off, kept distinct from assignee (who does the work). conclusion is the post-hoc takeaway — kept distinct from the body (the brief written up front) and from notes (the running log). actual is the effort a task really took. outcome is the epistemic status of a result: open, holds, refuted, superseded or moot. It is independent of the column — the column records workflow progress (is the work done?), outcome records whether the result still stands (was it right?). A task can be Done yet refuted. Do NOT set outcome to holds just because ordinary implementation work reached Done; leave it open unless a result was actually judged.",
+		"",
 		"Errors: every failure is `{ok:false, error:{code, message, remediation}}` with `isError` set on the result. `remediation` names the concrete next action — read it instead of guessing.",
 	}, "\n")
 	if instructionsText != want {
