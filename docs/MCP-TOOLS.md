@@ -803,6 +803,14 @@ Three columns is the default on purpose — it is the legible minimum and matche
 the agent loop (`task_next(start)` → Doing → `task_update(column:"Done")`). Add a
 Review column (or any other) explicitly via `columns` when you want one.
 
+A custom `columns` list must include **at least one `active` column** — that is
+where `task_next(start)` moves work, and a project without one is rejected. A
+`backlog` column is *not* required, but a board without one opts out of the two
+features that draw from the backlog: `task_create` with no explicit `column`
+(every create must then name its column) and `task_next` (which has nothing to
+select). This is allowed so an admin can, for example, remove the backlog to
+stop a board accepting new work.
+
 #### Example Call & Response
 
 ```json

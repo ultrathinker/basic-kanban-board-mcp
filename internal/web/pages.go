@@ -179,7 +179,11 @@ func (w *Web) handleDrawer(rw http.ResponseWriter, r *http.Request) {
 		model.Task.Due = t.DueAt.Format(time.RFC3339)
 	}
 	if t.Estimate != nil {
-		model.Task.Estimate = &view.EstimateView{N: *t.Estimate, Unit: "h", Label: formatEstimateLabel(*t.Estimate, "h")}
+		unit := t.EstimateUnit
+		if unit == "" {
+			unit = "h"
+		}
+		model.Task.Estimate = &view.EstimateView{N: *t.Estimate, Unit: unit, Label: formatEstimateLabel(*t.Estimate, unit)}
 	}
 	for i, a := range t.Acceptance {
 		model.Acceptance = append(model.Acceptance, view.AcceptanceView{Index: i, Text: a.Text, Done: a.Done})

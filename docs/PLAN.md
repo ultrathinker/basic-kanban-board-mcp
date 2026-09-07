@@ -173,7 +173,7 @@ uppercase. **Column names are unique per project.**
 ### Column
 `id, project_id, name (unique per project), position (int), kind ∈ {backlog, active, done},
 wip_limit (int?, active only)`. Defaults: `Backlog/backlog`, `Doing/active wip 3`,
-`Review/active`, `Done/done`.
+`Done/done` (three columns; see §18 #24). project_upsert requires at least one active column.
 
 ### Task
 | field | notes |

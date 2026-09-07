@@ -603,10 +603,10 @@ func isReplacementPatch(p TaskPatch) bool {
 		p.Outcome != nil || p.Conclusion != nil ||
 		p.BodyAppend != nil ||
 		p.DueAt.Set || p.DueAt.Clear ||
-		len(p.Tags) > 0 ||
+		p.Tags != nil ||
 		p.Column != "" ||
 		p.Parent.Set || p.Parent.Clear ||
-		len(p.Acceptance) > 0 || len(p.AcceptanceCheck) > 0 || len(p.AcceptanceAdd) > 0 ||
+		p.Acceptance != nil || len(p.AcceptanceCheck) > 0 || len(p.AcceptanceAdd) > 0 ||
 		len(p.MetadataMerge) > 0
 }
 
@@ -696,12 +696,12 @@ func (s *svc) prepareUpdate(tx store.Tx, a Actor, patch TaskPatch) (*prepared, e
 
 // validatePatchShape enforces PLAN §6.5's mutual-exclusion rules.
 func (s *svc) validatePatchShape(p TaskPatch) error {
-	if len(p.Tags) > 0 && (len(p.TagsAdd) > 0 || len(p.TagsRemove) > 0) {
+	if p.Tags != nil && (len(p.TagsAdd) > 0 || len(p.TagsRemove) > 0) {
 		return domain.Invalid("tags",
 			"tags is mutually exclusive with tags_add and tags_remove",
 			"Pick one mode: replace (tags), add (tags_add), or remove (tags_remove).")
 	}
-	if len(p.Acceptance) > 0 && (len(p.AcceptanceCheck) > 0 || len(p.AcceptanceAdd) > 0) {
+	if p.Acceptance != nil && (len(p.AcceptanceCheck) > 0 || len(p.AcceptanceAdd) > 0) {
 		return domain.Invalid("acceptance",
 			"acceptance is mutually exclusive with acceptance_check and acceptance_add",
 			"Pick one mode: replace (acceptance), check (acceptance_check), or add (acceptance_add).")
@@ -723,7 +723,7 @@ func (s *svc) validatePatchShape(p TaskPatch) error {
 // exclusion: a full replace wins, else check-by-index, else add.
 func projectedAcceptance(current []domain.AcceptanceItem, patch TaskPatch) ([]domain.AcceptanceItem, error) {
 	switch {
-	case len(patch.Acceptance) > 0:
+	case patch.Acceptance != nil:
 		items := append([]domain.AcceptanceItem(nil), patch.Acceptance...)
 		if err := domain.ValidateAcceptance(items); err != nil {
 			return nil, err
@@ -868,7 +868,7 @@ func (s *svc) applyUpdate(
 		t.Conclusion = *patch.Conclusion
 		contentChanged = true
 	}
-	if len(patch.Tags) > 0 {
+	if patch.Tags != nil {
 		norm, err := domain.NormalizeTags(patch.Tags)
 		if err != nil {
 			return nil, err
@@ -961,7 +961,7 @@ func (s *svc) applyUpdate(
 		}
 		contentChanged = true
 	}
-	if len(patch.Acceptance) > 0 || len(patch.AcceptanceCheck) > 0 || len(patch.AcceptanceAdd) > 0 {
+	if patch.Acceptance != nil || len(patch.AcceptanceCheck) > 0 || len(patch.AcceptanceAdd) > 0 {
 		next, err := projectedAcceptance(t.Acceptance, patch)
 		if err != nil {
 			return nil, err

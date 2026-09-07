@@ -166,8 +166,58 @@ func TestProjectUpsert_RejectsInvalidWIP(t *testing.T) {
 	}
 }
 
+// A non-nil empty Tags/Acceptance is a replacement with nothing — it clears the
+// stored collection and bumps the version, rather than silently doing nothing.
+func TestTaskUpdate_EmptyTagsAndAcceptanceClear(t *testing.T) {
+	env := openTestEnv(t)
+	task := makeBacklogTask(t, env, "clear me")
+
+	// Seed some tags and one acceptance item.
+	v := freshView(t, env, task.Key).Version
+	if _, err := env.svc.TaskUpdate(context.Background(), env.actor, TaskUpdateInput{
+		Patches: []TaskPatch{{
+			Key: task.Key, IfVersion: &v,
+			Tags:       []string{"alpha", "beta"},
+			Acceptance: []domain.AcceptanceItem{{Text: "do it", Done: false}},
+		}},
+	}); err != nil {
+		t.Fatalf("seed tags/acceptance: %v", err)
+	}
+	seeded := freshView(t, env, task.Key)
+	if len(seeded.Tags) != 2 || len(seeded.Acceptance) != 1 {
+		t.Fatalf("precondition: tags=%v acceptance=%v", seeded.Tags, seeded.Acceptance)
+	}
+
+	// Replace both with empty (non-nil) slices — the clear.
+	v = seeded.Version
+	res, err := env.svc.TaskUpdate(context.Background(), env.actor, TaskUpdateInput{
+		Patches: []TaskPatch{{
+			Key: task.Key, IfVersion: &v,
+			Tags:       []string{},
+			Acceptance: []domain.AcceptanceItem{},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if !res.Items[0].OK {
+		t.Fatalf("clear refused: %+v", res.Items[0].Err)
+	}
+	cleared := freshView(t, env, task.Key)
+	if len(cleared.Tags) != 0 {
+		t.Errorf("Tags = %v after clear, want empty", cleared.Tags)
+	}
+	if len(cleared.Acceptance) != 0 {
+		t.Errorf("Acceptance = %v after clear, want empty", cleared.Acceptance)
+	}
+	if cleared.Version <= seeded.Version {
+		t.Errorf("version did not bump on clear (was %d, now %d)", seeded.Version, cleared.Version)
+	}
+}
+
 // A project with no active column cannot support task_next(start); reject it at
-// configuration time rather than failing every start later.
+// configuration time. A backlog-less layout is allowed on purpose (see the
+// validator comment), so it is not tested here.
 func TestProjectUpsert_RequiresAnActiveColumn(t *testing.T) {
 	env := openTestEnv(t)
 	_, err := env.svc.ProjectUpsert(context.Background(), env.actor, ProjectUpsertInput{

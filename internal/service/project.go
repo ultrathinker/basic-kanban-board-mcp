@@ -230,6 +230,12 @@ func validateColumnSpecs(specs []ColumnSpec) error {
 	// task_next(start) moves work into the first active column and fails at
 	// runtime when there is none. Reject that layout at configuration time, where
 	// the message can be acted on, rather than letting every start error later.
+	//
+	// A backlog column is deliberately NOT required: removing the last backlog
+	// (e.g. to herd a board's intake into Done and stop accepting new work) is a
+	// legitimate admin action. A backlog-less board just opts out of
+	// default-column task_create and of task_next, which both draw from the
+	// backlog — every create must then name its column. See docs/MCP-TOOLS.md.
 	if !hasActive {
 		return domain.Invalid("columns", "a project needs at least one active column",
 			`Add a column with kind "active" — that is where task_next(start) puts work.`)

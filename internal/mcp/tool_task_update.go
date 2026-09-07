@@ -262,11 +262,17 @@ func taskPatchToService(idx int, in taskPatchIn, raw map[string]json.RawMessage)
 	if err != nil {
 		return service.TaskPatch{}, domain.AsError(err)
 	}
-	if len(in.Tags) > 0 && (len(in.TagsAdd) > 0 || len(in.TagsRemove) > 0) {
+	// Presence, not length: a replacement is requested whenever the caller sent
+	// the key at all — an empty array means "replace with nothing" (clear), and
+	// must be distinguished from an absent key ("leave alone"). len() collapses
+	// those two, so tags:[] / acceptance:[] silently did nothing.
+	_, tagsPresent := raw["tags"]
+	_, acceptancePresent := raw["acceptance"]
+	if tagsPresent && (len(in.TagsAdd) > 0 || len(in.TagsRemove) > 0) {
 		return service.TaskPatch{}, domain.Invalid(fmt.Sprintf("patches[%d].tags", idx),
 			"tags cannot be combined with tags_add/tags_remove", "Send either a full replacement tag set, or add/remove deltas, not both.")
 	}
-	if len(in.Acceptance) > 0 && (len(in.AcceptanceCheck) > 0 || len(in.AcceptanceAdd) > 0) {
+	if acceptancePresent && (len(in.AcceptanceCheck) > 0 || len(in.AcceptanceAdd) > 0) {
 		return service.TaskPatch{}, domain.Invalid(fmt.Sprintf("patches[%d].acceptance", idx),
 			"acceptance cannot be combined with acceptance_check/acceptance_add", "Send either a full replacement checklist, or check/add deltas, not both.")
 	}
@@ -309,12 +315,20 @@ func taskPatchToService(idx int, in taskPatchIn, raw map[string]json.RawMessage)
 		out.Outcome = &o
 	}
 	out.Conclusion = in.Conclusion
-	if len(in.Acceptance) > 0 {
+	if acceptancePresent {
+		// make with len 0 is non-nil, so an empty acceptance[] reaches the
+		// service as "replace with an empty checklist" (clear), not "absent".
 		items := make([]domain.AcceptanceItem, len(in.Acceptance))
 		for i, a := range in.Acceptance {
 			items[i] = domain.AcceptanceItem{Text: a.Text, Done: a.Done}
 		}
 		out.Acceptance = items
+	}
+	// Likewise for tags: if the key was sent but decoded to a nil slice (an
+	// empty array), force a non-nil empty slice so the service clears rather
+	// than ignores it.
+	if tagsPresent && out.Tags == nil {
+		out.Tags = []string{}
 	}
 
 	out.Estimate = triFloatField(raw, "estimate", in.Estimate)
