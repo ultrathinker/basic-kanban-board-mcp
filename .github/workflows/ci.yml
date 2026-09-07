@@ -32,7 +32,7 @@ jobs:
     # GNU make + diff are already there and the rest of CI uses the same
     # runner. This is the early warning that catches embed drift.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install make
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends make
@@ -78,7 +78,7 @@ jobs:
         os: [ubuntu-latest, windows-latest]
         go: ["1.27"]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Go
         uses: actions/setup-go@v5
