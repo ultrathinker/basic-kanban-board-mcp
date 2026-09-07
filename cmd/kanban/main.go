@@ -149,7 +149,7 @@ Subcommands:
   healthcheck     Exit 0/1 by probing /healthz.
   mcp             Run the stdio MCP bridge.
   migrate         Apply pending migrations.
-  demo            Seed idempotent sample data.
+  demo            Seed idempotent sample data. 'demo clear' archives it.
   version         Print version and exit.
 
 Concurrency:
@@ -163,6 +163,14 @@ Run 'kanban <subcommand> --help' for subcommand-specific flags.
 
 func exit(err error) {
 	if err == nil {
+		return
+	}
+	// `--help` on any subcommand parses to flag.ErrHelp. The flag package has
+	// already printed the usage to stderr; asking for help is not a failure, so
+	// exit 0 rather than 1. (Without this, `kanban serve --help` printed the
+	// help and then exited 1 with "flag: help requested" — a papercut on the
+	// very first thing a curious user types.)
+	if errors.Is(err, flag.ErrHelp) {
 		return
 	}
 	// Refusal errors carry a Code + a fix-it flag; print the message
@@ -491,7 +499,16 @@ func renderAgentConfig(client, base, secret string) string {
 	case "claude":
 		return "# Paste this into your Claude Code MCP settings (.mcp.json or settings):\n" + cfg + "\n"
 	case "codex":
-		return "# Paste this into Codex's MCP config (TOML):\n[mcp_servers.kanban]\nurl = \"" + base + "/mcp\"\n" + "# then add the bearer token in your secrets file\n"
+		// Codex reads MCP servers from ~/.codex/config.toml. Include the bearer
+		// token in the headers table so the snippet is paste-and-go, exactly like
+		// the Claude and Cursor branches — the earlier version dropped the token
+		// and told the user to "add it in your secrets file", which just moved the
+		// friction somewhere the snippet could not help with.
+		return "# Paste this into Codex's MCP config (~/.codex/config.toml):\n" +
+			"[mcp_servers.kanban]\n" +
+			"type = \"http\"\n" +
+			"url = \"" + base + "/mcp\"\n" +
+			"headers = { \"Authorization\" = \"Bearer " + tok + "\" }\n"
 	case "cursor":
 		return "# Cursor → Settings → MCP → Add new global MCP server:\nName: kanban\nType: http\nURL: " + base + "/mcp\nHeaders: Authorization: Bearer " + tok + "\n"
 	case "generic", "":
@@ -845,6 +862,11 @@ func runMigrate(args []string) error {
 // have to restart the server to get one — openStore attaches without
 // migrating when a server already owns the directory.
 func runDemo(args []string) error {
+	// `kanban demo clear` retires the sample board; `kanban demo` (re)seeds it.
+	if len(args) > 0 && args[0] == "clear" {
+		return runDemoClear(args[1:])
+	}
+
 	fs := flag.NewFlagSet("demo", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	dataDir := fs.String("data", "./data", "Directory holding the SQLite database.")
@@ -869,6 +891,36 @@ func runDemo(args []string) error {
 		return nil
 	}
 	fmt.Fprintf(os.Stdout, "Seeded project %s with %d sample tasks.\n", demo.ProjectKey, res.Tasks)
+	return nil
+}
+
+// runDemoClear archives the sample project so the board reads as clean. It is
+// the "I've seen the demo, get it off my board" button, usable while a server
+// is running (openStore attaches without migrating) — the one obvious thing to
+// clear rather than a hunt through the board.
+func runDemoClear(args []string) error {
+	fs := flag.NewFlagSet("demo clear", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	dataDir := fs.String("data", "./data", "Directory holding the SQLite database.")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	ctx := context.Background()
+	st, err := openStore(ctx, *dataDir)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	cleared, err := demo.Clear(ctx, service.New(st, nil))
+	if err != nil {
+		return err
+	}
+	if !cleared {
+		fmt.Fprintf(os.Stdout, "Project %s is not on the board; nothing to clear.\n", demo.ProjectKey)
+		return nil
+	}
+	fmt.Fprintf(os.Stdout, "Archived project %s; the board is clear. It is recoverable via project_upsert(archived:false).\n", demo.ProjectKey)
 	return nil
 }
 

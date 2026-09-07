@@ -224,7 +224,7 @@ func Build(in Inputs) (Config, *flag.FlagSet, error) {
 		proxies   = in.FS.String("trusted-proxies", "", "Comma-separated CIDRs allowed to set X-Forwarded-* (e.g. 10.0.0.0/8,127.0.0.1/32).")
 		logLevel  = in.FS.String("log-level", string(DefaultLogLevel), "Log level: debug|info|warn|error.")
 		logFormat = in.FS.String("log-format", string(DefaultLogFormat), "Log format: text|json.")
-		demo      = in.FS.Bool("demo", false, "Seed the database with example data on first start.")
+		demo      = in.FS.Bool("demo", true, "Seed one labeled sample project on a brand-new (empty) database so a fresh node opens on a populated board. No-op once any project exists. Pass --demo=false (or KANBAN_DEMO=false) for a clean board.")
 		adminTok  = in.FS.String("admin-token", "", "Bootstrap admin token value. Prefer KANBAN_ADMIN_TOKEN env or _FILE path. If neither is set, one is auto-generated and printed once.")
 		adminFile = in.FS.String("admin-token-file", "", "Path to a file containing the bootstrap admin token.")
 		claimTTL  = in.FS.Duration("claim-ttl", DefaultClaimTTL, "Default claim TTL, clamped to ["+domain.ClaimTTLMin.String()+", "+domain.ClaimTTLMax.String()+"].")

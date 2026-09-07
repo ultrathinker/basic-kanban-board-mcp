@@ -100,6 +100,69 @@ func Seed(ctx context.Context, svc service.Service) (Result, error) {
 	return out, nil
 }
 
+// SeedFresh seeds the sample board only when the database holds no projects at
+// all — the "brand-new node" case. Once the operator has any project of their
+// own (or has kept the demo), it does nothing, so deleting the demo after you
+// have your own board does not bring it back on the next restart. This is the
+// default path `kanban serve` takes; the plain Seed (and `kanban demo`) still
+// force the sample board regardless.
+func SeedFresh(ctx context.Context, svc service.Service) (Result, error) {
+	empty, err := boardIsEmpty(ctx, svc)
+	if err != nil {
+		return Result{}, err
+	}
+	if !empty {
+		return Result{Created: false}, nil
+	}
+	return Seed(ctx, svc)
+}
+
+// Clear archives the sample project so it drops off the board. Archiving rather
+// than hard-deleting is reversible and needs no new store primitive: an
+// archived project is excluded from every board listing, so the board reads as
+// clean while the data is still recoverable. It is a no-op when the demo is
+// already gone.
+func Clear(ctx context.Context, svc service.Service) (bool, error) {
+	board, err := svc.BoardGet(ctx, Actor, service.BoardGetInput{
+		ProjectKey: ProjectKey, View: service.ViewSummary,
+	})
+	if err != nil {
+		if isNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("demo: look for the %s project to clear: %w", ProjectKey, err)
+	}
+	if len(board.Projects) == 0 {
+		return false, nil
+	}
+	p := board.Projects[0]
+	if p.Archived {
+		return false, nil
+	}
+	archived := true
+	version := p.Version
+	if _, err := svc.ProjectUpsert(ctx, Actor, service.ProjectUpsertInput{
+		Mode:      service.UpsertUpdate,
+		Key:       ProjectKey,
+		IfVersion: &version,
+		Archived:  &archived,
+	}); err != nil {
+		return false, fmt.Errorf("demo: archive %s: %w", ProjectKey, err)
+	}
+	return true, nil
+}
+
+// boardIsEmpty reports whether the board has no projects at all. An empty
+// ProjectKey asks BoardGet for every project the actor can reach; the demo
+// actor is unrestricted, so this sees the whole board.
+func boardIsEmpty(ctx context.Context, svc service.Service) (bool, error) {
+	board, err := svc.BoardGet(ctx, Actor, service.BoardGetInput{View: service.ViewSummary})
+	if err != nil {
+		return false, fmt.Errorf("demo: check whether the board is empty: %w", err)
+	}
+	return len(board.Projects) == 0, nil
+}
+
 // advance moves two of the seeded tasks out of the backlog so the sample board
 // shows a column layout rather than one long list.
 func advance(ctx context.Context, svc service.Service, byRef map[string]domain.TaskView) error {

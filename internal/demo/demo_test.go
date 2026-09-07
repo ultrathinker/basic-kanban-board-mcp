@@ -156,6 +156,97 @@ func TestSeed_LeavesOtherProjectsAlone(t *testing.T) {
 	}
 }
 
+// TestSeedFresh_OnlySeedsAnEmptyBoard pins the default serve behaviour: a
+// brand-new node gets the sample board, but a database that already holds any
+// project — even one the operator made and then emptied of the demo — is left
+// exactly as it is.
+func TestSeedFresh_OnlySeedsAnEmptyBoard(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+
+	t.Run("fresh database is seeded", func(t *testing.T) {
+		t.Parallel()
+		svc := newSvc(t)
+		res, err := SeedFresh(ctx, svc)
+		if err != nil {
+			t.Fatalf("SeedFresh: %v", err)
+		}
+		if !res.Created {
+			t.Fatal("Created = false on an empty database; a fresh node opened on a blank board")
+		}
+	})
+
+	t.Run("a database with any project is left alone", func(t *testing.T) {
+		t.Parallel()
+		svc := newSvc(t)
+		if _, err := svc.ProjectUpsert(ctx, Actor, service.ProjectUpsertInput{
+			Mode: service.UpsertCreate, Key: "REAL", Name: "Real work",
+		}); err != nil {
+			t.Fatalf("create REAL: %v", err)
+		}
+		res, err := SeedFresh(ctx, svc)
+		if err != nil {
+			t.Fatalf("SeedFresh: %v", err)
+		}
+		if res.Created {
+			t.Error("SeedFresh seeded the demo onto a board that already had a project")
+		}
+		board, err := svc.BoardGet(ctx, Actor, service.BoardGetInput{View: service.ViewSummary})
+		if err != nil {
+			t.Fatalf("BoardGet: %v", err)
+		}
+		for _, p := range board.Projects {
+			if p.Key == ProjectKey {
+				t.Fatalf("demo project %q was created despite an existing project", ProjectKey)
+			}
+		}
+	})
+}
+
+// TestClear_ArchivesTheDemo covers the "get the demo off my board" button: it
+// archives the sample project (so it drops off every board listing) and is a
+// no-op when there is nothing to clear.
+func TestClear_ArchivesTheDemo(t *testing.T) {
+	t.Parallel()
+	svc := newSvc(t)
+	ctx := context.Background()
+
+	if cleared, err := Clear(ctx, svc); err != nil {
+		t.Fatalf("Clear on empty board: %v", err)
+	} else if cleared {
+		t.Error("Clear reported clearing something on an empty board")
+	}
+
+	if _, err := Seed(ctx, svc); err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+
+	cleared, err := Clear(ctx, svc)
+	if err != nil {
+		t.Fatalf("Clear: %v", err)
+	}
+	if !cleared {
+		t.Fatal("Clear reported doing nothing with the demo present")
+	}
+
+	board, err := svc.BoardGet(ctx, Actor, service.BoardGetInput{View: service.ViewSummary})
+	if err != nil {
+		t.Fatalf("BoardGet after clear: %v", err)
+	}
+	for _, p := range board.Projects {
+		if p.Key == ProjectKey {
+			t.Fatalf("demo project %q still shows on the board after Clear", ProjectKey)
+		}
+	}
+
+	// Second clear is a no-op: the project is already archived and off the board.
+	if again, err := Clear(ctx, svc); err != nil {
+		t.Fatalf("second Clear: %v", err)
+	} else if again {
+		t.Error("second Clear reported clearing an already-archived demo")
+	}
+}
+
 // TestSampleTasks_RefsAreUniqueAndResolvable guards the batch itself: a
 // "@ref" that names nothing is a validation error at seed time, and a
 // duplicate ref silently binds the wrong task.

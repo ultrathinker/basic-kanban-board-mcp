@@ -172,13 +172,15 @@ func New(ctx context.Context, cfg config.Config, opts ...Option) (*App, error) {
 
 	svc := o.serviceFactory(gate, bus)
 
-	// --demo runs before the listener opens, so the first request already sees
-	// a populated board. It is idempotent, so leaving the flag in a
-	// docker-compose file is harmless; it is also fatal on failure, because a
-	// server that silently ignored the flag would send the user hunting for a
-	// board that was never seeded.
+	// The demo seed runs before the listener opens, so the first request
+	// already sees a populated board. SeedFresh only fires on a truly empty
+	// database (no projects at all), so a fresh node opens on a real board while
+	// an operator who has their own project — or who deleted the demo after
+	// making one — is never re-seeded. It is fatal on failure, because a server
+	// that silently ignored the setting would send the user hunting for a board
+	// that was never seeded. Opt out with --demo=false / KANBAN_DEMO=false.
 	if cfg.Demo {
-		if _, err := demo.Seed(ctx, svc); err != nil {
+		if _, err := demo.SeedFresh(ctx, svc); err != nil {
 			_ = st.Close()
 			_ = lock.Release()
 			return nil, err
