@@ -140,8 +140,14 @@ func renderTask(sb *strings.Builder, tv *domain.TaskView, kind domain.Kind, now 
 	if tv.Estimate != nil {
 		parts = append(parts, "est "+formatEstimate(*tv.Estimate, unit))
 	}
+	if tv.Actual != nil {
+		parts = append(parts, "act "+formatEstimate(*tv.Actual, unit))
+	}
 	if tv.Assignee != nil && *tv.Assignee != "" {
 		parts = append(parts, "@"+*tv.Assignee)
+	}
+	if tv.Reviewer != nil && *tv.Reviewer != "" {
+		parts = append(parts, "rev "+*tv.Reviewer)
 	}
 	if tv.ClaimedBy != nil {
 		var rem *time.Duration

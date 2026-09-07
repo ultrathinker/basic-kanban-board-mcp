@@ -57,15 +57,18 @@ func (a *acceptanceIn) UnmarshalJSON(b []byte) error {
 // decodeRawPatches below re-parses the raw request JSON to tell the other
 // two apart.
 type taskPatchIn struct {
-	Key       string   `json:"key" jsonschema:"task key, case-insensitive"`
-	IfVersion *int     `json:"if_version,omitempty" jsonschema:"required for any replacement-style field below; commutative fields (note, tags_add, tags_remove) may omit it. Read the current version from board_get (every task line and the project header end with v<N>) or from task_get — no separate read is needed."`
-	Title     *string  `json:"title,omitempty"`
-	Body      *string  `json:"body,omitempty"`
-	Type      *string  `json:"type,omitempty"`
-	Priority  *string  `json:"priority,omitempty"`
-	Estimate  *float64 `json:"estimate,omitempty" jsonschema:"send null to clear"`
-	Assignee  *string  `json:"assignee,omitempty" jsonschema:"send null to clear"`
-	DueAt     *string  `json:"due_at,omitempty" jsonschema:"RFC3339; send null to clear"`
+	Key        string   `json:"key" jsonschema:"task key, case-insensitive"`
+	IfVersion  *int     `json:"if_version,omitempty" jsonschema:"required for any replacement-style field below; commutative fields (note, tags_add, tags_remove) may omit it. Read the current version from board_get (every task line and the project header end with v<N>) or from task_get — no separate read is needed."`
+	Title      *string  `json:"title,omitempty"`
+	Body       *string  `json:"body,omitempty"`
+	BodyAppend *string  `json:"body_append,omitempty" jsonschema:"append this text to the body instead of replacing it; mutually exclusive with body"`
+	Type       *string  `json:"type,omitempty"`
+	Priority   *string  `json:"priority,omitempty"`
+	Estimate   *float64 `json:"estimate,omitempty" jsonschema:"send null to clear"`
+	Actual     *float64 `json:"actual,omitempty" jsonschema:"effort actually spent, same unit as estimate; send null to clear"`
+	Assignee   *string  `json:"assignee,omitempty" jsonschema:"send null to clear"`
+	Reviewer   *string  `json:"reviewer,omitempty" jsonschema:"who checks the work; send null to clear"`
+	DueAt      *string  `json:"due_at,omitempty" jsonschema:"RFC3339; send null to clear"`
 
 	Tags       []string `json:"tags,omitempty" jsonschema:"replace the whole tag set; mutually exclusive with tags_add/tags_remove"`
 	TagsAdd    []string `json:"tags_add,omitempty"`
@@ -265,6 +268,7 @@ func taskPatchToService(idx int, in taskPatchIn, raw map[string]json.RawMessage)
 		IfVersion:       in.IfVersion,
 		Title:           in.Title,
 		Body:            in.Body,
+		BodyAppend:      in.BodyAppend,
 		Tags:            in.Tags,
 		TagsAdd:         in.TagsAdd,
 		TagsRemove:      in.TagsRemove,
@@ -298,7 +302,9 @@ func taskPatchToService(idx int, in taskPatchIn, raw map[string]json.RawMessage)
 	}
 
 	out.Estimate = triFloatField(raw, "estimate", in.Estimate)
+	out.Actual = triFloatField(raw, "actual", in.Actual)
 	out.Assignee = triStringField(raw, "assignee", in.Assignee)
+	out.Reviewer = triStringField(raw, "reviewer", in.Reviewer)
 	dueAt, derr := triTimeField(raw, "due_at", fmt.Sprintf("patches[%d].due_at", idx), in.DueAt)
 	if derr != nil {
 		return service.TaskPatch{}, derr

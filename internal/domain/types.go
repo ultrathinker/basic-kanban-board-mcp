@@ -177,8 +177,17 @@ type Task struct {
 	Type     Type
 	Priority Priority
 	Estimate *float64
+	// Actual is the effort a task really took, in the same unit as Estimate.
+	// It is recorded after the fact (usually via task_update when the work is
+	// done), so it is separate from Estimate rather than overwriting it: the
+	// gap between the two is the calibration signal the board exists to expose.
+	Actual   *float64
 	Tags     []string // lowercase, no spaces
 	Assignee *string  // free text: human or agent name
+	// Reviewer is who is expected to check the work, kept distinct from
+	// Assignee (who does it): a research task moving to Done through a review
+	// column needs both to be nameable independently.
+	Reviewer *string
 
 	ClaimedBy       *string
 	ClaimedAt       *time.Time
@@ -204,16 +213,21 @@ type Task struct {
 // does not persist. Read paths return this; write paths accept Task fields.
 type TaskView struct {
 	Task
-	ProjectKey  string
-	ColumnName  string
-	ColumnKind  Kind
-	BlockedBy   []string // keys of OPEN blockers only, sorted
-	Blocks      []string // keys this task blocks, sorted
-	SubDone     int
-	SubTotal    int
-	Ready       bool // no open blockers, no incomplete subtasks, claimable
-	LeaseRemain *time.Duration
-	Notes       []Note // populated only when explicitly included
+	ProjectKey string
+	// EstimateUnit is the owning project's unit (e.g. "h"), copied onto the
+	// view so a per-task read can render "3.5h" without the caller having to
+	// fetch the project separately. Read paths populate it; it is never stored
+	// on the task row.
+	EstimateUnit string
+	ColumnName   string
+	ColumnKind   Kind
+	BlockedBy    []string // keys of OPEN blockers only, sorted
+	Blocks       []string // keys this task blocks, sorted
+	SubDone      int
+	SubTotal     int
+	Ready        bool // no open blockers, no incomplete subtasks, claimable
+	LeaseRemain  *time.Duration
+	Notes        []Note // populated only when explicitly included
 }
 
 // Link is a typed dependency edge: Blocker must be done before Blocked may

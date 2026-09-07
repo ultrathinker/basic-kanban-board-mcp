@@ -128,15 +128,16 @@ func (s *svc) hydrateView(tx store.Tx, cc *columnCache, pc *projectCache, task *
 	}
 
 	tv := domain.TaskView{
-		Task:        *task,
-		ProjectKey:  proj.Key,
-		ColumnName:  col.Name,
-		ColumnKind:  col.Kind,
-		BlockedBy:   openBlockers,
-		Blocks:      blocks,
-		SubDone:     subDone,
-		SubTotal:    subTotal,
-		LeaseRemain: domain.LeaseRemaining(task, now),
+		Task:         *task,
+		ProjectKey:   proj.Key,
+		EstimateUnit: proj.EstimateUnit,
+		ColumnName:   col.Name,
+		ColumnKind:   col.Kind,
+		BlockedBy:    openBlockers,
+		Blocks:       blocks,
+		SubDone:      subDone,
+		SubTotal:     subTotal,
+		LeaseRemain:  domain.LeaseRemaining(task, now),
 	}
 	tv.Ready = subTotal == 0 && len(openBlockers) == 0 &&
 		domain.ClaimableBy(task, "", now) && col.Kind == domain.KindBacklog

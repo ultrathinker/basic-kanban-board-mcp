@@ -70,13 +70,13 @@ func (r *taskRepo) Create(tx Tx, t *domain.Task) error {
 	_, err = tw.tx.ExecContext(tw.ctx(), `
 		INSERT INTO tasks(
 			id, key, project_id, column_id, parent_id, rank,
-			title, body, type, priority, estimate, tags, assignee,
+			title, body, type, priority, estimate, actual, tags, assignee, reviewer,
 			claimed_by, claimed_at, claim_expires_at,
 			acceptance, due_at, column_entered_at, started_at, done_at,
 			version, metadata, created_at, updated_at, created_by, updated_by, archived_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		t.ID, t.Key, t.ProjectID, t.ColumnID, nullableIDPtr(t.ParentID), t.Rank,
-		t.Title, t.Body, string(t.Type), int(t.Priority), nullableFloat(t.Estimate), tagsJSON, nullString(t.Assignee),
+		t.Title, t.Body, string(t.Type), int(t.Priority), nullableFloat(t.Estimate), nullableFloat(t.Actual), tagsJSON, nullString(t.Assignee), nullString(t.Reviewer),
 		nullString(t.ClaimedBy), nullableTime(t.ClaimedAt), nullableTime(t.ClaimExpiresAt),
 		acceptanceJSON, nullableTime(t.DueAt), formatTime(t.ColumnEnteredAt), nullableTime(t.StartedAt), nullableTime(t.DoneAt),
 		t.Version, metadataJSON,
@@ -168,12 +168,12 @@ func (r *taskRepo) Update(tx Tx, t *domain.Task, ifVersion *int) error {
 	t.UpdatedAt = now
 	res, err := tw.tx.ExecContext(tw.ctx(), `
 		UPDATE tasks SET
-			title=?, body=?, type=?, priority=?, estimate=?, tags=?, assignee=?,
+			title=?, body=?, type=?, priority=?, estimate=?, actual=?, tags=?, assignee=?, reviewer=?,
 			parent_id=?, acceptance=?, due_at=?, metadata=?,
 			version=version+1, updated_at=?, updated_by=?
 		WHERE id = ?`,
-		t.Title, t.Body, string(t.Type), int(t.Priority), nullableFloat(t.Estimate),
-		tagsJSON, nullString(t.Assignee),
+		t.Title, t.Body, string(t.Type), int(t.Priority), nullableFloat(t.Estimate), nullableFloat(t.Actual),
+		tagsJSON, nullString(t.Assignee), nullString(t.Reviewer),
 		nullableIDPtr(t.ParentID),
 		acceptanceJSON, nullableTime(t.DueAt), metadataJSON,
 		formatTime(t.UpdatedAt), t.UpdatedBy, t.ID,
@@ -722,7 +722,7 @@ func (r *taskRepo) renumberColumnTx(tw *txWrap, columnID string) error {
 // taskColumns is the canonical SELECT list. New columns go here and
 // scanTaskRow / scanTaskRows together.
 const taskColumns = `id, key, project_id, column_id, parent_id, rank,
-title, body, type, priority, estimate, tags, assignee,
+title, body, type, priority, estimate, actual, tags, assignee, reviewer,
 claimed_by, claimed_at, claim_expires_at,
 acceptance, due_at, column_entered_at, started_at, done_at,
 version, metadata, created_at, updated_at, created_by, updated_by, archived_at`
@@ -732,7 +732,9 @@ version, metadata, created_at, updated_at, created_by, updated_by, archived_at`
 type scanTemps struct {
 	parent          sql.NullString
 	estimate        sql.NullFloat64
+	actual          sql.NullFloat64
 	assignee        sql.NullString
+	reviewer        sql.NullString
 	claimedBy       sql.NullString
 	claimedAt       sql.NullString
 	claimExpiresAt  sql.NullString
@@ -751,7 +753,7 @@ type scanTemps struct {
 func taskScanArgs(t *domain.Task, s *scanTemps) []any {
 	return []any{
 		&t.ID, &t.Key, &t.ProjectID, &t.ColumnID, &s.parent, &t.Rank,
-		&t.Title, &t.Body, &t.Type, &t.Priority, &s.estimate, &s.tags, &s.assignee,
+		&t.Title, &t.Body, &t.Type, &t.Priority, &s.estimate, &s.actual, &s.tags, &s.assignee, &s.reviewer,
 		&s.claimedBy, &s.claimedAt, &s.claimExpiresAt,
 		&s.acceptance, &s.dueAt, &s.columnEnteredAt, &s.startedAt, &s.doneAt,
 		&t.Version, &s.metadata, &s.createdAt, &s.updatedAt, &t.CreatedBy, &t.UpdatedBy, &s.archivedAt,
@@ -767,9 +769,17 @@ func fillTask(t *domain.Task, s *scanTemps) error {
 		v := s.estimate.Float64
 		t.Estimate = &v
 	}
+	if s.actual.Valid {
+		v := s.actual.Float64
+		t.Actual = &v
+	}
 	if s.assignee.Valid {
 		v := s.assignee.String
 		t.Assignee = &v
+	}
+	if s.reviewer.Valid {
+		v := s.reviewer.String
+		t.Reviewer = &v
 	}
 	if s.claimedBy.Valid {
 		v := s.claimedBy.String

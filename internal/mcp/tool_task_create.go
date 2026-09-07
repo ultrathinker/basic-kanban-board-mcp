@@ -19,8 +19,10 @@ type newTaskIn struct {
 	Type           string         `json:"type,omitempty"`
 	Priority       string         `json:"priority,omitempty"`
 	Estimate       *float64       `json:"estimate,omitempty" jsonschema:"in the project's estimate_unit"`
+	Actual         *float64       `json:"actual,omitempty" jsonschema:"effort actually spent, same unit as estimate"`
 	Tags           []string       `json:"tags,omitempty"`
 	Assignee       string         `json:"assignee,omitempty" jsonschema:"free text: a human or agent name"`
+	Reviewer       string         `json:"reviewer,omitempty" jsonschema:"free text: who checks the work"`
 	Column         string         `json:"column,omitempty" jsonschema:"column name; default is the project's first backlog column"`
 	Parent         string         `json:"parent,omitempty" jsonschema:"an existing task key such as \"BMB-14\", or another item of this same batch written as a single @ followed by that item's ref value: an item declaring ref:\"scaffold\" is written here as \"@scaffold\"."`
 	BlockedBy      []string       `json:"blocked_by,omitempty" jsonschema:"tasks that must be done first: existing keys and/or items of this same batch, e.g. [\"BMB-14\", \"@scaffold\"] where another item in the batch declares ref:\"scaffold\"."`
@@ -134,9 +136,14 @@ func newTaskToService(in newTaskIn) (service.NewTask, *domain.Error) {
 		out.Priority = p
 	}
 	out.Estimate = in.Estimate
+	out.Actual = in.Actual
 	if in.Assignee != "" {
 		a := in.Assignee
 		out.Assignee = &a
+	}
+	if in.Reviewer != "" {
+		r := in.Reviewer
+		out.Reviewer = &r
 	}
 	if in.Parent != "" {
 		p, derr := keyOrRef("parent", in.Parent)

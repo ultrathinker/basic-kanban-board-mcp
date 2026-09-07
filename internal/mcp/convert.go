@@ -84,8 +84,12 @@ type taskOut struct {
 	Title                 string          `json:"title"`
 	Body                  *string         `json:"body,omitempty"`
 	Estimate              *float64        `json:"estimate,omitempty"`
+	Actual                *float64        `json:"actual,omitempty"`
+	EstimateUnit          string          `json:"estimate_unit,omitempty"`
+	EstimateError         *float64        `json:"estimate_error,omitempty"`
 	Tags                  []string        `json:"tags,omitempty"`
 	Assignee              *string         `json:"assignee,omitempty"`
+	Reviewer              *string         `json:"reviewer,omitempty"`
 	ClaimedBy             *string         `json:"claimed_by,omitempty"`
 	ClaimExpiresAt        *string         `json:"claim_expires_at,omitempty"`
 	LeaseRemainingSeconds *int            `json:"lease_remaining_seconds,omitempty"`
@@ -115,28 +119,38 @@ type taskOut struct {
 // form must not disagree.
 func taskViewOut(tv *domain.TaskView, proj service.Projection) taskOut {
 	out := taskOut{
-		Key:        tv.Key,
-		Project:    tv.ProjectKey,
-		Column:     tv.ColumnName,
-		ColumnKind: tv.ColumnKind,
-		Type:       tv.Type,
-		Priority:   tv.Priority.String(),
-		Title:      tv.Title,
-		Estimate:   tv.Estimate,
-		Tags:       tv.Tags,
-		Assignee:   tv.Assignee,
-		ClaimedBy:  tv.ClaimedBy,
-		SubDone:    tv.SubDone,
-		SubTotal:   tv.SubTotal,
-		BlockedBy:  tv.BlockedBy,
-		Ready:      tv.Ready,
-		Version:    tv.Version,
-		CreatedAt:  formatTime(tv.CreatedAt),
-		UpdatedAt:  formatTime(tv.UpdatedAt),
-		CreatedBy:  tv.CreatedBy,
-		UpdatedBy:  tv.UpdatedBy,
-		ArchivedAt: formatTimePtr(tv.ArchivedAt),
-		DueAt:      formatTimePtr(tv.DueAt),
+		Key:          tv.Key,
+		Project:      tv.ProjectKey,
+		Column:       tv.ColumnName,
+		ColumnKind:   tv.ColumnKind,
+		Type:         tv.Type,
+		Priority:     tv.Priority.String(),
+		Title:        tv.Title,
+		Estimate:     tv.Estimate,
+		Actual:       tv.Actual,
+		EstimateUnit: tv.EstimateUnit,
+		Tags:         tv.Tags,
+		Assignee:     tv.Assignee,
+		Reviewer:     tv.Reviewer,
+		ClaimedBy:    tv.ClaimedBy,
+		SubDone:      tv.SubDone,
+		SubTotal:     tv.SubTotal,
+		BlockedBy:    tv.BlockedBy,
+		Ready:        tv.Ready,
+		Version:      tv.Version,
+		CreatedAt:    formatTime(tv.CreatedAt),
+		UpdatedAt:    formatTime(tv.UpdatedAt),
+		CreatedBy:    tv.CreatedBy,
+		UpdatedBy:    tv.UpdatedBy,
+		ArchivedAt:   formatTimePtr(tv.ArchivedAt),
+		DueAt:        formatTimePtr(tv.DueAt),
+	}
+	// estimate_error = actual - estimate: surfaced only when both fields are
+	// set, so a half-filled row does not advertise a meaningless number.
+	// Positive = under-estimated (the work took longer than expected).
+	if tv.Estimate != nil && tv.Actual != nil {
+		err := *tv.Actual - *tv.Estimate
+		out.EstimateError = &err
 	}
 	if tv.ClaimedBy != nil {
 		out.ClaimExpiresAt = formatTimePtr(tv.ClaimExpiresAt)

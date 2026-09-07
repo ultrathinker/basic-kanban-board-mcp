@@ -366,8 +366,10 @@ type NewTask struct {
 	Type           domain.Type
 	Priority       domain.Priority
 	Estimate       *float64
+	Actual         *float64
 	Tags           []string
 	Assignee       *string
+	Reviewer       *string
 	Column         string // empty = first backlog column
 	Parent         string // task key or "@ref"
 	BlockedBy      []string
@@ -404,12 +406,24 @@ type TaskPatch struct {
 	Key       string
 	IfVersion *int
 
-	Title    *string
-	Body     *string
-	Type     *domain.Type
-	Priority *domain.Priority
-	Estimate FieldFloat  // set or explicitly clear
+	Title *string
+	Body  *string
+	// BodyAppend adds text to the end of the current body instead of replacing
+	// it, so an agent can grow a long body in pieces without resending (or
+	// holding) the whole thing — and without a transport that clips a large
+	// argument silently truncating the result. Mutually exclusive with Body.
+	// A nil pointer means "leave the body alone"; a non-nil pointer appends its
+	// value (which the service separates from the existing text with a blank
+	// line when the body is non-empty).
+	BodyAppend *string
+	Type       *domain.Type
+	Priority   *domain.Priority
+	Estimate   FieldFloat // set or explicitly clear
+	// Actual is recorded like Estimate (set or explicit clear). It does not
+	// touch Estimate: the two coexist so the gap between them is legible.
+	Actual   FieldFloat
 	Assignee FieldString // set or explicitly clear
+	Reviewer FieldString // set or explicitly clear; who checks the work
 	DueAt    FieldTime   // set or explicitly clear
 
 	Tags       []string // replace; mutually exclusive with TagsAdd/TagsRemove

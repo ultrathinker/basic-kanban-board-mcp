@@ -186,8 +186,10 @@ func (s *svc) TaskCreate(ctx context.Context, a Actor, in TaskCreateInput) (*Tas
 				Type:       p.new.Type,
 				Priority:   p.new.Priority,
 				Estimate:   p.new.Estimate,
+				Actual:     p.new.Actual,
 				Tags:       append([]string(nil), p.new.Tags...),
 				Assignee:   p.new.Assignee,
+				Reviewer:   p.new.Reviewer,
 				Acceptance: buildAcceptance(p.new.Acceptance),
 				DueAt:      p.new.DueAt,
 				Metadata:   p.new.Metadata,
@@ -584,7 +586,10 @@ type prepared struct {
 func isReplacementPatch(p TaskPatch) bool {
 	return p.Title != nil || p.Body != nil || p.Type != nil || p.Priority != nil ||
 		p.Estimate.Set || p.Estimate.Clear ||
+		p.Actual.Set || p.Actual.Clear ||
 		p.Assignee.Set || p.Assignee.Clear ||
+		p.Reviewer.Set || p.Reviewer.Clear ||
+		p.BodyAppend != nil ||
 		p.DueAt.Set || p.DueAt.Clear ||
 		len(p.Tags) > 0 ||
 		p.Column != "" ||
@@ -683,6 +688,11 @@ func (s *svc) validatePatchShape(p TaskPatch) error {
 			"acceptance is mutually exclusive with acceptance_check and acceptance_add",
 			"Pick one mode: replace (acceptance), check (acceptance_check), or add (acceptance_add).")
 	}
+	if p.Body != nil && p.BodyAppend != nil {
+		return domain.Invalid("body_append",
+			"body and body_append are mutually exclusive",
+			"Send either body (replace) or body_append (append), not both.")
+	}
 	return nil
 }
 
@@ -714,6 +724,19 @@ func (s *svc) applyUpdate(
 		t.Body = *patch.Body
 		contentChanged = true
 	}
+	if patch.BodyAppend != nil {
+		// BodyAppend grows the body in place: a blank line separates the
+		// existing content from the appended block when the body is already
+		// populated, and an empty body just becomes the appended text. The
+		// caller already passed the body+body_append mutual-exclusion check
+		// in validatePatchShape, so Body is unchanged here.
+		if t.Body == "" {
+			t.Body = *patch.BodyAppend
+		} else {
+			t.Body = t.Body + "\n\n" + *patch.BodyAppend
+		}
+		contentChanged = true
+	}
 	if patch.Type != nil {
 		t.Type = *patch.Type
 		contentChanged = true
@@ -730,12 +753,28 @@ func (s *svc) applyUpdate(
 		t.Estimate = nil
 		contentChanged = true
 	}
+	if patch.Actual.Set {
+		v := patch.Actual.Value
+		t.Actual = &v
+		contentChanged = true
+	} else if patch.Actual.Clear {
+		t.Actual = nil
+		contentChanged = true
+	}
 	if patch.Assignee.Set {
 		v := patch.Assignee.Value
 		t.Assignee = &v
 		contentChanged = true
 	} else if patch.Assignee.Clear {
 		t.Assignee = nil
+		contentChanged = true
+	}
+	if patch.Reviewer.Set {
+		v := patch.Reviewer.Value
+		t.Reviewer = &v
+		contentChanged = true
+	} else if patch.Reviewer.Clear {
+		t.Reviewer = nil
 		contentChanged = true
 	}
 	if len(patch.Tags) > 0 {
@@ -999,6 +1038,10 @@ func copyTask(t *domain.Task) *domain.Task {
 		s := *t.Assignee
 		clone.Assignee = &s
 	}
+	if t.Reviewer != nil {
+		s := *t.Reviewer
+		clone.Reviewer = &s
+	}
 	if t.ParentID != nil {
 		s := *t.ParentID
 		clone.ParentID = &s
@@ -1006,6 +1049,10 @@ func copyTask(t *domain.Task) *domain.Task {
 	if t.Estimate != nil {
 		f := *t.Estimate
 		clone.Estimate = &f
+	}
+	if t.Actual != nil {
+		f := *t.Actual
+		clone.Actual = &f
 	}
 	if t.DueAt != nil {
 		d := *t.DueAt
