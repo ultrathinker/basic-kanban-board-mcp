@@ -88,6 +88,13 @@ func requireWrite(a Actor) error {
 	return nil
 }
 
+func requireAdmin(a Actor) error {
+	if !a.IsAdmin() {
+		return domain.Forbidden("token lacks admin scope", "Use a token with the admin scope.")
+	}
+	return nil
+}
+
 func requireProjectAccess(a Actor, key string) error {
 	if !actorMayAccessProject(a, key) {
 		return domain.Forbidden(

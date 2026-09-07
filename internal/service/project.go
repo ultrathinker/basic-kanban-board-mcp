@@ -13,8 +13,16 @@ import (
 // ProjectUpsert creates or updates a project and its columns in one
 // transaction (PLAN §6.9). mode is required so a key typo can never silently
 // fork the board into a second project.
+//
+// It requires the admin scope, for both create and update. Reconfiguring
+// columns, changing board settings, and archiving a whole board are governance
+// operations, not day-to-day agent work — and docs/AGENT-SETUP.md's scope table
+// already documents project_upsert as admin-only. Agents run with a write
+// token, so a prompt-injected or buggy agent cannot silently archive the board
+// or reshape its columns; the human who runs the server holds the admin token
+// and sets projects up (or the --demo seed does it for a fresh node).
 func (s *svc) ProjectUpsert(ctx context.Context, a Actor, in ProjectUpsertInput) (*ProjectUpsertResult, error) {
-	if err := requireWrite(a); err != nil {
+	if err := requireAdmin(a); err != nil {
 		return nil, err
 	}
 	switch in.Mode {
