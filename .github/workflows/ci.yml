@@ -30,8 +30,7 @@ jobs:
     # Fail fast on drift before the heavier build job wastes 8 minutes of
     # CI. The check is platform-agnostic (diff + find); ubuntu only because
     # GNU make + diff are already there and the rest of CI uses the same
-    # runner. This is the early warning that catches the drift described
-    # in docs/tasks/E-review-2.md.
+    # runner. This is the early warning that catches embed drift.
     steps:
       - uses: actions/checkout@v4
 

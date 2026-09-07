@@ -84,8 +84,8 @@ type Deps struct {
 	BackupDir func() string
 
 	// MCPHandler / MCPReadonlyHandler are mounted at /mcp and /mcp/readonly.
-	// internal/mcp is a parallel work stream (docs/tasks/G-mcp-tools.md); web
-	// never imports it. Nil means "not wired yet" and answers 501.
+	// internal/mcp is a parallel work stream; web never imports it.
+	// Nil means "not wired yet" and answers 501.
 	MCPHandler         http.Handler
 	MCPReadonlyHandler http.Handler
 

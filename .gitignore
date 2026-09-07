@@ -26,10 +26,13 @@ Thumbs.db
 /.agentlogs/
 .agentlogs/
 
-# Review scratch (PLAN §11 — reviewer logs are intentionally local)
-docs/reviews/.*.log
-docs/reviews/.*.err
-docs/reviews/.*.tmp
+# Internal working material — reviews, critiques, agent briefs and handovers
+# stay local and are never published.
+docs/reviews/
+docs/tasks/
+*-review-*.md
+*REVIEW*.md
+*-handover.md
 # Compiled binaries (never commit — a 23MB exe was tracked once already)
 /kanban
 /kanban.exe

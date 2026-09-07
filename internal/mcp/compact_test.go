@@ -731,7 +731,7 @@ func TestBudgetFixture_StaysUnderTokenBudget(t *testing.T) {
 	if tokens > domain.CompactTokenBudget {
 		t.Fatalf("CompactTokenBudget gate: %d tokens over %d (rendered %d bytes).\n\n"+
 			"This is the honest measurement of 30 realistic active tasks.\n"+
-			"The fixture was deliberately NOT shrunk to fit — see docs/tasks/B-review-1.md.\n"+
+			"The fixture was deliberately NOT shrunk to fit.\n"+
 			"The grammar most likely grew a field. Check what changed before\n"+
 			"touching this number, and re-measure the compact/JSON ratio.\n\n%s",
 			tokens, domain.CompactTokenBudget, len(out), out)

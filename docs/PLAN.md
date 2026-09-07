@@ -1,9 +1,8 @@
 # basic-kanban-board-mcp — Super Plan v2 (implementation-ready)
 
-> Status: **v2, ready for implementation.** v1 (2026-09-06) was reviewed independently by Codex
-> (GPT-5.6, xhigh), Gemini 3.8 Flash (high) and GLM-5.3 (max); their full reviews are in
-> `docs/reviews/`. v2 integrates them — §17 lists every change and how disagreements were
-> resolved. Language of all code, docs, UI, commits: English.
+> Status: **v2, ready for implementation.** v1 (2026-09-06) went through independent review;
+> v2 integrates the outcome — §17 lists every change and how disagreements were resolved.
+> Language of all code, docs, UI, commits: English.
 
 ## How to use this plan (governance)
 

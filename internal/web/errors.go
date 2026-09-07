@@ -10,8 +10,8 @@ import (
 )
 
 // ErrServiceUnavailable is returned by internal/app's placeholder
-// service.Service (used until docs/tasks/F-service.md lands) for every
-// method call. It is declared here, not in internal/app, so this package can
+// service.Service for every method call. It is declared here, not in
+// internal/app, so this package can
 // recognize it and render a clear 503 without importing internal/app (which
 // would create an import cycle: app already imports web to build the
 // handler tree).
