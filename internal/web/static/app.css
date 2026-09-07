@@ -215,7 +215,7 @@ a.mark { text-decoration: none; }
   display: inline-flex; align-items: center; gap: 0.5rem;
   font-weight: 600; letter-spacing: -0.015em; text-decoration: none;
 }
-.topbar .brand .dot { width: 0.5rem; height: 0.5rem; background: var(--ink); }
+.topbar .brand .brand-logo { width: 1.2rem; height: 1.2rem; display: block; color: var(--ink); }
 .topbar nav { display: flex; gap: 1rem; }
 .topbar nav a {
   font-size: var(--fs-2); color: var(--ink-muted); text-decoration: none;

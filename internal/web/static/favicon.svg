@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <style>
+    :root { --ink: #111111; }
+    @media (prefers-color-scheme: dark) { :root { --ink: #f2f2f2; } }
+    .ink   { fill: var(--ink); }
+    .frame { fill: none; stroke: var(--ink); stroke-width: 2.6; }
+  </style>
+  <!-- A board reduced to three cards in flow. The one solid block is the
+       product's loudest mark (ink on paper), the two outlines are cards not
+       yet done, and the right one sits between them - a card moving to the
+       next column. Asymmetric on purpose, so it reads as this board and not
+       the generic three-column icon. -->
+  <rect class="ink"   x="3"  y="4"  width="12" height="9" />
+  <rect class="frame" x="3"  y="17" width="12" height="9" />
+  <rect class="frame" x="18" y="11" width="11" height="9" />
+</svg>
