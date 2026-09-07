@@ -78,6 +78,22 @@ func (h sliceHistory) Since(projectID string, afterID int64, limit int) ([]domai
 	return out, nil
 }
 
+func (h sliceHistory) Latest(projectID string, limit int) ([]domain.Event, error) {
+	var all []domain.Event
+	for _, e := range h.evs {
+		if projectID != "" && e.ProjectID != projectID {
+			continue
+		}
+		all = append(all, e)
+	}
+	// h.evs is ascending by ID, so the newest `limit` are the tail; return them
+	// oldest-first, matching store.EventRepo.Latest.
+	if limit > 0 && len(all) > limit {
+		all = all[len(all)-limit:]
+	}
+	return all, nil
+}
+
 func (h sliceHistory) MinID() (int64, error) {
 	if len(h.evs) == 0 {
 		return 0, nil
@@ -107,6 +123,10 @@ func newSliceHistory(n int, projectID string) sliceHistory {
 type errHistory struct{}
 
 func (errHistory) Since(string, int64, int) ([]domain.Event, error) {
+	return nil, errors.New("history backend unavailable")
+}
+
+func (errHistory) Latest(string, int) ([]domain.Event, error) {
 	return nil, errors.New("history backend unavailable")
 }
 

@@ -201,7 +201,9 @@ func writeSSERaw(rw http.ResponseWriter, s string) {
 // pre-seam behaviour instead of breaking the page.
 func (w *Web) snapshotEvents(projectID string, limit int) ([]domain.Event, error) {
 	if w.d.History != nil {
-		evs, err := w.d.History.Since(projectID, 0, 0)
+		// Bound the read in the query — the newest `limit` events — rather than
+		// pulling the whole append-only table and truncating in memory.
+		evs, err := w.d.History.Latest(projectID, limit)
 		if err != nil {
 			return nil, fmt.Errorf("web: read activity history for %q: %w", projectID, err)
 		}

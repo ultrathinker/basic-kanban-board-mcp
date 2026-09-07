@@ -191,7 +191,11 @@ func validateColumnSpecs(specs []ColumnSpec) error {
 			"Reduce the number of columns.")
 	}
 	seen := map[string]bool{}
+	hasActive := false
 	for _, cs := range specs {
+		if cs.Kind == domain.KindActive {
+			hasActive = true
+		}
 		name, err := domain.ValidateColumnName(cs.Name)
 		if err != nil {
 			return err
@@ -222,6 +226,13 @@ func validateColumnSpecs(specs []ColumnSpec) error {
 					"Use a positive limit, or omit it for no limit.")
 			}
 		}
+	}
+	// task_next(start) moves work into the first active column and fails at
+	// runtime when there is none. Reject that layout at configuration time, where
+	// the message can be acted on, rather than letting every start error later.
+	if !hasActive {
+		return domain.Invalid("columns", "a project needs at least one active column",
+			`Add a column with kind "active" — that is where task_next(start) puts work.`)
 	}
 	return nil
 }

@@ -768,6 +768,7 @@ func TestRouteRegistration_DoesNotPanic(t *testing.T) {
 type emptyHistory struct{}
 
 func (emptyHistory) Since(string, int64, int) ([]domain.Event, error) { return nil, nil }
+func (emptyHistory) Latest(string, int) ([]domain.Event, error)       { return nil, nil }
 func (emptyHistory) MinID() (int64, error)                            { return 0, nil }
 
 func newEmptyHistory() emptyHistory { return emptyHistory{} }

@@ -42,6 +42,11 @@ type EventHistory interface {
 	// limit semantics are events.HistoryLoader's: afterID zero reads from
 	// the start of the table, limit zero returns everything available.
 	Since(projectID string, afterID int64, limit int) ([]domain.Event, error)
+	// Latest returns the newest `limit` events for the project, oldest first,
+	// bounding the read in the query. The activity snapshot uses this instead
+	// of reading the whole table and truncating in memory, so a long-lived
+	// append-only event log does not turn the page load into a latency cliff.
+	Latest(projectID string, limit int) ([]domain.Event, error)
 }
 
 // Deps are the dependencies the composition root wires together. Every field

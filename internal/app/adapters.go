@@ -35,6 +35,21 @@ func (h *storeHistory) Since(projectID string, afterID int64, limit int) ([]doma
 	return out, err
 }
 
+func (h *storeHistory) Latest(projectID string, limit int) ([]domain.Event, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var out []domain.Event
+	err := h.st.Read(ctx, func(tx store.Tx) error {
+		evs, err := h.st.Events().Latest(tx, projectID, limit)
+		if err != nil {
+			return err
+		}
+		out = evs
+		return nil
+	})
+	return out, err
+}
+
 func (h *storeHistory) MinID() (int64, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

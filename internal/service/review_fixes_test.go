@@ -165,3 +165,21 @@ func TestProjectUpsert_RejectsInvalidWIP(t *testing.T) {
 		t.Errorf("positive WIP on active column was rejected: %v", err)
 	}
 }
+
+// A project with no active column cannot support task_next(start); reject it at
+// configuration time rather than failing every start later.
+func TestProjectUpsert_RequiresAnActiveColumn(t *testing.T) {
+	env := openTestEnv(t)
+	_, err := env.svc.ProjectUpsert(context.Background(), env.actor, ProjectUpsertInput{
+		Mode: UpsertCreate, Key: "NOACT", Name: "no active", Columns: []ColumnSpec{
+			{Name: "B", Kind: domain.KindBacklog},
+			{Name: "Done", Kind: domain.KindDone},
+		},
+	})
+	if err == nil {
+		t.Fatalf("a project with no active column was accepted")
+	}
+	if de := domain.AsError(err); de == nil || de.Code != domain.CodeValidation {
+		t.Errorf("error code = %v, want validation", de)
+	}
+}
