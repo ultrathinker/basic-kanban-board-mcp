@@ -44,7 +44,7 @@ jobs:
       # (login after) plus an `if: env.GHCR_LOGIN == 'true'` guard on a variable
       # nothing ever set meant the login never ran and every image push failed.
       - name: Log in to ghcr.io
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
