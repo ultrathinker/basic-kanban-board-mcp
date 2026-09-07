@@ -663,7 +663,13 @@ func (s *svc) prepareUpdate(tx store.Tx, a Actor, patch TaskPatch) (*prepared, e
 		}
 		var acceptanceRemaining int
 		if proj.StrictDone {
-			for _, it := range task.Acceptance {
+			// Judge the checklist THIS patch produces, not the stored one: an
+			// atomic "acceptance_check the last item + column:Done" must pass.
+			projected, err := projectedAcceptance(task.Acceptance, patch)
+			if err != nil {
+				return nil, err
+			}
+			for _, it := range projected {
 				if !it.Done {
 					acceptanceRemaining++
 				}
@@ -706,6 +712,45 @@ func (s *svc) validatePatchShape(p TaskPatch) error {
 			"Send either body (replace) or body_append (append), not both.")
 	}
 	return nil
+}
+
+// projectedAcceptance returns what a task's acceptance list becomes after a
+// patch, WITHOUT mutating the input. It is the single source of truth used by
+// both the strict-done gate (which must judge the checklist the same patch
+// produces, not the stored one — otherwise "tick the last item AND move to
+// Done" in one atomic patch is wrongly refused) and the actual write, so the
+// two can never disagree. The precedence mirrors task_update's mutual
+// exclusion: a full replace wins, else check-by-index, else add.
+func projectedAcceptance(current []domain.AcceptanceItem, patch TaskPatch) ([]domain.AcceptanceItem, error) {
+	switch {
+	case len(patch.Acceptance) > 0:
+		items := append([]domain.AcceptanceItem(nil), patch.Acceptance...)
+		if err := domain.ValidateAcceptance(items); err != nil {
+			return nil, err
+		}
+		return items, nil
+	case len(patch.AcceptanceCheck) > 0:
+		items := append([]domain.AcceptanceItem(nil), current...)
+		for _, idx := range patch.AcceptanceCheck {
+			if idx < 0 || idx >= len(items) {
+				return nil, domain.Invalid("acceptance_check",
+					fmt.Sprintf("index %d is out of range (have %d items)", idx, len(items)),
+					"Pass indices in [0, len(acceptance)).")
+			}
+			items[idx].Done = true
+		}
+		return items, nil
+	case len(patch.AcceptanceAdd) > 0:
+		items := append([]domain.AcceptanceItem(nil), current...)
+		for _, raw := range patch.AcceptanceAdd {
+			items = append(items, domain.AcceptanceItem{Text: raw, Done: false})
+		}
+		if err := domain.ValidateAcceptance(items); err != nil {
+			return nil, err
+		}
+		return items, nil
+	}
+	return current, nil
 }
 
 // applyUpdate applies one prepared patch and is the only path that writes.
@@ -916,34 +961,12 @@ func (s *svc) applyUpdate(
 		}
 		contentChanged = true
 	}
-	switch {
-	case len(patch.Acceptance) > 0:
-		items := make([]domain.AcceptanceItem, len(patch.Acceptance))
-		for i, ai := range patch.Acceptance {
-			items[i] = ai
-		}
-		if err := domain.ValidateAcceptance(items); err != nil {
+	if len(patch.Acceptance) > 0 || len(patch.AcceptanceCheck) > 0 || len(patch.AcceptanceAdd) > 0 {
+		next, err := projectedAcceptance(t.Acceptance, patch)
+		if err != nil {
 			return nil, err
 		}
-		t.Acceptance = items
-		contentChanged = true
-	case len(patch.AcceptanceCheck) > 0:
-		for _, idx := range patch.AcceptanceCheck {
-			if idx < 0 || idx >= len(t.Acceptance) {
-				return nil, domain.Invalid("acceptance_check",
-					fmt.Sprintf("index %d is out of range (have %d items)", idx, len(t.Acceptance)),
-					"Pass indices in [0, len(acceptance)).")
-			}
-			t.Acceptance[idx].Done = true
-		}
-		contentChanged = true
-	case len(patch.AcceptanceAdd) > 0:
-		for _, raw := range patch.AcceptanceAdd {
-			t.Acceptance = append(t.Acceptance, domain.AcceptanceItem{Text: raw, Done: false})
-		}
-		if err := domain.ValidateAcceptance(t.Acceptance); err != nil {
-			return nil, err
-		}
+		t.Acceptance = next
 		contentChanged = true
 	}
 	if patch.DueAt.Set {

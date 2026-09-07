@@ -206,6 +206,22 @@ func validateColumnSpecs(specs []ColumnSpec) error {
 			return domain.Invalid("kind", fmt.Sprintf("column kind %q is invalid", cs.Kind),
 				"Use one of: backlog, active, done.")
 		}
+		if cs.WIPLimit != nil {
+			// A WIP limit only means anything on an active column (it is the
+			// count task_next gates against), and a non-positive limit makes
+			// that column permanently "full" — count >= 0 is always true — so
+			// task_next would refuse all work with no way to see why.
+			if cs.Kind != domain.KindActive {
+				return domain.Invalid("wip_limit",
+					fmt.Sprintf("column %q is %s; only active columns may carry a WIP limit", name, cs.Kind),
+					"Drop the WIP limit, or make the column active.")
+			}
+			if *cs.WIPLimit <= 0 {
+				return domain.Invalid("wip_limit",
+					fmt.Sprintf("column %q has WIP limit %d; it must be positive", name, *cs.WIPLimit),
+					"Use a positive limit, or omit it for no limit.")
+			}
+		}
 	}
 	return nil
 }

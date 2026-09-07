@@ -324,7 +324,6 @@ is ~949 tokens — under the ~1 064 it costs to read the entire 30-task board.
   "meta": {
     "count": 1,
     "started_key": "BMB-18",
-    "claimed_key": "BMB-18",
     "wip_full": false,
     "projection": {
       "body": "bounded",

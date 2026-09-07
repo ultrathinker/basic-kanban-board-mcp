@@ -191,7 +191,21 @@ func (s *svc) taskNextMutate(ctx context.Context, a Actor, in TaskNextInput, act
 
 		views := make([]domain.TaskView, 0, len(out.Ready))
 		for i := range out.Ready {
-			tv, err := s.finalizeNextView(tx, &out.Ready[i], &proj)
+			src := &out.Ready[i]
+			if acted != nil && src.ID == acted.ID {
+				// This candidate is the task we just claimed/started in this
+				// same transaction. out.Ready[i] is the pre-mutation snapshot —
+				// old column, old version, no lease — so returning it would hand
+				// the caller a stale view of the very task it acted on, and a
+				// stale version to chain if_version from. Hydrate the mutated
+				// task instead so data.tasks[] reflects the state AFTER the call.
+				hv, err := s.hydrateView(tx, cc, pc, acted, now, hydrateOpts{})
+				if err != nil {
+					return err
+				}
+				src = &hv
+			}
+			tv, err := s.finalizeNextView(tx, src, &proj)
 			if err != nil {
 				return err
 			}
