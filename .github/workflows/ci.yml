@@ -95,8 +95,12 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      # CGO_ENABLED goes in env:, not as a shell prefix — the Windows runner
+      # executes run: under PowerShell, which has no inline env-var syntax.
       - name: go test -race
-        run: CGO_ENABLED=1 go test ./... -race -count=1 -timeout=10m
+        env:
+          CGO_ENABLED: "1"
+        run: go test ./... -race -count=1 -timeout=10m
 
       - name: staticcheck (ubuntu only)
         if: runner.os == 'Linux'
@@ -121,10 +125,15 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
 
+      # bash on both runners: `mkdir -p` is not PowerShell, and Windows needs
+      # the .exe suffix that `go build -o` does not add on its own.
       - name: Build kanban binary
+        shell: bash
         run: |
           mkdir -p bin
-          go build -trimpath -ldflags "-s -w" -o bin/kanban ./cmd/kanban
+          out=bin/kanban
+          [ "$RUNNER_OS" = "Windows" ] && out=bin/kanban.exe
+          go build -trimpath -ldflags "-s -w" -o "$out" ./cmd/kanban
 
       - name: Smoke test (ubuntu)
         if: runner.os == 'Linux'
