@@ -115,6 +115,14 @@
 /* --- reset --------------------------------------------------------------- */
 *, *::before, *::after { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
+
+/* The hidden attribute must always win. Several components toggle visibility
+   with it — the project-switcher <select> fallback, the combobox, its listbox
+   — and each carries its own `display` rule (inline-flex / inline-block /
+   block). Those rules outrank the attribute's low-specificity UA `display:
+   none`, so without this the fallback and the combobox showed at the same time
+   (two switchers) and the no-JS fallback leaked the JS-only combobox. */
+[hidden] { display: none !important; }
 html {
   font-family: var(--font-sans);
   font-size: 16px;
