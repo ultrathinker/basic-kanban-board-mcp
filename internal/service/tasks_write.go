@@ -339,6 +339,16 @@ func validateNewTask(n NewTask) error {
 	if _, err := domain.NormalizeTags(n.Tags); err != nil {
 		return err
 	}
+	if n.Assignee != nil {
+		if err := domain.ValidateActorName("assignee", *n.Assignee); err != nil {
+			return err
+		}
+	}
+	if n.Reviewer != nil {
+		if err := domain.ValidateActorName("reviewer", *n.Reviewer); err != nil {
+			return err
+		}
+	}
 	if err := domain.ValidateAcceptance(buildAcceptance(n.Acceptance)); err != nil {
 		return err
 	}
@@ -719,10 +729,16 @@ func (s *svc) applyUpdate(
 	moved := false
 
 	if patch.Title != nil {
+		if _, err := domain.ValidateTitle(*patch.Title); err != nil {
+			return nil, err
+		}
 		t.Title = *patch.Title
 		contentChanged = true
 	}
 	if patch.Body != nil {
+		if err := domain.ValidateBody(*patch.Body); err != nil {
+			return nil, err
+		}
 		t.Body = *patch.Body
 		contentChanged = true
 	}
@@ -731,12 +747,19 @@ func (s *svc) applyUpdate(
 		// existing content from the appended block when the body is already
 		// populated, and an empty body just becomes the appended text. The
 		// caller already passed the body+body_append mutual-exclusion check
-		// in validatePatchShape, so Body is unchanged here.
+		// in validatePatchShape, so Body is unchanged here. The result is
+		// bounded like any other body write: repeated appends must not grow a
+		// row past MaxBodyBytes just because each piece was individually small.
+		var next string
 		if t.Body == "" {
-			t.Body = *patch.BodyAppend
+			next = *patch.BodyAppend
 		} else {
-			t.Body = t.Body + "\n\n" + *patch.BodyAppend
+			next = t.Body + "\n\n" + *patch.BodyAppend
 		}
+		if err := domain.ValidateBody(next); err != nil {
+			return nil, err
+		}
+		t.Body = next
 		contentChanged = true
 	}
 	if patch.Type != nil {
@@ -764,6 +787,9 @@ func (s *svc) applyUpdate(
 		contentChanged = true
 	}
 	if patch.Assignee.Set {
+		if err := domain.ValidateActorName("assignee", patch.Assignee.Value); err != nil {
+			return nil, err
+		}
 		v := patch.Assignee.Value
 		t.Assignee = &v
 		contentChanged = true
@@ -772,6 +798,9 @@ func (s *svc) applyUpdate(
 		contentChanged = true
 	}
 	if patch.Reviewer.Set {
+		if err := domain.ValidateActorName("reviewer", patch.Reviewer.Value); err != nil {
+			return nil, err
+		}
 		v := patch.Reviewer.Value
 		t.Reviewer = &v
 		contentChanged = true

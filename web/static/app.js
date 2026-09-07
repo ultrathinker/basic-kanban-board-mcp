@@ -503,12 +503,18 @@
     window.location = '/?p=' + encodeURIComponent(key || '');
   }
 
-  function renderProjects(c, items, hasMore) {
+  function renderProjects(c, items, hasMore, includeAll) {
     var list = c.querySelector('[data-project-combobox-listbox]');
     if (!list) return;
     while (list.firstChild) list.removeChild(list.firstChild);
     clearActiveOption(c);
-    if (!items || items.length === 0) {
+    // When browsing (no query), the first option is always "All projects" so a
+    // user on a board can navigate back to the overview from the switcher — the
+    // search endpoint only knows about real projects, never this synthetic row.
+    var rows = [];
+    if (includeAll) rows.push({ key: '', name: '' });
+    for (var k = 0; items && k < items.length; k++) rows.push(items[k]);
+    if (rows.length === 0) {
       var empty = document.createElement('li');
       empty.className = 'combobox-empty';
       empty.setAttribute('role', 'option');
@@ -517,12 +523,12 @@
       list.appendChild(empty);
       return;
     }
-    for (var i = 0; i < items.length; i++) {
+    for (var i = 0; i < rows.length; i++) {
       var li = document.createElement('li');
       li.id = 'project-combobox-opt-' + i;
       li.setAttribute('role', 'option');
-      li.setAttribute('data-key', items[i].key || '');
-      li.textContent = fmtProjectLabel(items[i].key, items[i].name);
+      li.setAttribute('data-key', rows[i].key || '');
+      li.textContent = fmtProjectLabel(rows[i].key, rows[i].name);
       list.appendChild(li);
     }
     if (hasMore) {
@@ -555,21 +561,29 @@
     }, PROJECT_SEARCH_DEBOUNCE_MS);
   }
 
+  // comboQuery reads the effective search query from the input. Until the user
+  // types, the field shows the current selection's label (e.g. "PROJ — Name"),
+  // which is NOT a query: opening the list must browse from empty, not search
+  // for the label (which no project name contains, so it returned "No matches").
+  function comboQuery(c, input) {
+    var raw = (input && input.value) || '';
+    return raw === currentDisplay(c) ? '' : raw;
+  }
+
   function openCombobox(c, preserveInput) {
     setComboboxExpanded(c, true);
     var input = c.querySelector('[data-project-combobox-input]');
     if (preserveInput && input) input.focus();
-    var initial = (input && input.value) || '';
-    if (!c.__cache || c.__cache.q !== initial) {
-      fetchProjects(c, initial, function (err, items, hasMore) {
+    var query = comboQuery(c, input);
+    if (!c.__cache || c.__cache.q !== query) {
+      fetchProjects(c, query, function (err, items, hasMore) {
         // Only paint if this combobox is still open and the query is the
         // one we issued with — a stale callback arriving after the user
         // already typed more must not clobber the live result list.
         if (c.getAttribute('aria-expanded') !== 'true') return;
-        var live = (input && input.value) || '';
-        if (live !== initial) return;
-        renderProjects(c, items, hasMore);
-        c.__cache = { q: initial, items: items, hasMore: hasMore };
+        if (comboQuery(c, input) !== query) return;
+        renderProjects(c, items, hasMore, query === '');
+        c.__cache = { q: query, items: items, hasMore: hasMore };
       });
     }
   }
@@ -615,11 +629,10 @@
     });
 
     input.addEventListener('input', function () {
-      var q = input.value;
+      var q = comboQuery(c, input);
       debounceProjectSearch(c, q, function (err, items, hasMore) {
-        var live = input.value;
-        if (live !== q) return;
-        renderProjects(c, items, hasMore);
+        if (comboQuery(c, input) !== q) return;
+        renderProjects(c, items, hasMore, q === '');
         c.__cache = { q: q, items: items, hasMore: hasMore };
       });
       if (c.getAttribute('aria-expanded') !== 'true') openCombobox(c, true);
@@ -635,7 +648,14 @@
         if (c.getAttribute('aria-expanded') !== 'true') openCombobox(c, false);
         moveActive(c, -1);
       } else if (e.key === 'Enter') {
+        // Enter picks the highlighted option, or — when the user typed and hit
+        // Enter without arrowing — the first selectable match, the way a search
+        // box is expected to behave. Disabled rows ("No matches", the "…"
+        // hint) are never selectable, so this is a no-op on an empty result.
         var active = c.querySelector('[role="option"][aria-selected="true"]');
+        if (!active || active.getAttribute('aria-disabled') === 'true') {
+          active = c.querySelector('[role="option"]:not([aria-disabled="true"])');
+        }
         if (active && active.getAttribute('aria-disabled') !== 'true') {
           e.preventDefault();
           chooseProject(c, active.getAttribute('data-key') || '');

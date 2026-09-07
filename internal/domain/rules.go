@@ -158,6 +158,19 @@ func ValidateBody(s string) error {
 	return nil
 }
 
+// ValidateActorName bounds a free-text actor name (assignee, reviewer). The
+// field argument names the offending field so the caller sees which one. The
+// MCP schema also caps these, but the service is the backstop for the web and
+// any direct caller. Empty is allowed — it is how the field stays unset.
+func ValidateActorName(field, s string) error {
+	if len(s) > MaxAssigneeLen {
+		return Invalid(field,
+			fmt.Sprintf("%s is %d bytes, the limit is %d", field, len(s), MaxAssigneeLen),
+			"Use a short human or agent name.")
+	}
+	return nil
+}
+
 // ValidateConclusion bounds the post-hoc takeaway text.
 func ValidateConclusion(s string) error {
 	if len(s) > MaxConclusionBytes {

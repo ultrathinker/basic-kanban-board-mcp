@@ -129,6 +129,7 @@ func taskUpdateTool() *gomcp.Tool {
 	setMaxLen(prop(item, "title"), domain.MaxTitleLen)
 	setMaxLen(prop(item, "body"), domain.MaxBodyBytes)
 	setMaxLen(prop(item, "assignee"), domain.MaxAssigneeLen)
+	setMaxLen(prop(item, "reviewer"), domain.MaxAssigneeLen)
 	setMaxLen(prop(item, "note"), domain.MaxNoteBytes)
 	setMaxLen(prop(item, "conclusion"), domain.MaxConclusionBytes)
 	outcomeProp := prop(item, "outcome")

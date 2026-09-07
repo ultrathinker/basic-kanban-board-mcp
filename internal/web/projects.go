@@ -63,24 +63,21 @@ func (w *Web) handleProjectsSearch(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// matches preserves board.Projects order (the service's canonical order)
-	// so the client renders rows in the same sequence as elsewhere on the
-	// page — predictable behaviour for "I typed 'foo' and the result I
-	// expected is the first hit, not a hash-bucket surprise".
-	matches := make([]service.BoardProject, 0, limit+1)
+	// Collect in board.Projects order (the service's canonical order) so the
+	// client renders rows in the same sequence as elsewhere on the page, and
+	// stop as soon as one match past the page is seen: an installation with
+	// thousands of matching projects must not build a slice of all of them
+	// only to discard all but the first `limit`. The (limit+1)th match sets
+	// has_more and ends the scan.
+	items := make([]map[string]string, 0, limit)
+	hasMore := false
 	for _, p := range board.Projects {
 		if q != "" {
 			if !strings.Contains(strings.ToLower(p.Key), q) && !strings.Contains(strings.ToLower(p.Name), q) {
 				continue
 			}
 		}
-		matches = append(matches, p)
-	}
-
-	items := make([]map[string]string, 0, limit)
-	hasMore := false
-	for i, p := range matches {
-		if i >= limit {
+		if len(items) >= limit {
 			hasMore = true
 			break
 		}

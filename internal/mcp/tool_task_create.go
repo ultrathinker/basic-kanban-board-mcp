@@ -69,6 +69,7 @@ func taskCreateTool() *gomcp.Tool {
 	setEnum(prop(item, "priority"), priorityNames()...)
 	setDefault(prop(item, "priority"), domain.PriorityNone.String())
 	setMaxLen(prop(item, "assignee"), domain.MaxAssigneeLen)
+	setMaxLen(prop(item, "reviewer"), domain.MaxAssigneeLen)
 	tags := prop(item, "tags")
 	setMaxItems(tags, domain.MaxTags)
 	setMaxLen(tags.Items, domain.MaxTagLen)
