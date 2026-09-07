@@ -46,8 +46,14 @@ type Page struct {
 
 // Layout is the chrome shared by every page (topbar, footer, toast region).
 type Layout struct {
-	Projects      []ProjectSummary
-	CurrentKey    string
+	Projects   []ProjectSummary
+	CurrentKey string
+	// CurrentName is the human label of the project in CurrentKey (empty
+	// when CurrentKey is empty, meaning the "All projects" overview). The
+	// topbar combobox reads it to render the input's resting text without
+	// having to hand the project list to the client just to find the
+	// current row.
+	CurrentName   string
 	LoggedInActor string
 }
 

@@ -78,8 +78,20 @@
 </header>{{end}}
 
 {{define "project-switcher"}}
+  {{- /* Two-layered switcher: the native <select> form is the no-JS
+       fallback and the source of truth for "what option is selected". JS
+       (app.js, initProjectCombobox) promotes the same control to a search
+       combobox and hides this form, so every user with JS gets the
+       server-search experience; every user without JS keeps a working
+       submit button. The select is capped to ~20 options already (see
+       session.go / projectSwitcherMaxProjects), so the no-JS path stays
+       cheap even on installations with hundreds of projects.
+
+       The combobox div below is hidden by default with the HTML hidden
+       attribute, so a browser without the script never opens it. JS
+       removes the attribute on boot to take over. */ -}}
   {{- if hasAny .Layout.Projects}}
-  <form method="get" action="/" class="project-switcher">
+  <form method="get" action="/" class="project-switcher" data-project-switcher-fallback>
     <label for="project" class="sr-only">Switch project</label>
     <select id="project" name="p" data-auto-submit>
       <option value="">All projects</option>
@@ -89,6 +101,25 @@
     </select>
     <noscript><button type="submit" class="btn btn-sm">Go</button></noscript>
   </form>
+  <div class="combobox project-combobox" data-project-combobox
+       data-current-key="{{.Layout.CurrentKey}}"
+       data-current-name="{{.Layout.CurrentName}}"
+       data-empty-label="All projects" hidden>
+    <label class="sr-only" for="project-combobox-input">Switch project</label>
+    <div class="combobox-row">
+      <input id="project-combobox-input" type="text" role="combobox"
+             aria-expanded="false" aria-controls="project-combobox-listbox"
+             aria-autocomplete="list" autocomplete="off" spellcheck="false"
+             placeholder="All projects"
+             data-project-combobox-input>
+      <button type="button" class="combobox-caret" aria-label="Open project list"
+              data-project-combobox-caret>
+        <span aria-hidden="true">▾</span>
+      </button>
+    </div>
+    <ul id="project-combobox-listbox" role="listbox"
+        data-project-combobox-listbox hidden></ul>
+  </div>
   {{- end}}
 {{end}}
 

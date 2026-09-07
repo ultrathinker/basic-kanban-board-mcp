@@ -225,6 +225,12 @@ func requestUsesNonSessionCredential(r *http.Request) bool {
 	return false
 }
 
+// projectSwitcherMaxProjects caps how many projects the topbar renders
+// inline (the no-JS form fallback, and the seeded prefetch when JS does
+// land). Beyond this the header would render hundreds of <option>s or a
+// hundreds-long list; the combobox's search endpoint picks up the rest.
+const projectSwitcherMaxProjects = 20
+
 // newPage builds the common Page envelope: CSRF token/cookie, current user,
 // and the shared layout (project switcher). ctx is used to fetch the
 // project list; a service error there is logged and degrades to an empty
@@ -246,7 +252,20 @@ func (w *Web) newPage(ctx context.Context, rw http.ResponseWriter, r *http.Reque
 	if tok != nil {
 		p.CurrentUser = tok.Name
 		p.Layout.LoggedInActor = tok.Name
-		p.Layout.Projects = w.projectSummaries(ctx, tok)
+		projs := w.projectSummaries(ctx, tok)
+		p.Layout.Projects = projs
+		// CurrentName is what the topbar combobox prints when the user has
+		// not typed yet. We resolve it from the projects we just fetched so
+		// we never have to issue a second service call: the topbar already
+		// loaded the summary list, and a missing CurrentKey (the "All
+		// projects" mode) maps cleanly to an empty CurrentName, which the
+		// template turns into the literal placeholder text.
+		for _, pr := range projs {
+			if pr.Key == p.Layout.CurrentKey {
+				p.Layout.CurrentName = pr.Name
+				break
+			}
+		}
 	}
 	return p
 }
@@ -255,6 +274,13 @@ func (w *Web) newPage(ctx context.Context, rw http.ResponseWriter, r *http.Reque
 // switcher. Errors (including the placeholder service's ErrServiceUnavailable
 // during early integration) degrade to an empty list so page chrome still
 // renders instead of taking down every page.
+//
+// The result is capped at projectSwitcherMaxProjects entries: the no-JS
+// fallback cannot usefully render hundreds of <option>s, and shipping the
+// full list to every page would let the client reconstruct the whole
+// project keyspace (information only the search endpoint should expose,
+// one query at a time). The combobox pulls the rest through
+// /projects/search as the user types.
 func (w *Web) projectSummaries(ctx context.Context, tok *domain.Token) []view.ProjectSummary {
 	board, err := w.d.Service.BoardGet(ctx, actorFor(tok), service.BoardGetInput{View: service.ViewSummary})
 	if err != nil {
@@ -264,6 +290,9 @@ func (w *Web) projectSummaries(ctx context.Context, tok *domain.Token) []view.Pr
 	out := make([]view.ProjectSummary, 0, len(board.Projects))
 	for _, p := range board.Projects {
 		out = append(out, view.ProjectSummary{Key: p.Key, Name: p.Name, Focus: p.FocusKey})
+		if len(out) >= projectSwitcherMaxProjects {
+			break
+		}
 	}
 	return out
 }

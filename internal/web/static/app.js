@@ -415,6 +415,273 @@
     });
   }
 
+  // -- 6.5 project combobox (search switcher) ------------------------------
+
+  // The project switcher needs a search-shaped picker once an installation
+  // has more than ~20 projects: the native <select> dropdown the no-JS
+  // path renders becomes a wall of text. initProjectCombobox promotes the
+  // .project-combobox block alongside the form to a real input+cursor +
+  // <ul role=listbox>, and hides the form so it never renders twice.
+  //
+  // Pairing: data-project-combobox-input / data-project-combobox-caret /
+  // data-project-combobox-listbox are the wiring pins; app.js is the only
+  // file that owns them, so they live without a global registry.
+
+  var PROJECT_SEARCH_DEBOUNCE_MS = 150;
+  var PROJECT_SEARCH_LIMIT = 20;
+
+  function fmtProjectLabel(key, name) {
+    if (!key) return 'All projects';
+    return key + ' — ' + name;
+  }
+
+  function currentDisplay(c) {
+    var key = c.getAttribute('data-current-key') || '';
+    var name = c.getAttribute('data-current-name') || '';
+    if (!key) return c.getAttribute('data-empty-label') || 'All projects';
+    return fmtProjectLabel(key, name);
+  }
+
+  function setComboboxExpanded(c, open) {
+    c.setAttribute('aria-expanded', open ? 'true' : 'false');
+    var caret = c.querySelector('[data-project-combobox-caret]');
+    if (caret) caret.setAttribute('aria-expanded', open ? 'true' : 'false');
+    var list = c.querySelector('[data-project-combobox-listbox]');
+    if (list) {
+      if (open) list.removeAttribute('hidden');
+      else list.setAttribute('hidden', '');
+    }
+  }
+
+  function clearActiveOption(c) {
+    c.removeAttribute('aria-activedescendant');
+    var nodes = c.querySelectorAll('[role="option"][aria-selected="true"]');
+    for (var i = 0; i < nodes.length; i++) nodes[i].removeAttribute('aria-selected');
+  }
+
+  function setActiveOption(c, opt) {
+    if (!opt) { clearActiveOption(c); return; }
+    if (opt.getAttribute('role') !== 'option') { clearActiveOption(c); return; }
+    var nodes = c.querySelectorAll('[role="option"][aria-selected="true"]');
+    for (var i = 0; i < nodes.length; i++) nodes[i].removeAttribute('aria-selected');
+    opt.setAttribute('aria-selected', 'true');
+    c.setAttribute('aria-activedescendant', opt.id || '');
+  }
+
+  function visibleOptionCount(c) {
+    var out = 0;
+    var opts = c.querySelectorAll('[role="option"]');
+    for (var i = 0; i < opts.length; i++) {
+      if (!opts[i].classList.contains('combobox-more')) out++;
+    }
+    return out;
+  }
+
+  function moveActive(c, dir) {
+    var opts = c.querySelectorAll('[role="option"]');
+    var pickable = [];
+    for (var i = 0; i < opts.length; i++) {
+      // aria-disabled covers both the "… type to narrow" hint and the "No
+      // matches" row, so neither is ever the selection an arrow key lands on.
+      if (opts[i].getAttribute('aria-disabled') !== 'true') pickable.push(opts[i]);
+    }
+    if (pickable.length === 0) return;
+    var current = c.querySelector('[role="option"][aria-selected="true"]');
+    var idx = -1;
+    for (var i = 0; i < pickable.length; i++) {
+      if (pickable[i] === current) { idx = i; break; }
+    }
+    var next = dir > 0 ? Math.min(pickable.length - 1, idx + 1) : Math.max(0, idx < 0 ? pickable.length - 1 : idx - 1);
+    setActiveOption(c, pickable[next]);
+    var list = c.querySelector('[data-project-combobox-listbox]');
+    if (list && pickable[next].scrollIntoView) {
+      pickable[next].scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  function chooseProject(c, key) {
+    window.location = '/?p=' + encodeURIComponent(key || '');
+  }
+
+  function renderProjects(c, items, hasMore) {
+    var list = c.querySelector('[data-project-combobox-listbox]');
+    if (!list) return;
+    while (list.firstChild) list.removeChild(list.firstChild);
+    clearActiveOption(c);
+    if (!items || items.length === 0) {
+      var empty = document.createElement('li');
+      empty.className = 'combobox-empty';
+      empty.setAttribute('role', 'option');
+      empty.setAttribute('aria-disabled', 'true');
+      empty.textContent = 'No matches';
+      list.appendChild(empty);
+      return;
+    }
+    for (var i = 0; i < items.length; i++) {
+      var li = document.createElement('li');
+      li.id = 'project-combobox-opt-' + i;
+      li.setAttribute('role', 'option');
+      li.setAttribute('data-key', items[i].key || '');
+      li.textContent = fmtProjectLabel(items[i].key, items[i].name);
+      list.appendChild(li);
+    }
+    if (hasMore) {
+      var more = document.createElement('li');
+      more.className = 'combobox-more';
+      more.setAttribute('role', 'option');
+      more.setAttribute('aria-disabled', 'true');
+      more.textContent = '… type to narrow the results';
+      list.appendChild(more);
+    }
+  }
+
+  function fetchProjects(c, q, cb) {
+    var url = '/projects/search?limit=' + encodeURIComponent(PROJECT_SEARCH_LIMIT);
+    if (q) url += '&q=' + encodeURIComponent(q);
+    fetch(url, { credentials: 'same-origin', headers: { 'Accept': 'application/json' } })
+      .then(function (r) {
+        if (!r.ok) throw new Error('status ' + r.status);
+        return r.json();
+      })
+      .then(function (data) { cb(null, data && data.items ? data.items : [], !!(data && data.has_more)); })
+      .catch(function () { cb(null, [], false); });
+  }
+
+  function debounceProjectSearch(c, q, cb) {
+    if (c.__searchTimer) clearTimeout(c.__searchTimer);
+    c.__searchTimer = setTimeout(function () {
+      c.__searchTimer = null;
+      fetchProjects(c, q, cb);
+    }, PROJECT_SEARCH_DEBOUNCE_MS);
+  }
+
+  function openCombobox(c, preserveInput) {
+    setComboboxExpanded(c, true);
+    var input = c.querySelector('[data-project-combobox-input]');
+    if (preserveInput && input) input.focus();
+    var initial = (input && input.value) || '';
+    if (!c.__cache || c.__cache.q !== initial) {
+      fetchProjects(c, initial, function (err, items, hasMore) {
+        // Only paint if this combobox is still open and the query is the
+        // one we issued with — a stale callback arriving after the user
+        // already typed more must not clobber the live result list.
+        if (c.getAttribute('aria-expanded') !== 'true') return;
+        var live = (input && input.value) || '';
+        if (live !== initial) return;
+        renderProjects(c, items, hasMore);
+        c.__cache = { q: initial, items: items, hasMore: hasMore };
+      });
+    }
+  }
+
+  function closeCombobox(c) {
+    setComboboxExpanded(c, false);
+    var input = c.querySelector('[data-project-combobox-input]');
+    if (input) input.value = currentDisplay(c);
+    clearActiveOption(c);
+    if (input) input.blur();
+  }
+
+  function bindProjectCombobox(c) {
+    var form = c.parentNode && c.parentNode.querySelector('[data-project-switcher-fallback]');
+    var input = c.querySelector('[data-project-combobox-input]');
+    var caret = c.querySelector('[data-project-combobox-caret]');
+    var list = c.querySelector('[data-project-combobox-listbox]');
+    if (!input || !caret || !list) return;
+
+    // Hide the <select>-based fallback, reveal the combobox. The order
+    // matters: a screen reader reading top-to-bottom must see the input
+    // where the user expects it — the combobox sits in the same physical
+    // spot on the page, so the visual swap is invisible to a seeing user.
+    c.removeAttribute('hidden');
+    if (form) form.setAttribute('hidden', '');
+
+    input.value = currentDisplay(c);
+
+    caret.addEventListener('click', function (e) {
+      e.preventDefault();
+      if (c.getAttribute('aria-expanded') === 'true') closeCombobox(c);
+      else openCombobox(c, true);
+    });
+
+    input.addEventListener('focus', function () {
+      input.select();
+      openCombobox(c, true);
+    });
+
+    input.addEventListener('click', function () {
+      if (c.getAttribute('aria-expanded') !== 'true') openCombobox(c, true);
+      else input.select();
+    });
+
+    input.addEventListener('input', function () {
+      var q = input.value;
+      debounceProjectSearch(c, q, function (err, items, hasMore) {
+        var live = input.value;
+        if (live !== q) return;
+        renderProjects(c, items, hasMore);
+        c.__cache = { q: q, items: items, hasMore: hasMore };
+      });
+      if (c.getAttribute('aria-expanded') !== 'true') openCombobox(c, true);
+    });
+
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowDown' || e.key === 'Down') {
+        e.preventDefault();
+        if (c.getAttribute('aria-expanded') !== 'true') openCombobox(c, false);
+        moveActive(c, 1);
+      } else if (e.key === 'ArrowUp' || e.key === 'Up') {
+        e.preventDefault();
+        if (c.getAttribute('aria-expanded') !== 'true') openCombobox(c, false);
+        moveActive(c, -1);
+      } else if (e.key === 'Enter') {
+        var active = c.querySelector('[role="option"][aria-selected="true"]');
+        if (active && active.getAttribute('aria-disabled') !== 'true') {
+          e.preventDefault();
+          chooseProject(c, active.getAttribute('data-key') || '');
+        }
+      } else if (e.key === 'Escape' || e.key === 'Esc') {
+        if (c.getAttribute('aria-expanded') === 'true') {
+          e.preventDefault();
+          closeCombobox(c);
+        }
+      } else if (e.key === 'Tab') {
+        // Tab is "close and let the focus continue": the user is moving
+        // on, not escaping. We deliberately do NOT preventDefault; the
+        // tab order keeps its natural shape.
+        closeCombobox(c);
+      }
+    });
+
+    list.addEventListener('mousedown', function (e) {
+      // mousedown (not click) so the input loses focus before the list is
+      // populated — choosing from a touch-click list would re-open the
+      // dropdown on focus otherwise.
+      var opt = e.target.closest && e.target.closest('[role="option"]');
+      if (!opt || opt.getAttribute('aria-disabled') === 'true') {
+        e.preventDefault();
+        return;
+      }
+      e.preventDefault();
+      chooseProject(c, opt.getAttribute('data-key') || '');
+    });
+  }
+
+  function initProjectCombobox() {
+    var nodes = document.querySelectorAll('[data-project-combobox]');
+    for (var i = 0; i < nodes.length; i++) bindProjectCombobox(nodes[i]);
+
+    // A click anywhere outside any open combobox closes every open one.
+    // The handler checks every combobox rather than tracking which one is
+    // open because a single page only ever has one project switcher; the
+    // cost is well below what fetch costs.
+    document.addEventListener('click', function (e) {
+      var inside = e.target.closest && e.target.closest('[data-project-combobox]');
+      var open = document.querySelector('[data-project-combobox][aria-expanded="true"]');
+      if (open && open !== inside) closeCombobox(open);
+    });
+  }
+
   // -- boot ---------------------------------------------------------------
 
   function boot() {
@@ -423,6 +690,7 @@
     initAcceptance();
     initCopy();
     initAutoSubmit();
+    initProjectCombobox();
     startLive();
   }
 

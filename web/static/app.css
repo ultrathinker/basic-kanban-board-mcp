@@ -268,6 +268,63 @@ select, .field input, .field textarea {
 }
 .project-switcher { display: inline-flex; align-items: center; }
 
+/* --- project combobox (search switcher) -----------------------------------
+   Progressive enhancement on the topbar project switcher. The native form
+   beside .project-combobox is the no-JS fallback; JS removes the form's
+   hidden flag and these styles take over.
+
+   Monochrome, hairline-ruled, zero elevation — same vocabulary as the rest
+   of the topbar. The active option uses the project's inversion pair
+   (--invert-bg / --invert-fg) so it inherits the same "do not miss this"
+   treatment already used for blocked/overdue/critical blocks: a single
+   greyscale vocabulary, used sparingly, and never a hue. */
+.project-combobox { position: relative; display: inline-block; min-width: 14rem; max-width: 28rem; font-size: var(--fs-2); }
+.project-combobox .combobox-row { display: flex; align-items: stretch; border: 1px solid var(--rule-strong); border-radius: 0; background: var(--paper); }
+.project-combobox input[role="combobox"] {
+  flex: 1 1 auto; min-width: 0;
+  border: 0; border-radius: 0;
+  background: var(--paper); color: var(--ink);
+  padding: 0.4rem 0.5rem; font: inherit;
+  outline: none;
+}
+.project-combobox input[role="combobox"]:focus { outline: none; }
+.project-combobox input[role="combobox"]::placeholder { color: var(--ink-subtle); }
+.project-combobox .combobox-caret {
+  flex: 0 0 auto;
+  border: 0; border-left: 1px solid var(--rule-strong);
+  border-radius: 0; background: var(--paper); color: var(--ink);
+  padding: 0 0.55rem; cursor: pointer; font: inherit;
+}
+.project-combobox .combobox-caret:hover { background: var(--sunken); }
+.project-combobox .combobox-caret[aria-expanded="true"] { background: var(--invert-bg); color: var(--invert-fg); }
+
+.project-combobox [role="listbox"] {
+  position: absolute; left: 0; right: 0; top: 100%;
+  margin: 0; padding: 0; list-style: none;
+  background: var(--paper);
+  border: 1px solid var(--rule-strong); border-top: 0;
+  z-index: 5;
+  max-height: 22rem; overflow-y: auto;
+}
+.project-combobox [role="option"] {
+  padding: 0.35rem 0.55rem; cursor: pointer; color: var(--ink);
+}
+.project-combobox [role="option"]:hover,
+.project-combobox [role="option"][aria-selected="true"],
+.project-combobox [aria-activedescendant] [role="option"][aria-selected="true"] {
+  background: var(--invert-bg); color: var(--invert-fg);
+}
+/* The "more rows available" hint is meant to look unclickable: same plane
+   as muted helper text, default cursor so it is obviously not an option. */
+.project-combobox .combobox-more {
+  cursor: default; color: var(--ink-subtle);
+  padding: 0.35rem 0.55rem;
+  border-top: 1px solid var(--rule);
+}
+.project-combobox .combobox-empty {
+  padding: 0.35rem 0.55rem; color: var(--ink-subtle);
+}
+
 /* --- page header --------------------------------------------------------- */
 .page-head {
   display: flex; align-items: baseline; gap: 0.75rem; flex-wrap: wrap;
