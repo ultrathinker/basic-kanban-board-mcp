@@ -203,3 +203,77 @@ func TestServe_RunsMaintenance(t *testing.T) {
 		t.Fatal("serve did not return after cancel")
 	}
 }
+
+func TestMaintainOnce_PrunesOldEvents(t *testing.T) {
+	dir := t.TempDir()
+	a := newTestApp(t, dir)
+	defer a.Close()
+
+	ctx := context.Background()
+	var now time.Time
+	if err := a.store.Read(ctx, func(tx store.Tx) error {
+		ts, err := tx.Now()
+		now = ts
+		return err
+	}); err != nil {
+		t.Fatalf("read db clock: %v", err)
+	}
+
+	projID := uuid.NewString()
+	err := a.store.Write(ctx, func(tx store.Tx) error {
+		if err := a.store.Projects().Create(tx, &domain.Project{
+			ID:   projID,
+			Key:  "TEST",
+			Name: "Test Project",
+		}); err != nil {
+			return err
+		}
+		// Seed one old event (>30 days) and one recent event (<30 days)
+		oldEvent := &domain.Event{
+			TS:        now.Add(-40 * 24 * time.Hour),
+			Actor:     "agent-1",
+			Type:      domain.EventTaskCreated,
+			ProjectID: projID,
+			Payload:   map[string]any{"msg": "old"},
+		}
+		if err := a.store.Events().Append(tx, oldEvent); err != nil {
+			return err
+		}
+		newEvent := &domain.Event{
+			TS:        now.Add(-5 * 24 * time.Hour),
+			Actor:     "agent-2",
+			Type:      domain.EventTaskCreated,
+			ProjectID: projID,
+			Payload:   map[string]any{"msg": "new"},
+		}
+		return a.store.Events().Append(tx, newEvent)
+	})
+	if err != nil {
+		t.Fatalf("seed events: %v", err)
+	}
+
+	a.maintainOnce(ctx)
+
+	if got := a.Maintenance(); got.Runs != 1 || got.LastErr != nil {
+		t.Fatalf("maintenance stats = %+v, want Runs=1 LastErr=nil", got)
+	}
+
+	// Verify old event was pruned, recent event was kept
+	err = a.store.Read(ctx, func(tx store.Tx) error {
+		evts, err := a.store.Events().Latest(tx, projID, 10)
+		if err != nil {
+			return err
+		}
+		if len(evts) != 1 {
+			t.Fatalf("expected 1 event after maintenance prune, got %d", len(evts))
+		}
+		if evts[0].Actor != "agent-2" {
+			t.Errorf("remaining event actor = %q, want agent-2", evts[0].Actor)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+

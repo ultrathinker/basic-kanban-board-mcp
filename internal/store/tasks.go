@@ -662,13 +662,13 @@ func (r *taskRepo) NeighbourRanks(tx Tx, columnID string, position RankPosition)
 		return 0, domain.RankStep, nil
 	}
 	before := maxRank.Int64
-	after := bottomSentinel
-	if after-before <= 1 {
+	if before > bottomSentinel-2*domain.RankStep {
 		if err := r.renumberColumnTx(tw, columnID); err != nil {
 			return 0, 0, err
 		}
 		return r.NeighbourRanks(tx, columnID, position)
 	}
+	after := before + 2*domain.RankStep
 	return before, after, nil
 }
 

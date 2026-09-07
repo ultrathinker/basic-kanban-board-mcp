@@ -2,11 +2,18 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
+	"strings"
+
+	gomcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/app"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/auth"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/config"
+	"github.com/ultrathinker/basic-kanban-board-mcp/internal/domain"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/mcp"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/service"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/store"
@@ -32,6 +39,120 @@ func init() {
 		printBanner(a.Banner())
 		return a, nil
 	}
+	runStdioBridge = wireStdioBridge
+	runStdioStandalone = wireStdioStandalone
+}
+
+type bearerRoundTripper struct {
+	token string
+	base  http.RoundTripper
+}
+
+func (b *bearerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	cloned := req.Clone(req.Context())
+	cloned.Header.Set("Authorization", "Bearer "+b.token)
+	base := b.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return base.RoundTrip(cloned)
+}
+
+func wireStdioBridge(url, token string) error {
+	endpoint := url
+	if !strings.HasSuffix(endpoint, "/mcp") && !strings.HasSuffix(endpoint, "/mcp/readonly") {
+		endpoint = strings.TrimRight(endpoint, "/") + "/mcp"
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	stdioTransport := &gomcp.StdioTransport{}
+	stdioConn, err := stdioTransport.Connect(ctx)
+	if err != nil {
+		return fmt.Errorf("connect stdio: %w", err)
+	}
+	defer stdioConn.Close()
+
+	httpClient := &http.Client{
+		Transport: &bearerRoundTripper{
+			token: token,
+			base:  http.DefaultTransport,
+		},
+	}
+	remoteTransport := &gomcp.StreamableClientTransport{
+		Endpoint:             endpoint,
+		HTTPClient:           httpClient,
+		DisableStandaloneSSE: true,
+	}
+	remoteConn, err := remoteTransport.Connect(ctx)
+	if err != nil {
+		return fmt.Errorf("connect remote %s: %w", endpoint, err)
+	}
+	defer remoteConn.Close()
+
+	errCh := make(chan error, 2)
+	go func() {
+		for {
+			msg, err := stdioConn.Read(ctx)
+			if err != nil {
+				errCh <- err
+				return
+			}
+			if err := remoteConn.Write(ctx, msg); err != nil {
+				errCh <- err
+				return
+			}
+		}
+	}()
+	go func() {
+		for {
+			msg, err := remoteConn.Read(ctx)
+			if err != nil {
+				errCh <- err
+				return
+			}
+			if err := stdioConn.Write(ctx, msg); err != nil {
+				errCh <- err
+				return
+			}
+		}
+	}()
+
+	err = <-errCh
+	if errors.Is(err, io.EOF) || errors.Is(err, context.Canceled) {
+		return nil
+	}
+	return err
+}
+
+func wireStdioStandalone(dataDir string) error {
+	ctx := context.Background()
+	st, err := openStore(ctx, dataDir)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	svc := service.New(st, nil)
+	srv := mcp.NewServer(svc, version)
+
+	tok := &domain.Token{
+		ID:     "standalone-local",
+		Name:   "standalone",
+		Scopes: domain.Scopes{domain.ScopeAdmin, domain.ScopeWrite, domain.ScopeRead},
+	}
+	authResult := &auth.AuthResult{
+		Token: tok,
+		Actor: auth.ResolveActor(tok),
+		Kind:  auth.AuthBearer,
+	}
+	srv.AddReceivingMiddleware(func(next gomcp.MethodHandler) gomcp.MethodHandler {
+		return func(ctx context.Context, method string, req gomcp.Request) (gomcp.Result, error) {
+			return next(auth.WithAuth(ctx, authResult), method, req)
+		}
+	})
+
+	return srv.Run(ctx, &gomcp.StdioTransport{})
 }
 
 // buildService wires the concrete service.Service. The events.Bus satisfies

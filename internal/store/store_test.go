@@ -933,6 +933,46 @@ func TestNeighbourRanks_InsertBetweenTwice(t *testing.T) {
 	}
 }
 
+// TestNeighbourRanks_InsertBottomMany verifies that repeatedly appending to the
+// bottom of a column advances ranks linearly by RankStep without rapid space
+// exhaustion or unnecessary renumbering.
+func TestNeighbourRanks_InsertBottomMany(t *testing.T) {
+	ts := openTestStore(t)
+	p, cols := seedProject(t, ts)
+	colID := cols["Backlog"].ID
+
+	var prevRank int64
+	for i := 0; i < 100; i++ {
+		err := ts.Write(context.Background(), func(tx Tx) error {
+			before, after, err := ts.Tasks().NeighbourRanks(tx, colID, RankBottom)
+			if err != nil {
+				return err
+			}
+			rank := before + (after-before)/2
+			if i > 0 && rank != prevRank+domain.RankStep {
+				return fmt.Errorf("iter %d: rank=%d, expected prevRank(%d)+RankStep(%d)=%d",
+					i, rank, prevRank, domain.RankStep, prevRank+domain.RankStep)
+			}
+			prevRank = rank
+			seq, err := ts.Projects().NextTaskSeq(tx, p.ID)
+			if err != nil {
+				return err
+			}
+			task := &domain.Task{
+				ID: uuid.NewString(), Key: domain.TaskKey(p.Key, seq),
+				ProjectID: p.ID, ColumnID: colID, Rank: rank,
+				Title: fmt.Sprintf("task-%d", i), Type: domain.TypeTask, Priority: domain.PriorityNone,
+				CreatedBy: "alice", UpdatedBy: "alice",
+			}
+			return ts.Tasks().Create(tx, task)
+		})
+		if err != nil {
+			t.Fatalf("iter %d: %v", i, err)
+		}
+	}
+}
+
+
 // TestRenumberColumn verifies the function is idempotent and produces
 // strictly increasing, well-spaced ranks.
 func TestRenumberColumn(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/domain"
 )
@@ -125,6 +126,16 @@ func (r *eventRepo) MinID(tx Tx) (int64, error) {
 		return 0, nil
 	}
 	return id.Int64, nil
+}
+
+// Prune deletes events older than the given timestamp. Returns number of rows deleted.
+func (r *eventRepo) Prune(tx Tx, olderThan time.Time) (int64, error) {
+	tw := tx.(*txWrap)
+	res, err := tw.tx.ExecContext(tw.ctx(), "DELETE FROM events WHERE ts < ?", formatTime(olderThan))
+	if err != nil {
+		return 0, fmt.Errorf("store: prune events: %w", err)
+	}
+	return res.RowsAffected()
 }
 
 func scanEvents(rows *sql.Rows) ([]domain.Event, error) {

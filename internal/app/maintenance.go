@@ -96,8 +96,13 @@ func (a *App) maintainOnce(ctx context.Context) {
 		if _, err := a.gate.Sessions().DeleteExpired(tx, now); err != nil {
 			return err
 		}
-		_, err = a.gate.Idempotency().DeleteExpired(tx, now)
-		return err
+		if _, err := a.gate.Idempotency().DeleteExpired(tx, now); err != nil {
+			return err
+		}
+		if _, err := a.gate.Events().Prune(tx, now.Add(-30*24*time.Hour)); err != nil {
+			return err
+		}
+		return nil
 	})
 	checkpointErr := a.gate.Checkpoint(ctx)
 	if ctx.Err() != nil {

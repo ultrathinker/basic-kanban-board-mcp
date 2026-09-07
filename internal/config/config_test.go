@@ -274,6 +274,23 @@ func TestCIDRContains(t *testing.T) {
 	if CIDRContains([]*net.IPNet{n}, "garbage") {
 		t.Fatal("garbage matched")
 	}
+
+	_, n6, _ := net.ParseCIDR("fd00::/8")
+	if !CIDRContains([]*net.IPNet{n6}, "fd00::1") {
+		t.Fatal("expected IPv6 match")
+	}
+	if !CIDRContains([]*net.IPNet{n6}, "[fd00::1]:8080") {
+		t.Fatal("expected IPv6 with port match")
+	}
+	if !CIDRContains([]*net.IPNet{n6}, "[fd00::1]") {
+		t.Fatal("expected bracketed IPv6 match")
+	}
+	if CIDRContains([]*net.IPNet{n6}, "fe80::1") {
+		t.Fatal("unexpected IPv6 match")
+	}
+	if CIDRContains([]*net.IPNet{n6}, "[fe80::1]:9000") {
+		t.Fatal("unexpected IPv6 with port match")
+	}
 }
 
 func TestIsLoopbackHost(t *testing.T) {

@@ -220,6 +220,7 @@ type EventRepo interface {
 	Since(tx Tx, projectID string, afterID int64, limit int) ([]domain.Event, error)
 	Latest(tx Tx, projectID string, limit int) ([]domain.Event, error)
 	MinID(tx Tx) (int64, error)
+	Prune(tx Tx, olderThan time.Time) (int64, error)
 }
 
 // TokenRepo persists API tokens. Only the hash is stored.

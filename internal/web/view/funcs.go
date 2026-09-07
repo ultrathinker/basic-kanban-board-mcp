@@ -217,9 +217,14 @@ func markdownSummary(s string, n int) string {
 	}
 	// Drop fenced code blocks first.
 	var out strings.Builder
+	inCodeBlock := false
 	for _, line := range strings.Split(s, "\n") {
 		l := strings.TrimSpace(line)
 		if strings.HasPrefix(l, "```") || strings.HasPrefix(l, "~~~") {
+			inCodeBlock = !inCodeBlock
+			continue
+		}
+		if inCodeBlock {
 			continue
 		}
 		if l == "" {

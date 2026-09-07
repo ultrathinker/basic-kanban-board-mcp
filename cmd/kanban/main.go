@@ -23,6 +23,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -264,12 +265,37 @@ func runToken(args []string) error {
 	}
 }
 
+type projectList []string
+
+func (p *projectList) String() string {
+	if p == nil {
+		return ""
+	}
+	return strings.Join(*p, ",")
+}
+
+func (p *projectList) Set(val string) error {
+	for _, part := range strings.Split(val, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		pk, err := domain.ValidateProjectKey(part)
+		if err != nil {
+			return err
+		}
+		*p = append(*p, pk)
+	}
+	return nil
+}
+
 func tokenCreate(args []string) error {
 	fs := flag.NewFlagSet("token create", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
 	name := fs.String("name", "", "token name (the actor identity)")
 	scope := fs.String("scope", "write", "read | write | admin")
-	project := fs.String("project", "", "restrict to a single project key (repeatable)")
+	var projects projectList
+	fs.Var(&projects, "project", "restrict to project key (repeatable or comma-separated)")
 	dataDir := fs.String("data", config.DefaultData, "data directory")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -285,13 +311,14 @@ func tokenCreate(args []string) error {
 	if !isScope(*scope) {
 		return fmt.Errorf("--scope must be read|write|admin, got %q", *scope)
 	}
-	var projects []string
-	if *project != "" {
-		pk, err := domain.ValidateProjectKey(*project)
-		if err != nil {
-			return err
+	// Deduplicate project keys
+	seen := make(map[string]bool, len(projects))
+	var uniqueProjects []string
+	for _, pk := range projects {
+		if !seen[pk] {
+			seen[pk] = true
+			uniqueProjects = append(uniqueProjects, pk)
 		}
-		projects = []string{pk}
 	}
 
 	ctx := context.Background()
@@ -310,7 +337,7 @@ func tokenCreate(args []string) error {
 		ID:          uuid.NewString(),
 		Name:        *name,
 		Scopes:      domain.Scopes{domain.Scope(*scope)},
-		ProjectKeys: projects,
+		ProjectKeys: uniqueProjects,
 	}
 	secret, err := mgr.MintAndStore(ctx, tok)
 	if err != nil {
@@ -568,11 +595,242 @@ func runAgentMD(w io.Writer) error {
 // ---------------------------------------------------------------------------
 
 func runExport(args []string) error {
-	return errors.New("kanban export: not implemented yet — it lands with the service layer (M1)")
+	fs := flag.NewFlagSet("export", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	project := fs.String("project", "", "project key to export (default: all projects)")
+	out := fs.String("out", "", "output file path (default: stdout)")
+	dataDir := fs.String("data", config.DefaultData, "data directory")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	ctx := context.Background()
+	storeHandle, err := openStore(ctx, *dataDir)
+	if err != nil {
+		return err
+	}
+	defer storeHandle.Close()
+
+	svc := service.New(storeHandle, nil)
+	actor := service.Actor{
+		Name:   "cli-admin",
+		Scopes: domain.Scopes{domain.ScopeAdmin, domain.ScopeWrite, domain.ScopeRead},
+	}
+	board, err := svc.BoardGet(ctx, actor, service.BoardGetInput{
+		ProjectKey: *project,
+		View:       service.ViewTasks,
+		DoneLimit:  domain.MaxDoneLimit,
+		Include: service.Includes{
+			service.IncludeBody,
+			service.IncludeAcceptance,
+			service.IncludeLinks,
+			service.IncludeMetadata,
+		},
+	})
+	if err != nil {
+		return err
+	}
+
+	data, err := json.MarshalIndent(board, "", "  ")
+	if err != nil {
+		return fmt.Errorf("export marshal: %w", err)
+	}
+	data = append(data, '\n')
+
+	if *out == "" || *out == "-" {
+		_, err = os.Stdout.Write(data)
+		return err
+	}
+	return os.WriteFile(*out, data, 0o644)
 }
 
 func runImport(args []string) error {
-	return errors.New("kanban import: not implemented yet — it lands with the service layer (M1)")
+	fs := flag.NewFlagSet("import", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	in := fs.String("in", "", "input file path (default: stdin)")
+	dataDir := fs.String("data", config.DefaultData, "data directory")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	var raw []byte
+	var err error
+	if *in == "" || *in == "-" {
+		raw, err = io.ReadAll(os.Stdin)
+	} else {
+		raw, err = os.ReadFile(*in)
+	}
+	if err != nil {
+		return fmt.Errorf("import read: %w", err)
+	}
+
+	var board service.Board
+	if err := json.Unmarshal(raw, &board); err != nil {
+		return fmt.Errorf("import unmarshal: %w", err)
+	}
+	if len(board.Projects) == 0 {
+		return errors.New("import: no projects found in input")
+	}
+
+	ctx := context.Background()
+	storeHandle, err := openStore(ctx, *dataDir)
+	if err != nil {
+		return err
+	}
+	defer storeHandle.Close()
+
+	svc := service.New(storeHandle, nil)
+	actor := service.Actor{
+		Name:   "cli-admin",
+		Scopes: domain.Scopes{domain.ScopeAdmin, domain.ScopeWrite, domain.ScopeRead},
+	}
+
+	for _, bp := range board.Projects {
+		cols := make([]service.ColumnSpec, len(bp.Columns))
+		for i, c := range bp.Columns {
+			cols[i] = service.ColumnSpec{
+				Name:     c.Name,
+				Kind:     c.Kind,
+				WIPLimit: c.WIPLimit,
+			}
+		}
+		desc := bp.Description
+		upsertInput := service.ProjectUpsertInput{
+			Mode:        service.UpsertCreate,
+			Key:         bp.Key,
+			Name:        bp.Name,
+			Description: &desc,
+			Columns:     cols,
+			Settings: &service.ProjectSettings{
+				EstimateUnit:        &bp.EstimateUnit,
+				EnforceDependencies: &bp.EnforceDependencies,
+				StrictDone:          &bp.StrictDone,
+				ClaimTTLSeconds:     &bp.ClaimTTLSeconds,
+			},
+		}
+		if _, err := svc.ProjectUpsert(ctx, actor, upsertInput); err != nil {
+			return fmt.Errorf("import project %s: %w", bp.Key, err)
+		}
+
+		idToKey := make(map[string]string)
+		for _, col := range bp.Columns {
+			for _, tv := range col.Tasks {
+				idToKey[tv.ID] = tv.Key
+			}
+		}
+
+		keyMap := make(map[string]string)
+		type linkReq struct {
+			srcKey, dstKey string
+		}
+		var linksToCreate []linkReq
+		type reparentReq struct {
+			taskKey   string
+			parentKey string
+		}
+		var reparents []reparentReq
+
+		for _, col := range bp.Columns {
+			for _, tv := range col.Tasks {
+				var acceptanceStrings []string
+				for _, it := range tv.Acceptance {
+					acceptanceStrings = append(acceptanceStrings, it.Text)
+				}
+				res, err := svc.TaskCreate(ctx, actor, service.TaskCreateInput{
+					Tasks: []service.NewTask{
+						{
+							ProjectKey: bp.Key,
+							Column:     col.Name,
+							Title:      tv.Title,
+							Body:       tv.Body,
+							Type:       tv.Type,
+							Priority:   tv.Priority,
+							Tags:       tv.Tags,
+							Estimate:   tv.Estimate,
+							Actual:     tv.Actual,
+							Assignee:   tv.Assignee,
+							Reviewer:   tv.Reviewer,
+							Acceptance: acceptanceStrings,
+							DueAt:      tv.DueAt,
+							Metadata:   tv.Metadata,
+						},
+					},
+				})
+				if err != nil {
+					return fmt.Errorf("import task %s: %w", tv.Key, err)
+				}
+				if len(res.Tasks) > 0 {
+					createdTask := res.Tasks[0]
+					keyMap[tv.Key] = createdTask.Key
+
+					hasDone := false
+					for _, it := range tv.Acceptance {
+						if it.Done {
+							hasDone = true
+							break
+						}
+					}
+					if hasDone {
+						_, _ = svc.TaskUpdate(ctx, actor, service.TaskUpdateInput{
+							Patches: []service.TaskPatch{
+								{
+									Key:        createdTask.Key,
+									IfVersion:  &createdTask.Version,
+									Acceptance: tv.Acceptance,
+								},
+							},
+						})
+					}
+
+					if tv.ParentID != nil {
+						if pKey, ok := idToKey[*tv.ParentID]; ok {
+							reparents = append(reparents, reparentReq{
+								taskKey:   createdTask.Key,
+								parentKey: pKey,
+							})
+						}
+					}
+				}
+
+				for _, blockerKey := range tv.BlockedBy {
+					linksToCreate = append(linksToCreate, linkReq{srcKey: blockerKey, dstKey: tv.Key})
+				}
+			}
+		}
+
+		for _, r := range reparents {
+			newParentKey, ok := keyMap[r.parentKey]
+			if ok {
+				_, _ = svc.TaskUpdate(ctx, actor, service.TaskUpdateInput{
+					Patches: []service.TaskPatch{
+						{
+							Key:    r.taskKey,
+							Parent: service.FieldString{Set: true, Value: newParentKey},
+						},
+					},
+				})
+			}
+		}
+
+		var addPairs []service.LinkPair
+		for _, link := range linksToCreate {
+			newSrc, okSrc := keyMap[link.srcKey]
+			newDst, okDst := keyMap[link.dstKey]
+			if okSrc && okDst {
+				addPairs = append(addPairs, service.LinkPair{
+					Blocker: newSrc,
+					Blocked: newDst,
+				})
+			}
+		}
+		if len(addPairs) > 0 {
+			if _, err := svc.TaskLink(ctx, actor, service.TaskLinkInput{Add: addPairs}); err != nil {
+				return fmt.Errorf("import links for %s: %w", bp.Key, err)
+			}
+		}
+		fmt.Fprintf(os.Stdout, "Imported project %s (%s)\n", bp.Key, bp.Name)
+	}
+	return nil
 }
 
 func runBackup(args []string) error {

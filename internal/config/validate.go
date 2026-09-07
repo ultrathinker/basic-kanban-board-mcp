@@ -144,10 +144,10 @@ func parseAddrToIP(s string) net.IP {
 	if s == "" {
 		return nil
 	}
-	if h, _, ok := strings.Cut(s, ":"); ok {
+	if h, _, err := net.SplitHostPort(s); err == nil {
 		s = h
 	}
-	// Strip brackets around IPv6 literals (e.g. "[::1]:8080" -> "::1").
+	// Strip brackets around IPv6 literals (e.g. "[::1]" -> "::1").
 	s = strings.TrimPrefix(s, "[")
 	s = strings.TrimSuffix(s, "]")
 	return net.ParseIP(s)

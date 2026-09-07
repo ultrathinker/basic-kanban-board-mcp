@@ -653,6 +653,10 @@ func (s *svc) prepareUpdate(tx store.Tx, a Actor, patch TaskPatch) (*prepared, e
 			return nil, err
 		}
 		prep.column = dst
+		fromCol, err := s.store.Columns().GetByID(tx, task.ColumnID)
+		if err != nil {
+			return nil, err
+		}
 		cnt, err := s.store.Columns().CountTasks(tx, dst.ID, task.ID)
 		if err != nil {
 			return nil, err
@@ -677,7 +681,7 @@ func (s *svc) prepareUpdate(tx store.Tx, a Actor, patch TaskPatch) (*prepared, e
 		}
 		if err := domain.CheckMove(domain.MoveCheck{
 			TaskKey:             task.Key,
-			From:                domain.Column{ID: task.ColumnID, ProjectID: task.ProjectID},
+			From:                *fromCol,
 			To:                  *dst,
 			OpenBlocks:          openBlocks,
 			ToCount:             cnt,

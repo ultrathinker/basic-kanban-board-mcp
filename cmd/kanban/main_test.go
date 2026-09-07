@@ -19,6 +19,7 @@ import (
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/auth"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/config"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/domain"
+	"github.com/ultrathinker/basic-kanban-board-mcp/internal/service"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/store"
 )
 
@@ -684,3 +685,134 @@ func TestOpenStore_AttachesUnderLiveServer(t *testing.T) {
 		t.Fatalf("attached write: %v", err)
 	}
 }
+
+func TestTokenCreate_MultipleProjects(t *testing.T) {
+	dir := t.TempDir()
+
+	// Run tokenCreate with repeatable --project and comma-separated duplicates
+	err := tokenCreate([]string{
+		"--data", dir,
+		"--name", "multi-bot",
+		"--scope", "write",
+		"--project", "alpha",
+		"--project", "beta,gamma",
+		"--project", "alpha",
+	})
+	if err != nil {
+		t.Fatalf("tokenCreate: %v", err)
+	}
+
+	ctx := context.Background()
+	st, err := openStore(ctx, dir)
+	if err != nil {
+		t.Fatalf("openStore: %v", err)
+	}
+	defer st.Close()
+
+	var tokens []*domain.Token
+	if err := st.Read(ctx, func(tx store.Tx) error {
+		var rerr error
+		tokens, rerr = st.Tokens().List(tx)
+		return rerr
+	}); err != nil {
+		t.Fatalf("Tokens().List: %v", err)
+	}
+
+	if len(tokens) != 1 {
+		t.Fatalf("expected 1 token, got %d", len(tokens))
+	}
+	tok := tokens[0]
+	if tok.Name != "multi-bot" {
+		t.Errorf("token name = %q, want multi-bot", tok.Name)
+	}
+	expectedProjects := []string{"ALPHA", "BETA", "GAMMA"}
+	if len(tok.ProjectKeys) != len(expectedProjects) {
+		t.Fatalf("ProjectKeys = %v, want %v", tok.ProjectKeys, expectedProjects)
+	}
+	for i, p := range expectedProjects {
+		if tok.ProjectKeys[i] != p {
+			t.Errorf("ProjectKeys[%d] = %q, want %q", i, tok.ProjectKeys[i], p)
+		}
+	}
+}
+
+func TestExportImport_RoundTrip(t *testing.T) {
+	dir1 := t.TempDir()
+	dir2 := t.TempDir()
+
+	// Seed demo data in dir1
+	if err := runDemo([]string{"--data", dir1}); err != nil {
+		t.Fatalf("runDemo: %v", err)
+	}
+
+	exportFile := filepath.Join(t.TempDir(), "export.json")
+	if err := runExport([]string{"--data", dir1, "--out", exportFile}); err != nil {
+		t.Fatalf("runExport: %v", err)
+	}
+
+	raw, err := os.ReadFile(exportFile)
+	if err != nil {
+		t.Fatalf("read export file: %v", err)
+	}
+	if len(raw) == 0 {
+		t.Fatal("export file is empty")
+	}
+
+	// Import into fresh dir2
+	if err := runImport([]string{"--data", dir2, "--in", exportFile}); err != nil {
+		t.Fatalf("runImport: %v", err)
+	}
+
+	// Verify imported data in dir2
+	ctx := context.Background()
+	st2, err := openStore(ctx, dir2)
+	if err != nil {
+		t.Fatalf("openStore dir2: %v", err)
+	}
+	defer st2.Close()
+
+	svc2 := service.New(st2, nil)
+	actor := service.Actor{
+		Name:   "tester",
+		Scopes: domain.Scopes{domain.ScopeAdmin, domain.ScopeWrite, domain.ScopeRead},
+	}
+	board2, err := svc2.BoardGet(ctx, actor, service.BoardGetInput{
+		View:      service.ViewTasks,
+		DoneLimit: domain.MaxDoneLimit,
+	})
+	if err != nil {
+		t.Fatalf("BoardGet dir2: %v", err)
+	}
+
+	if len(board2.Projects) == 0 {
+		t.Fatal("imported board has 0 projects")
+	}
+	p := board2.Projects[0]
+	if p.Key == "" {
+		t.Errorf("imported project has empty key")
+	}
+	var totalTasks int
+	for _, col := range p.Columns {
+		totalTasks += len(col.Tasks)
+	}
+	if totalTasks == 0 {
+		t.Errorf("imported project has 0 tasks")
+	}
+}
+
+func TestMCP_Wired(t *testing.T) {
+	// Verify --stdio=false is refused
+	if err := runMCP([]string{"--stdio=false"}); err == nil {
+		t.Fatal("runMCP(--stdio=false) must be refused")
+	}
+	// Verify missing token when --url is provided
+	if err := runMCP([]string{"--url=http://127.0.0.1:8080"}); err == nil {
+		t.Fatal("runMCP(--url) without token must be refused")
+	}
+	// Verify that the function pointers are wired to real implementations (not the stub returning 'not wired')
+	if err := runStdioBridge("http://127.0.0.1:1/nonexistent", "dummy"); err != nil && err.Error() == "stdio bridge not wired" {
+		t.Fatal("runStdioBridge is still the unwired stub")
+	}
+}
+
+

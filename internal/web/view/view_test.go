@@ -701,3 +701,59 @@ func TestSamplePageFillsTheChrome(t *testing.T) {
 		t.Error("SampleAnonymousPage must have no user and no project switcher")
 	}
 }
+
+func TestMarkdownSummary(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		in   string
+		n    int
+		want string
+	}{
+		{
+			name: "empty",
+			in:   "",
+			n:    50,
+			want: "",
+		},
+		{
+			name: "plain text",
+			in:   "Hello world this is a simple task description",
+			n:    100,
+			want: "Hello world this is a simple task description",
+		},
+		{
+			name: "truncate long text",
+			in:   "One two three four five six seven eight nine ten",
+			n:    12,
+			want: "One two thr…",
+		},
+		{
+			name: "drops fenced code blocks with backticks",
+			in: "Before code\n```go\nfunc main() {\n    fmt.Println(\"secret\")\n}\n```\nAfter code",
+			n:  100,
+			want: "Before code After code",
+		},
+		{
+			name: "drops fenced code blocks with tildes",
+			in: "Before code\n~~~json\n{\"foo\": \"bar\"}\n~~~\nAfter code",
+			n:  100,
+			want: "Before code After code",
+		},
+		{
+			name: "only code block",
+			in: "```sh\necho test\n```",
+			n:  100,
+			want: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := markdownSummary(tc.in, tc.n)
+			if got != tc.want {
+				t.Errorf("markdownSummary(%q, %d) = %q, want %q", tc.in, tc.n, got, tc.want)
+			}
+		})
+	}
+}
+
