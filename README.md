@@ -20,8 +20,8 @@ That is a whole project, as an agent sees it.
 
 ## Why
 
-Most MCP task servers expose 40 to 170 tools and hand back JSON. An agent then spends its
-context deciding which of 170 tools to call and parsing the dump it gets back.
+Most MCP task servers expose dozens of tools and hand back JSON. An agent then spends its
+context deciding which tool to call and parsing the dump it gets back.
 
 This one exposes **nine tools** and answers in the compact text above.
 
