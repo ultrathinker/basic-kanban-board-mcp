@@ -324,6 +324,103 @@ func TestRoundTrip_TaskCreate_AllOrNothing(t *testing.T) {
 	}
 }
 
+// TestRoundTrip_TaskCreate_MissingProjectPerItem covers the classic
+// mistake: a tasks[] item without "project". This is the SAME failure the
+// user hits by putting "project" at the top level of the call — the SDK
+// silently ignores an unknown top-level key rather than rejecting it, so the
+// items still lack "project". Before the fix, taskCreateTool left "project"
+// in the item's schema `required` list, so the SDK failed first with a terse
+// "missing properties: [project]". taskCreateTool now drops that requirement
+// (dropRequired), letting the empty item reach newTaskToService, which is
+// where the friendly "put project INSIDE each item" remediation lives.
+func TestRoundTrip_TaskCreate_MissingProjectPerItem(t *testing.T) {
+	t.Parallel()
+	cs, svc := roundtripServer(t, NewServer)
+
+	res, sc := callTool(t, cs, "task_create", map[string]any{
+		"tasks": []map[string]any{{"title": "orphan item"}},
+	})
+	if res.IsError != true {
+		t.Errorf("IsError = %v, want true", res.IsError)
+	}
+	if len(svc.LastTaskCreate.Tasks) != 0 {
+		t.Errorf("service was invoked despite missing project: %+v", svc.LastTaskCreate.Tasks)
+	}
+	errObj, ok := sc["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing error envelope: %v", sc)
+	}
+	if errObj["code"] != "validation" {
+		t.Errorf("code = %v, want validation", errObj["code"])
+	}
+	if field, _ := errObj["field"].(string); field != "project" {
+		t.Errorf("field = %v, want project", field)
+	}
+	if msg, _ := errObj["message"].(string); !strings.Contains(msg, "project") {
+		t.Errorf("message %q should mention project", msg)
+	}
+	rem, _ := errObj["remediation"].(string)
+	low := strings.ToLower(rem)
+	if !strings.Contains(low, "item") && !strings.Contains(low, "inside") {
+		t.Errorf("remediation %q should say item or inside", rem)
+	}
+}
+
+// TestRoundTrip_TaskCreate_MissingProjectExplicitEmpty covers the
+// close cousin of the mistake: the agent sent the key with an
+// empty value. TrimSpace must catch that, not normalize "" into the
+// service.
+func TestRoundTrip_TaskCreate_MissingProjectExplicitEmpty(t *testing.T) {
+	t.Parallel()
+	cs, svc := roundtripServer(t, NewServer)
+
+	res, sc := callTool(t, cs, "task_create", map[string]any{
+		"tasks": []map[string]any{{"project": "   ", "title": "whitespace only"}},
+	})
+	if res.IsError != true {
+		t.Errorf("IsError = %v, want true", res.IsError)
+	}
+	if len(svc.LastTaskCreate.Tasks) != 0 {
+		t.Errorf("service was invoked despite empty project: %+v", svc.LastTaskCreate.Tasks)
+	}
+	if errObj := sc["error"].(map[string]any); errObj["code"] != "validation" {
+		t.Errorf("code = %v, want validation", errObj["code"])
+	}
+}
+
+// TestRoundTrip_TaskCreate_TopLevelProject is the user's literal complaint:
+// "project" placed at the top level of the call instead of inside each item.
+// A bare taskCreateInput would let the SDK reject the extra key with a generic
+// message that never names where "project" belongs; the declared-but-forbidden
+// field turns it into the same friendly, actionable remediation.
+func TestRoundTrip_TaskCreate_TopLevelProject(t *testing.T) {
+	t.Parallel()
+	cs, svc := roundtripServer(t, NewServer)
+
+	res, sc := callTool(t, cs, "task_create", map[string]any{
+		"project": "I6",
+		"tasks":   []map[string]any{{"title": "orphan top-level project"}},
+	})
+	if res.IsError != true {
+		t.Errorf("IsError = %v, want true", res.IsError)
+	}
+	if len(svc.LastTaskCreate.Tasks) != 0 {
+		t.Errorf("service was invoked despite a top-level project: %+v", svc.LastTaskCreate.Tasks)
+	}
+	errObj, ok := sc["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing error envelope: %v", sc)
+	}
+	if errObj["code"] != "validation" {
+		t.Errorf("code = %v, want validation", errObj["code"])
+	}
+	rem, _ := errObj["remediation"].(string)
+	low := strings.ToLower(rem)
+	if !strings.Contains(low, "inside") && !strings.Contains(low, "item") {
+		t.Errorf("remediation %q should tell the caller to move project inside each item", rem)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // task_update — happy path plus the bug we fixed: parent is plain key, not @ref
 // ---------------------------------------------------------------------------
@@ -440,6 +537,107 @@ func TestRoundTrip_TaskUpdate_EstimateClearWithNull(t *testing.T) {
 	})
 	if got := svc.LastTaskUpdate.Patches[0].Estimate.Clear; !got {
 		t.Errorf("Estimate.Clear = %v, want true", got)
+	}
+}
+
+// TestRoundTrip_TaskUpdate_AcceptanceStrings verifies the wire asymmetry
+// fix: a bare JSON string ("a") is equivalent to {"text":"a","done":false}.
+// task_create already accepted strings; task_update used to require the
+// object form, so agents got silent drops when they tried to mirror the
+// shape they had just learned.
+func TestRoundTrip_TaskUpdate_AcceptanceStrings(t *testing.T) {
+	t.Parallel()
+	cs, svc := roundtripServer(t, NewServer)
+	svc.DefaultTaskUpdate = &service.TaskUpdateResult{
+		Items: []service.ItemResult{{Key: "BMB-1", OK: true, Task: func() *domain.TaskView {
+			tv := fixedTask("BMB-1")
+			return &tv
+		}()}},
+	}
+
+	_, sc := callTool(t, cs, "task_update", map[string]any{
+		"patches": []map[string]any{{
+			"key":        "BMB-1",
+			"if_version": 1,
+			"acceptance": []string{"a", "b"},
+		}},
+	})
+	expectOK(t, sc, "task_update")
+
+	items := svc.LastTaskUpdate.Patches[0].Acceptance
+	if len(items) != 2 {
+		t.Fatalf("acceptance len = %d, want 2", len(items))
+	}
+	if items[0].Text != "a" || items[0].Done {
+		t.Errorf("acceptance[0] = %+v, want {a, false}", items[0])
+	}
+	if items[1].Text != "b" || items[1].Done {
+		t.Errorf("acceptance[1] = %+v, want {b, false}", items[1])
+	}
+}
+
+// TestRoundTrip_TaskUpdate_AcceptanceObjects pins the existing object
+// shape: the UnmarshalJSON change must not break callers that send
+// {"text":"c","done":true} the way task_update has always accepted it.
+func TestRoundTrip_TaskUpdate_AcceptanceObjects(t *testing.T) {
+	t.Parallel()
+	cs, svc := roundtripServer(t, NewServer)
+	svc.DefaultTaskUpdate = &service.TaskUpdateResult{
+		Items: []service.ItemResult{{Key: "BMB-1", OK: true, Task: func() *domain.TaskView {
+			tv := fixedTask("BMB-1")
+			return &tv
+		}()}},
+	}
+
+	_, sc := callTool(t, cs, "task_update", map[string]any{
+		"patches": []map[string]any{{
+			"key":        "BMB-1",
+			"if_version": 1,
+			"acceptance": []map[string]any{{"text": "c", "done": true}},
+		}},
+	})
+	expectOK(t, sc, "task_update")
+
+	items := svc.LastTaskUpdate.Patches[0].Acceptance
+	if len(items) != 1 {
+		t.Fatalf("acceptance len = %d, want 1", len(items))
+	}
+	if items[0].Text != "c" || !items[0].Done {
+		t.Errorf("acceptance[0] = %+v, want {c, true}", items[0])
+	}
+}
+
+// TestRoundTrip_TaskUpdate_AcceptanceMixed guards against an over-eager
+// unmarshaller: a mixed list (string + object) must succeed and produce
+// both shapes, in order.
+func TestRoundTrip_TaskUpdate_AcceptanceMixed(t *testing.T) {
+	t.Parallel()
+	cs, svc := roundtripServer(t, NewServer)
+	svc.DefaultTaskUpdate = &service.TaskUpdateResult{
+		Items: []service.ItemResult{{Key: "BMB-1", OK: true, Task: func() *domain.TaskView {
+			tv := fixedTask("BMB-1")
+			return &tv
+		}()}},
+	}
+
+	_, sc := callTool(t, cs, "task_update", map[string]any{
+		"patches": []map[string]any{{
+			"key":        "BMB-1",
+			"if_version": 1,
+			"acceptance": []any{"a", map[string]any{"text": "b", "done": true}},
+		}},
+	})
+	expectOK(t, sc, "task_update")
+
+	items := svc.LastTaskUpdate.Patches[0].Acceptance
+	if len(items) != 2 {
+		t.Fatalf("acceptance len = %d, want 2", len(items))
+	}
+	if items[0].Text != "a" || items[0].Done {
+		t.Errorf("acceptance[0] = %+v, want {a, false}", items[0])
+	}
+	if items[1].Text != "b" || !items[1].Done {
+		t.Errorf("acceptance[1] = %+v, want {b, true}", items[1])
 	}
 }
 

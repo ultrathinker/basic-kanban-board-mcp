@@ -1,11 +1,13 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
 
+	"github.com/google/jsonschema-go/jsonschema"
 	gomcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/domain"
@@ -14,9 +16,36 @@ import (
 
 const opTaskUpdate = "task_update"
 
+// acceptanceIn mirrors service-side domain.AcceptanceItem at the wire layer.
+// It deliberately accepts both a bare JSON string and the {text, done} object
+// form: agents that hand-craft task_update payloads otherwise have to learn
+// task_create's shape and this tool's shape separately, and the asymmetry
+// shows up as silent drops. The string form is sugar for {text, done:false}.
 type acceptanceIn struct {
 	Text string `json:"text"`
 	Done bool   `json:"done"`
+}
+
+// UnmarshalJSON accepts a bare JSON string ("buy milk") as the unchecked
+// form {text:"buy milk", done:false}. The raw-alias trick avoids the obvious
+// infinite recursion that a naive `json.Unmarshal(b, a)` would cause.
+func (a *acceptanceIn) UnmarshalJSON(b []byte) error {
+	trimmed := bytes.TrimSpace(b)
+	if len(trimmed) > 0 && trimmed[0] == '"' {
+		var s string
+		if err := json.Unmarshal(b, &s); err != nil {
+			return err
+		}
+		a.Text, a.Done = s, false
+		return nil
+	}
+	type raw acceptanceIn
+	var r raw
+	if err := json.Unmarshal(b, &r); err != nil {
+		return err
+	}
+	*a = acceptanceIn(r)
+	return nil
 }
 
 // taskPatchIn is deliberately the richest input struct in the package,
@@ -29,7 +58,7 @@ type acceptanceIn struct {
 // two apart.
 type taskPatchIn struct {
 	Key       string   `json:"key" jsonschema:"task key, case-insensitive"`
-	IfVersion *int     `json:"if_version,omitempty" jsonschema:"required for any replacement-style field below; commutative fields (note, tags_add, tags_remove) may omit it"`
+	IfVersion *int     `json:"if_version,omitempty" jsonschema:"required for any replacement-style field below; commutative fields (note, tags_add, tags_remove) may omit it. Read the current version from board_get (every task line and the project header end with v<N>) or from task_get — no separate read is needed."`
 	Title     *string  `json:"title,omitempty"`
 	Body      *string  `json:"body,omitempty"`
 	Type      *string  `json:"type,omitempty"`
@@ -46,7 +75,7 @@ type taskPatchIn struct {
 	Rank   string  `json:"rank,omitempty" jsonschema:"reposition within the destination column"`
 	Parent *string `json:"parent,omitempty" jsonschema:"reparent to this task key, or send null to clear; \"parent\" alone is a normal field, not the three-state trick — use JSON null to clear"`
 
-	Acceptance      []acceptanceIn `json:"acceptance,omitempty" jsonschema:"replace the whole checklist; mutually exclusive with acceptance_check/acceptance_add"`
+	Acceptance      []acceptanceIn `json:"acceptance,omitempty" jsonschema:"replace the whole checklist; each item is either a plain string (unchecked) or {text, done}; mutually exclusive with acceptance_check/acceptance_add"`
 	AcceptanceCheck []int          `json:"acceptance_check,omitempty" jsonschema:"tick items by index; requires if_version"`
 	AcceptanceAdd   []string       `json:"acceptance_add,omitempty"`
 
@@ -107,7 +136,10 @@ func taskUpdateTool() *gomcp.Tool {
 	setMaxLen(tagsRemove.Items, domain.MaxTagLen)
 	acc := prop(item, "acceptance")
 	setMaxItems(acc, domain.MaxAcceptance)
-	setMaxLen(prop(acc.Items, "text"), domain.MaxAcceptanceText)
+	// The bare-string form ("item is an unchecked line of text") is sugar
+	// for {"text": <string>, "done": false}. acceptanceIn.UnmarshalJSON
+	// handles both at decode time; the wire schema advertises the union.
+	setAcceptanceItemShape(acc.Items, jsonschema.Ptr(domain.MaxAcceptanceText))
 	accAdd := prop(item, "acceptance_add")
 	setMaxItems(accAdd, domain.MaxAcceptance)
 	setMaxLen(accAdd.Items, domain.MaxAcceptanceText)

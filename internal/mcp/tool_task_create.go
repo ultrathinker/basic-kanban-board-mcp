@@ -32,7 +32,12 @@ type newTaskIn struct {
 }
 
 type taskCreateInput struct {
-	Tasks []newTaskIn `json:"tasks" jsonschema:"all-or-nothing: either every task is created, or none are"`
+	// Project must NOT be set here — it is a per-item field. It is declared
+	// only so that a caller who puts it at the top level (a common mistake:
+	// "project":"I6","tasks":[...]) gets the precise "move it inside each item"
+	// error below, instead of the SDK's terse "unexpected additional property".
+	Project *string     `json:"project,omitempty" jsonschema:"do NOT set this: project is a per-item field — put it inside each element of tasks[]"`
+	Tasks   []newTaskIn `json:"tasks" jsonschema:"all-or-nothing: either every task is created, or none are"`
 }
 
 type taskCreateData struct {
@@ -68,6 +73,10 @@ func taskCreateTool() *gomcp.Tool {
 	acc := prop(item, "acceptance")
 	setMaxItems(acc, domain.MaxAcceptance)
 	setMaxLen(acc.Items, domain.MaxAcceptanceText)
+	// The wire struct infers "project" as required (no `omitempty`), but
+	// the friendly "put project INSIDE each item" remediation belongs on
+	// our envelope, not on the SDK's terse "missing required property".
+	dropRequired(item, "project")
 
 	return &gomcp.Tool{
 		Name: opTaskCreate,
@@ -97,6 +106,11 @@ func keyOrRef(field, s string) (string, *domain.Error) {
 }
 
 func newTaskToService(in newTaskIn) (service.NewTask, *domain.Error) {
+	if strings.TrimSpace(in.Project) == "" {
+		return service.NewTask{}, domain.Invalid("project",
+			"project is required on each task item",
+			"Put \"project\" INSIDE each item of tasks[], not at the top level: {\"tasks\":[{\"project\":\"I6\",\"title\":\"...\"}]}")
+	}
 	out := service.NewTask{
 		ProjectKey:     domain.NormalizeProjectKey(in.Project),
 		Title:          in.Title,
@@ -158,6 +172,17 @@ func registerTaskCreate(s *gomcp.Server, svc service.Service) {
 		actor, aerr := actorFromContext(ctx)
 		if aerr != nil {
 			return errorResult(opTaskCreate, aerr), taskCreateOutput{OK: false, Op: opTaskCreate, Error: newErrorEnvelope(aerr)}, nil
+		}
+
+		// A top-level "project" is the shape mistake that motivated the
+		// per-item error too: catch it here with the same remediation, since
+		// the SDK would otherwise reject the extra key with a generic message
+		// that never says where "project" belongs.
+		if in.Project != nil {
+			derr := domain.Invalid("project",
+				"project is a per-item field, not a top-level one",
+				"Move \"project\" INSIDE each item of tasks[]: {\"tasks\":[{\"project\":\"I6\",\"title\":\"...\"}]}")
+			return errorResult(opTaskCreate, derr), taskCreateOutput{OK: false, Op: opTaskCreate, Error: newErrorEnvelope(derr)}, nil
 		}
 
 		tasks := make([]service.NewTask, len(in.Tasks))
