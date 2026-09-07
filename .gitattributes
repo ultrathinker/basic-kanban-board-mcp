@@ -1,0 +1,8 @@
+# Every text file is LF in the repository and in every working tree.
+#
+# The golden-file tests in internal/mcp compare rendered output byte for byte.
+# Git for Windows checks files out with CRLF by default, which makes those
+# comparisons fail on the first line for a difference nobody can see. Pinning
+# eol=lf keeps the checkout identical on every platform; `text=auto` still lets
+# Git detect and leave binary files alone.
+* text=auto eol=lf
