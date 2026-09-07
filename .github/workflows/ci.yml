@@ -101,18 +101,24 @@ jobs:
 
       - name: staticcheck (ubuntu only)
         if: runner.os == 'Linux'
-        uses: dominikbraun/graph@v1
-        with:
-          # staticcheck is not in deps.go because it is dev-only. Install
-          # it just for this step. Failure is non-fatal: staticcheck
-          # periodically flags stdlib constructs and Go-ecosystem changes.
-          continue-on-error: true
+        continue-on-error: true
+        run: |
+          # staticcheck is dev-only, so it is installed here rather than tracked
+          # in deps.go. Advisory (continue-on-error): staticcheck periodically
+          # flags stdlib/ecosystem constructs on a new Go toolchain, so it must
+          # not gate a PR. The previous step referenced an unrelated action
+          # (dominikbraun/graph) and put continue-on-error under `with:`, so it
+          # never actually ran staticcheck.
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          staticcheck ./...
 
       - name: govulncheck (ubuntu only)
         if: runner.os == 'Linux'
-        env:
-          GOFLAGS: -mod=mod
+        continue-on-error: true
         run: |
+          # Advisory: govulncheck queries the live vulnerability database, so an
+          # upstream advisory can turn this red with no change in the repo. Keep
+          # it non-blocking; a genuine finding still surfaces in the job log.
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
 

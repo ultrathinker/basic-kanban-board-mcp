@@ -4,7 +4,7 @@
 # Archives: .tar.gz on POSIX, .zip on Windows.
 # Image: multi-arch linux/amd64 + linux/arm64 to ghcr.io.
 
-version: 1
+version: 2
 
 before:
   hooks:
@@ -81,7 +81,7 @@ nfpms:
     priority: optional
 
 brews:
-  - tap:
+  - repository:
       owner: ultrathinker
       name: homebrew-tap
     commit_author:
@@ -98,11 +98,17 @@ docker_manifests:
       - "ghcr.io/ultrathinker/{{ .ProjectName }}:latest-amd64"
       - "ghcr.io/ultrathinker/{{ .ProjectName }}:latest-arm64"
 
-docker_images:
+# One entry per architecture, each pinned to its own --platform, so the two
+# tags the manifest combines are genuinely amd64 and arm64. The single-entry
+# form (both tags, one --platform) shipped an amd64 binary under the arm64 tag.
+# `use: buildx` is required for cross-platform builds; the arm64 build needs
+# QEMU on the runner (set up in release.yml).
+dockers:
   - image_templates:
       - "ghcr.io/ultrathinker/{{ .ProjectName }}:{{ .Tag }}-amd64"
-      - "ghcr.io/ultrathinker/{{ .ProjectName }}:{{ .Tag }}-arm64"
-    use_trim_path: true
+    use: buildx
+    goos: linux
+    goarch: amd64
     dockerfile: Dockerfile
     build_flag_templates:
       - "--platform=linux/amd64"
@@ -112,7 +118,22 @@ docker_images:
       - "--label=org.opencontainers.image.licenses=MIT"
     extra_files:
       - LICENSE
-      - docs/**
+      - docs
+  - image_templates:
+      - "ghcr.io/ultrathinker/{{ .ProjectName }}:{{ .Tag }}-arm64"
+    use: buildx
+    goos: linux
+    goarch: arm64
+    dockerfile: Dockerfile
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.title={{ .ProjectName }}"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.source=https://github.com/ultrathinker/{{ .ProjectName }}"
+      - "--label=org.opencontainers.image.licenses=MIT"
+    extra_files:
+      - LICENSE
+      - docs
 
 changelog:
   use: git
