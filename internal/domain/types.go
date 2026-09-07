@@ -83,6 +83,43 @@ func ParsePriority(s string) (Priority, bool) {
 	return PriorityNone, false
 }
 
+// Outcome records the epistemic status of a task's result — kept separate from
+// the column the task sits in. A task can be Done yet have an outcome of
+// "refuted" (the conclusion turned out wrong) or "moot" (the work was not
+// needed after all). This is the signal a research agent asked for: "done"
+// alone cannot say whether what was done still holds. "open" is the default
+// until the result is judged, so every existing task is valid without backfill.
+type Outcome string
+
+const (
+	OutcomeOpen       Outcome = "open"       // not yet judged
+	OutcomeHolds      Outcome = "holds"      // the result stands / was confirmed
+	OutcomeRefuted    Outcome = "refuted"    // the conclusion turned out wrong
+	OutcomeSuperseded Outcome = "superseded" // replaced by a better result
+	OutcomeMoot       Outcome = "moot"       // the work turned out unneeded
+)
+
+var AllOutcomes = []Outcome{OutcomeOpen, OutcomeHolds, OutcomeRefuted, OutcomeSuperseded, OutcomeMoot}
+
+func (o Outcome) Valid() bool {
+	for _, v := range AllOutcomes {
+		if v == o {
+			return true
+		}
+	}
+	return false
+}
+
+// ParseOutcome accepts the canonical names case-insensitively.
+func ParseOutcome(s string) (Outcome, bool) {
+	for _, v := range AllOutcomes {
+		if equalFold(s, string(v)) {
+			return v, true
+		}
+	}
+	return OutcomeOpen, false
+}
+
 // LinkType is the typed dependency edge. v1 ships "blocks" only; the column
 // exists so adding "relates"/"duplicates" later is data, not a migration of
 // meaning.
@@ -188,6 +225,14 @@ type Task struct {
 	// Assignee (who does it): a research task moving to Done through a review
 	// column needs both to be nameable independently.
 	Reviewer *string
+	// Outcome is the epistemic status of the task's result (see Outcome). It is
+	// independent of ColumnKind: a Done task may still be refuted or moot.
+	// Defaults to OutcomeOpen.
+	Outcome Outcome
+	// Conclusion is the post-hoc takeaway — what was actually learned or
+	// decided — kept distinct from Body (the brief written up front) and from
+	// Notes (the running log an agent appends as it works). Empty until written.
+	Conclusion string
 
 	ClaimedBy       *string
 	ClaimedAt       *time.Time

@@ -374,3 +374,42 @@ func withActual(n float64) func(*domain.TaskView) {
 func withReviewer(r string) func(*domain.TaskView) {
 	return func(tv *domain.TaskView) { tv.Reviewer = &r }
 }
+
+// ---------------------------------------------------------------------------
+// outcome segment in compact renderTask: sparse — only when non-default.
+// ---------------------------------------------------------------------------
+
+func TestRender_OutcomeSegment(t *testing.T) {
+	board := &service.Board{Projects: []service.BoardProject{{
+		Key: "BMB", Name: "BeeMemoryBank",
+		Columns: []service.BoardColumn{mkColumn("Backlog", domain.KindBacklog, 1,
+			mkTask("BMB-1",
+				withOutcome(domain.OutcomeRefuted),
+				withVersion(1),
+			),
+		)},
+	}}}
+	out := Render(board, fixedNow)
+	if !strings.Contains(out, "out refuted") {
+		t.Errorf("missing outcome segment: %s", out)
+	}
+}
+
+func TestRender_OutcomeAbsentWhenOpen(t *testing.T) {
+	// The default "open" outcome must not consume a token-budget slot: the
+	// existing golden fixtures are all open and must keep passing.
+	board := &service.Board{Projects: []service.BoardProject{{
+		Key: "BMB", Name: "BeeMemoryBank",
+		Columns: []service.BoardColumn{mkColumn("Backlog", domain.KindBacklog, 1,
+			mkTask("BMB-1", withVersion(1)),
+		)},
+	}}}
+	out := Render(board, fixedNow)
+	if strings.Contains(out, " out ") {
+		t.Errorf("unexpected outcome segment on open task: %s", out)
+	}
+}
+
+func withOutcome(o domain.Outcome) func(*domain.TaskView) {
+	return func(tv *domain.TaskView) { tv.Outcome = o }
+}

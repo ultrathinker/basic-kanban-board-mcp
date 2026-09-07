@@ -127,6 +127,9 @@ type TaskCard struct {
 	ColumnName string
 	Updated    time.Time
 	URL        string // /t/{KEY}
+	// Outcome is the task's epistemic verdict, displayed only when not the
+	// default ("open"). Empty string == open == render nothing on the card.
+	Outcome domain.Outcome
 }
 
 // EstimateView is the pill: "2h", "30m".
@@ -185,6 +188,11 @@ type DrawerTask struct {
 	CreatedBy string
 	UpdatedAt string
 	UpdatedBy string
+	// Outcome is the task's epistemic verdict ("open", "holds", "refuted",
+	// "superseded", "moot"). Empty == open; the drawer always renders it
+	// (it is a status) and the card only renders it when non-open.
+	Outcome    domain.Outcome
+	Conclusion string // post-hoc takeaway; empty == hide
 }
 
 // TaskRef is a small reference used in lists (blockers, subtasks, ...).
@@ -404,6 +412,7 @@ func viewCard(projectKey string, t domain.TaskView) TaskCard {
 		ColumnName:    t.ColumnName,
 		Updated:       t.UpdatedAt,
 		URL:           "/t/" + url.PathEscape(t.Key),
+		Outcome:       t.Outcome,
 	}
 	if t.DueAt != nil {
 		c.Due = relTimeFuture(*t.DueAt, now)

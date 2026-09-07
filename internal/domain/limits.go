@@ -5,15 +5,19 @@ import "time"
 // Hard limits. These are contract, not taste: they appear in the published JSON
 // Schemas and every layer enforces the same numbers.
 const (
-	MaxTitleLen       = 200
-	MaxBodyBytes      = 64 * 1024
-	MaxNoteBytes      = 16 * 1024
-	MaxMetadataBytes  = 16 * 1024
-	MaxTags           = 20
-	MaxTagLen         = 40
-	MaxAcceptance     = 50
-	MaxAcceptanceText = 500
-	MaxAssigneeLen    = 80
+	MaxTitleLen  = 200
+	MaxBodyBytes = 64 * 1024
+	MaxNoteBytes = 16 * 1024
+	// MaxConclusionBytes bounds the post-hoc takeaway. Smaller than a body: a
+	// conclusion is a verdict, not a document — if it needs more room the body
+	// or a note is the right place.
+	MaxConclusionBytes = 16 * 1024
+	MaxMetadataBytes   = 16 * 1024
+	MaxTags            = 20
+	MaxTagLen          = 40
+	MaxAcceptance      = 50
+	MaxAcceptanceText  = 500
+	MaxAssigneeLen     = 80
 
 	MaxBatchTasks   = 100 // task_create / task_update / task_remove
 	MaxGetKeys      = 50  // task_get

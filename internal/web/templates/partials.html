@@ -39,6 +39,7 @@
     {{if .Card.SubTotal}}<span class="sub-progress {{if eq .Card.SubDone .Card.SubTotal}}done{{end}}">{{.Card.SubDone}}/{{.Card.SubTotal}}</span>{{end}}
     {{range .Card.Tags}}<span class="tag">#{{.}}</span>{{end}}
     {{if .Card.Blocked}}<span class="mark" title="Blocked by {{commaKeys .Card.BlockedBy}}">blocked</span>{{end}}
+    {{if and .Card.Outcome (ne .Card.Outcome "open")}}<span class="outcome tag" title="Outcome: {{.Card.Outcome}}">{{.Card.Outcome}}</span>{{end}}
     {{if .Card.Overdue}}<span class="mark">overdue</span>{{else if .Card.Due}}<span class="text-subtle">due {{.Card.Due}}</span>{{end}}
     {{if .Card.Age}}<span class="age" title="time in this column">{{.Card.Age}}</span>{{end}}
   </div>

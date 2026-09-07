@@ -424,7 +424,14 @@ type TaskPatch struct {
 	Actual   FieldFloat
 	Assignee FieldString // set or explicitly clear
 	Reviewer FieldString // set or explicitly clear; who checks the work
-	DueAt    FieldTime   // set or explicitly clear
+	// Outcome sets the epistemic status of the result (open/holds/refuted/
+	// superseded/moot). A nil pointer leaves it unchanged; setting it to
+	// domain.OutcomeOpen is how a caller resets a task back to "not judged".
+	Outcome *domain.Outcome
+	// Conclusion replaces the post-hoc takeaway text. nil leaves it unchanged;
+	// an empty string clears it. Distinct from Body and from Note.
+	Conclusion *string
+	DueAt      FieldTime // set or explicitly clear
 
 	Tags       []string // replace; mutually exclusive with TagsAdd/TagsRemove
 	TagsAdd    []string

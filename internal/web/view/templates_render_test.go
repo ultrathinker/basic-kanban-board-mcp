@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ultrathinker/basic-kanban-board-mcp/internal/domain"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/web/templates"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/web/view"
 )
@@ -252,6 +253,47 @@ func renderCases() []renderCase {
 			data:     view.SamplePage("Admin", "admin", view.SampleEmptyAdminModel()),
 			wants:    []string{"No tokens.", "No projects."},
 			notWants: []string{"<no value>"},
+		},
+
+		{
+			name:     "card/outcome-non-open-shows-badge",
+			template: "card",
+			data: map[string]any{
+				"Card": view.TaskCard{
+					Key:        "BMB-22",
+					Title:      "Calibrate estimator",
+					Type:       domain.TypeTask,
+					Version:    3,
+					ColumnName: "Done",
+					URL:        "/t/BMB-22",
+					Outcome:    domain.OutcomeRefuted,
+				},
+				"CSRF":    "t",
+				"Columns": board.Columns,
+			},
+			// A non-open outcome earns a monochrome badge next to the tags.
+			wants:    []string{"refuted", `class="outcome tag"`},
+			notWants: []string{"<no value>"},
+		},
+		{
+			name:     "card/outcome-open-omits-badge",
+			template: "card",
+			data: map[string]any{
+				"Card": view.TaskCard{
+					Key:        "BMB-23",
+					Title:      "Fresh task",
+					Type:       domain.TypeTask,
+					Version:    1,
+					ColumnName: "Backlog",
+					URL:        "/t/BMB-23",
+					Outcome:    domain.OutcomeOpen,
+				},
+				"CSRF":    "t",
+				"Columns": board.Columns,
+			},
+			// Open is the default and is never rendered on the card.
+			wants:    []string{`data-task-key="BMB-23"`},
+			notWants: []string{"outcome tag", "<no value>"},
 		},
 
 		// --- fragments, rendered on their own the way a swap would ---------

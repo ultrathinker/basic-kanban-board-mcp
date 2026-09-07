@@ -149,6 +149,12 @@ func renderTask(sb *strings.Builder, tv *domain.TaskView, kind domain.Kind, now 
 	if tv.Reviewer != nil && *tv.Reviewer != "" {
 		parts = append(parts, "rev "+*tv.Reviewer)
 	}
+	// Outcome is a sparse segment: the default ("open") is omitted so the
+	// common case does not grow the budget. Compact deliberately does NOT
+	// carry conclusion — that is the detail view's job.
+	if tv.Outcome != "" && tv.Outcome != domain.OutcomeOpen {
+		parts = append(parts, "out "+string(tv.Outcome))
+	}
 	if tv.ClaimedBy != nil {
 		var rem *time.Duration
 		if tv.LeaseRemain != nil && *tv.LeaseRemain > 0 {

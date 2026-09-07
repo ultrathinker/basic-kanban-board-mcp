@@ -158,6 +158,16 @@ func ValidateBody(s string) error {
 	return nil
 }
 
+// ValidateConclusion bounds the post-hoc takeaway text.
+func ValidateConclusion(s string) error {
+	if len(s) > MaxConclusionBytes {
+		return Invalid("conclusion",
+			fmt.Sprintf("conclusion is %d bytes, the limit is %d", len(s), MaxConclusionBytes),
+			"A conclusion is a verdict; put longer detail in the body or a note.")
+	}
+	return nil
+}
+
 func ValidateAcceptance(items []AcceptanceItem) error {
 	if len(items) > MaxAcceptance {
 		return Invalid("acceptance",

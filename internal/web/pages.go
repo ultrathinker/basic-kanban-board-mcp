@@ -167,6 +167,7 @@ func (w *Web) handleDrawer(rw http.ResponseWriter, r *http.Request) {
 			Tags: t.Tags, Assignee: derefStr(t.Assignee), Version: t.Version,
 			CreatedAt: t.CreatedAt.Format(time.RFC3339), CreatedBy: t.CreatedBy,
 			UpdatedAt: t.UpdatedAt.Format(time.RFC3339), UpdatedBy: t.UpdatedBy,
+			Outcome: t.Outcome, Conclusion: t.Conclusion,
 		},
 		Blockers:     blockers,
 		Blocking:     blocking,

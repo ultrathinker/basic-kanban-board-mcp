@@ -68,6 +68,8 @@ type taskPatchIn struct {
 	Actual     *float64 `json:"actual,omitempty" jsonschema:"effort actually spent, same unit as estimate; send null to clear"`
 	Assignee   *string  `json:"assignee,omitempty" jsonschema:"send null to clear"`
 	Reviewer   *string  `json:"reviewer,omitempty" jsonschema:"who checks the work; send null to clear"`
+	Outcome    *string  `json:"outcome,omitempty" jsonschema:"where the task's result stands, independent of its column — a Done task can still be refuted or moot; open = not yet judged. Use one of: open, holds, refuted, superseded, moot."`
+	Conclusion *string  `json:"conclusion,omitempty" jsonschema:"post-hoc takeaway / verdict, distinct from body and from note; empty string clears it"`
 	DueAt      *string  `json:"due_at,omitempty" jsonschema:"RFC3339; send null to clear"`
 
 	Tags       []string `json:"tags,omitempty" jsonschema:"replace the whole tag set; mutually exclusive with tags_add/tags_remove"`
@@ -128,6 +130,11 @@ func taskUpdateTool() *gomcp.Tool {
 	setMaxLen(prop(item, "body"), domain.MaxBodyBytes)
 	setMaxLen(prop(item, "assignee"), domain.MaxAssigneeLen)
 	setMaxLen(prop(item, "note"), domain.MaxNoteBytes)
+	setMaxLen(prop(item, "conclusion"), domain.MaxConclusionBytes)
+	outcomeProp := prop(item, "outcome")
+	if outcomeProp != nil {
+		setEnum(outcomeProp, outcomeNames()...)
+	}
 	tags := prop(item, "tags")
 	setMaxItems(tags, domain.MaxTags)
 	setMaxLen(tags.Items, domain.MaxTagLen)
@@ -293,6 +300,14 @@ func taskPatchToService(idx int, in taskPatchIn, raw map[string]json.RawMessage)
 		}
 		out.Priority = &p
 	}
+	if in.Outcome != nil {
+		o, derr := parseOutcomeName(fmt.Sprintf("patches[%d].outcome", idx), *in.Outcome)
+		if derr != nil {
+			return service.TaskPatch{}, derr
+		}
+		out.Outcome = &o
+	}
+	out.Conclusion = in.Conclusion
 	if len(in.Acceptance) > 0 {
 		items := make([]domain.AcceptanceItem, len(in.Acceptance))
 		for i, a := range in.Acceptance {

@@ -190,6 +190,7 @@ func (s *svc) TaskCreate(ctx context.Context, a Actor, in TaskCreateInput) (*Tas
 				Tags:       append([]string(nil), p.new.Tags...),
 				Assignee:   p.new.Assignee,
 				Reviewer:   p.new.Reviewer,
+				Outcome:    domain.OutcomeOpen,
 				Acceptance: buildAcceptance(p.new.Acceptance),
 				DueAt:      p.new.DueAt,
 				Metadata:   p.new.Metadata,
@@ -589,6 +590,7 @@ func isReplacementPatch(p TaskPatch) bool {
 		p.Actual.Set || p.Actual.Clear ||
 		p.Assignee.Set || p.Assignee.Clear ||
 		p.Reviewer.Set || p.Reviewer.Clear ||
+		p.Outcome != nil || p.Conclusion != nil ||
 		p.BodyAppend != nil ||
 		p.DueAt.Set || p.DueAt.Clear ||
 		len(p.Tags) > 0 ||
@@ -775,6 +777,21 @@ func (s *svc) applyUpdate(
 		contentChanged = true
 	} else if patch.Reviewer.Clear {
 		t.Reviewer = nil
+		contentChanged = true
+	}
+	if patch.Outcome != nil {
+		if !patch.Outcome.Valid() {
+			return nil, domain.Invalid("outcome", fmt.Sprintf("outcome %q is invalid", *patch.Outcome),
+				"Use one of: open, holds, refuted, superseded, moot.")
+		}
+		t.Outcome = *patch.Outcome
+		contentChanged = true
+	}
+	if patch.Conclusion != nil {
+		if err := domain.ValidateConclusion(*patch.Conclusion); err != nil {
+			return nil, err
+		}
+		t.Conclusion = *patch.Conclusion
 		contentChanged = true
 	}
 	if len(patch.Tags) > 0 {

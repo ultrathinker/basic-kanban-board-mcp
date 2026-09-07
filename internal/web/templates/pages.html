@@ -51,6 +51,12 @@
     {{- else if priorityBadge .Task.Priority}}
       <span class="prio-label">{{priorityBadge .Task.Priority}}</span>
     {{- end}}
+    {{- /* Outcome is always shown on the drawer — it is the task's verdict,
+         not a decoration — but with the open default rendered as plain text
+         rather than a badge, so the common case is one short word. */ -}}
+    {{- if .Task.Outcome}}
+      <span class="outcome tag" title="Outcome">outcome: {{.Task.Outcome}}</span>
+    {{- end}}
     <span class="mono text-subtle">v{{.Task.Version}}</span>
     {{if .Task.Lease}}
       <span class="lease {{.Task.Lease.State}}" title="Lease held by {{.Task.Lease.Actor}}">
@@ -74,6 +80,13 @@
   <section class="body section" aria-label="Task body">
     {{if .MarkdownHTML}}{{.MarkdownHTML}}{{else}}<p class="text-subtle">No description.</p>{{end}}
   </section>
+
+  {{if .Task.Conclusion}}
+  <section class="section" aria-label="Conclusion">
+    <h2>Conclusion</h2>
+    <p class="text-muted mono" style="white-space:pre-wrap">{{.Task.Conclusion}}</p>
+  </section>
+  {{end}}
 
   {{if hasAny .Acceptance}}
   <section class="section" aria-label="Acceptance criteria">

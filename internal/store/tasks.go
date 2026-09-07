@@ -71,12 +71,14 @@ func (r *taskRepo) Create(tx Tx, t *domain.Task) error {
 		INSERT INTO tasks(
 			id, key, project_id, column_id, parent_id, rank,
 			title, body, type, priority, estimate, actual, tags, assignee, reviewer,
+			outcome, conclusion,
 			claimed_by, claimed_at, claim_expires_at,
 			acceptance, due_at, column_entered_at, started_at, done_at,
 			version, metadata, created_at, updated_at, created_by, updated_by, archived_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		t.ID, t.Key, t.ProjectID, t.ColumnID, nullableIDPtr(t.ParentID), t.Rank,
 		t.Title, t.Body, string(t.Type), int(t.Priority), nullableFloat(t.Estimate), nullableFloat(t.Actual), tagsJSON, nullString(t.Assignee), nullString(t.Reviewer),
+		string(defaultOutcome(t.Outcome)), t.Conclusion,
 		nullString(t.ClaimedBy), nullableTime(t.ClaimedAt), nullableTime(t.ClaimExpiresAt),
 		acceptanceJSON, nullableTime(t.DueAt), formatTime(t.ColumnEnteredAt), nullableTime(t.StartedAt), nullableTime(t.DoneAt),
 		t.Version, metadataJSON,
@@ -169,11 +171,13 @@ func (r *taskRepo) Update(tx Tx, t *domain.Task, ifVersion *int) error {
 	res, err := tw.tx.ExecContext(tw.ctx(), `
 		UPDATE tasks SET
 			title=?, body=?, type=?, priority=?, estimate=?, actual=?, tags=?, assignee=?, reviewer=?,
+			outcome=?, conclusion=?,
 			parent_id=?, acceptance=?, due_at=?, metadata=?,
 			version=version+1, updated_at=?, updated_by=?
 		WHERE id = ?`,
 		t.Title, t.Body, string(t.Type), int(t.Priority), nullableFloat(t.Estimate), nullableFloat(t.Actual),
 		tagsJSON, nullString(t.Assignee), nullString(t.Reviewer),
+		string(defaultOutcome(t.Outcome)), t.Conclusion,
 		nullableIDPtr(t.ParentID),
 		acceptanceJSON, nullableTime(t.DueAt), metadataJSON,
 		formatTime(t.UpdatedAt), t.UpdatedBy, t.ID,
@@ -723,6 +727,7 @@ func (r *taskRepo) renumberColumnTx(tw *txWrap, columnID string) error {
 // scanTaskRow / scanTaskRows together.
 const taskColumns = `id, key, project_id, column_id, parent_id, rank,
 title, body, type, priority, estimate, actual, tags, assignee, reviewer,
+outcome, conclusion,
 claimed_by, claimed_at, claim_expires_at,
 acceptance, due_at, column_entered_at, started_at, done_at,
 version, metadata, created_at, updated_at, created_by, updated_by, archived_at`
@@ -754,6 +759,7 @@ func taskScanArgs(t *domain.Task, s *scanTemps) []any {
 	return []any{
 		&t.ID, &t.Key, &t.ProjectID, &t.ColumnID, &s.parent, &t.Rank,
 		&t.Title, &t.Body, &t.Type, &t.Priority, &s.estimate, &s.actual, &s.tags, &s.assignee, &s.reviewer,
+		&t.Outcome, &t.Conclusion,
 		&s.claimedBy, &s.claimedAt, &s.claimExpiresAt,
 		&s.acceptance, &s.dueAt, &s.columnEnteredAt, &s.startedAt, &s.doneAt,
 		&t.Version, &s.metadata, &s.createdAt, &s.updatedAt, &t.CreatedBy, &t.UpdatedBy, &s.archivedAt,
@@ -904,6 +910,16 @@ func nullableFloat(f *float64) any {
 		return nil
 	}
 	return *f
+}
+
+// defaultOutcome guards the NOT NULL / CHECK on the outcome column: a task
+// value the service left as the zero string would otherwise violate the CHECK.
+// Persisting is the last line of defence, so an unset outcome becomes "open".
+func defaultOutcome(o domain.Outcome) domain.Outcome {
+	if o == "" {
+		return domain.OutcomeOpen
+	}
+	return o
 }
 
 // normalizeKeysForLookup trims and upper-cases caller-supplied keys for

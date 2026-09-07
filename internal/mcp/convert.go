@@ -90,6 +90,8 @@ type taskOut struct {
 	Tags                  []string        `json:"tags,omitempty"`
 	Assignee              *string         `json:"assignee,omitempty"`
 	Reviewer              *string         `json:"reviewer,omitempty"`
+	Outcome               string          `json:"outcome,omitempty"`
+	Conclusion            string          `json:"conclusion,omitempty"`
 	ClaimedBy             *string         `json:"claimed_by,omitempty"`
 	ClaimExpiresAt        *string         `json:"claim_expires_at,omitempty"`
 	LeaseRemainingSeconds *int            `json:"lease_remaining_seconds,omitempty"`
@@ -180,6 +182,12 @@ func taskViewOut(tv *domain.TaskView, proj service.Projection) taskOut {
 	if proj.Has(service.IncludeLinks) {
 		out.Blocks = tv.Blocks
 	}
+	// Outcome is the task's epistemic verdict; the default ("open") is hidden
+	// so a routine read on a fresh task does not have to mention it.
+	if tv.Outcome != "" && tv.Outcome != domain.OutcomeOpen {
+		out.Outcome = string(tv.Outcome)
+	}
+	out.Conclusion = tv.Conclusion
 	return out
 }
 
@@ -282,6 +290,29 @@ func parsePriorityName(field, s string) (domain.Priority, *domain.Error) {
 			"Use one of: none, low, medium, high, critical.")
 	}
 	return p, nil
+}
+
+// parseOutcomeName converts a wire-form outcome name into the domain value,
+// naming the offending field so a validation error is actionable.
+func parseOutcomeName(field, s string) (domain.Outcome, *domain.Error) {
+	o, ok := domain.ParseOutcome(s)
+	if !ok {
+		return domain.OutcomeOpen, domain.Invalid(field,
+			fmt.Sprintf("outcome %q is not valid", s),
+			"Use one of: open, holds, refuted, superseded, moot.")
+	}
+	return o, nil
+}
+
+// outcomeNames is the enum published in every schema that accepts an outcome
+// name, built from domain.AllOutcomes so the wire enum can never drift from
+// the internal representation.
+func outcomeNames() []string {
+	names := make([]string, len(domain.AllOutcomes))
+	for i, o := range domain.AllOutcomes {
+		names[i] = string(o)
+	}
+	return names
 }
 
 // priorityNames is the enum published in every schema that accepts or
