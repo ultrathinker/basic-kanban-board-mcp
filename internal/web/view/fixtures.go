@@ -108,7 +108,12 @@ func SampleEmptyOverviewModel() OverviewModel {
 
 // SampleEmptyAdminModel is /admin with no tokens and no projects.
 func SampleEmptyAdminModel() AdminModel {
-	return AdminModel{ExportURL: "/admin/export", BackupURL: "/admin/backup"}
+	return AdminModel{
+		ExportURL:     "/admin/export",
+		BackupURL:     "/admin/backup",
+		TokensPager:   Pager{Page: 1, PageCount: 1, ParamName: "tok_page", BasePath: "/admin"},
+		ProjectsPager: Pager{Page: 1, PageCount: 1, ParamName: "proj_page", BasePath: "/admin"},
+	}
 }
 
 // SamplePage wraps a model in the Page envelope the layout binds to. Every
@@ -353,8 +358,10 @@ headers = { "Authorization" = "Bearer ${KANBAN_TOKEN}" }`, baseURL+"/mcp"),
 // SampleAdminModel returns the /admin page.
 func SampleAdminModel() AdminModel {
 	return AdminModel{
-		ExportURL: "/admin/export",
-		BackupURL: "/admin/backup",
+		ExportURL:     "/admin/export",
+		BackupURL:     "/admin/backup",
+		TokensPager:   Pager{Page: 1, PageCount: 1, Total: 4, ParamName: "tok_page", BasePath: "/admin"},
+		ProjectsPager: Pager{Page: 1, PageCount: 1, Total: 3, ParamName: "proj_page", BasePath: "/admin"},
 		Tokens: []AdminToken{
 			{Name: "admin", Scope: "admin", ProjectKeys: "*", CreatedAt: "2026-09-01 09:00", LastUsed: "2026-09-06 11:55", Active: true},
 			{Name: "claude@rog", Scope: "write", ProjectKeys: "BMB", CreatedAt: "2026-09-03 22:14", LastUsed: "2026-09-06 11:30", Active: true},

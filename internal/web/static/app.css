@@ -454,6 +454,28 @@ select, .field input, .field textarea {
 @keyframes feed-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
 .activity .row.new { animation: feed-in 180ms ease-out both; }
 
+/* --- pager (server pagination under /admin tables) ---------------------- */
+/* Same vocabulary as .row: a quiet flex strip with hairline-friendly tokens.
+   The inert edges (when Prev is unreachable or Next is unreachable on the
+   last page) render as <span> with aria-disabled, and they read as muted
+   without needing a separate class — the same word is just dimmer. */
+.pager {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0.75rem 0 0;
+  font-size: var(--fs-2);
+  color: var(--ink-muted);
+}
+.pager a {
+  color: var(--ink);
+  text-decoration: none;
+  border-bottom: 1px solid var(--ink);
+}
+.pager a:hover { color: var(--ink-muted); border-bottom-color: var(--ink-muted); }
+.pager [aria-disabled="true"] { color: var(--ink-subtle); cursor: not-allowed; }
+.pager-status { font-variant-numeric: tabular-nums; }
+
 /* --- overview ------------------------------------------------------------ */
 .project-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); border-top: 1px solid var(--rule); }
 .project-cell { padding: 0.9rem 1rem 1.1rem; border-left: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }

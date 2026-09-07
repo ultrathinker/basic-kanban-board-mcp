@@ -345,6 +345,20 @@
     </tbody>
   </table>
 
+  {{/* Server pagination: only render the control row when there is more
+       than one page. Prev/Next are real links on the edges and inert
+       spans off the edges, so the same block reads right whether the
+       caller is sitting on page 1 or page N. The URLs come from the
+       handler; they already carry the other page parameter so paging
+       tokens does not reset projects (and vice versa). */}}
+  {{if gt .TokensPager.PageCount 1}}
+  <nav class="pager" aria-label="Tokens pages">
+    {{if .TokensPager.HasPrev}}<a rel="prev" href="{{.TokensPager.PrevURL}}">← Prev</a>{{else}}<span aria-disabled="true">← Prev</span>{{end}}
+    <span class="pager-status mono">Page {{.TokensPager.Page}} of {{.TokensPager.PageCount}} · {{.TokensPager.Total}} total</span>
+    {{if .TokensPager.HasNext}}<a rel="next" href="{{.TokensPager.NextURL}}">Next →</a>{{else}}<span aria-disabled="true">Next →</span>{{end}}
+  </nav>
+  {{end}}
+
   {{/* The create form lives outside the table on purpose: a <form> is not a
        permitted child of <tr>, and browsers hoist it out of the table,
        which silently detached every input from the form. */}}
@@ -389,6 +403,14 @@
       {{end}}
     </tbody>
   </table>
+
+  {{if gt .ProjectsPager.PageCount 1}}
+  <nav class="pager" aria-label="Projects pages">
+    {{if .ProjectsPager.HasPrev}}<a rel="prev" href="{{.ProjectsPager.PrevURL}}">← Prev</a>{{else}}<span aria-disabled="true">← Prev</span>{{end}}
+    <span class="pager-status mono">Page {{.ProjectsPager.Page}} of {{.ProjectsPager.PageCount}} · {{.ProjectsPager.Total}} total</span>
+    {{if .ProjectsPager.HasNext}}<a rel="next" href="{{.ProjectsPager.NextURL}}">Next →</a>{{else}}<span aria-disabled="true">Next →</span>{{end}}
+  </nav>
+  {{end}}
 </section>
 {{end}}
 {{template "layout-foot" .}}

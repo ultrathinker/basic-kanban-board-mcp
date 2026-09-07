@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"html/template"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -288,12 +289,35 @@ type AgentSnippet struct {
 	Format      string // "json" | "toml" | "text"
 }
 
+// Pager is the prev/next control block rendered under a server-paginated
+// table. The links are pre-built by the handler so the template never has
+// to call into URL encoding — every URL already encodes the other
+// parameter at its current value (so paging tokens does not reset the
+// projects page, and vice versa).
+//
+// PageCount is always at least 1: an empty table is a single empty page,
+// not zero pages, so the math stays smooth when the caller slices an
+// all-page from an empty list.
+type Pager struct {
+	Page      int
+	PageCount int
+	Total     int
+	HasPrev   bool
+	HasNext   bool
+	PrevURL   string
+	NextURL   string
+	ParamName string // "tok_page" | "proj_page", for aria-label etc.
+	BasePath  string // "/admin", used to build the href root
+}
+
 // AdminModel is /admin.
 type AdminModel struct {
-	Tokens    []AdminToken
-	Projects  []AdminProject
-	ExportURL string
-	BackupURL string
+	Tokens        []AdminToken
+	Projects      []AdminProject
+	TokensPager   Pager
+	ProjectsPager Pager
+	ExportURL     string
+	BackupURL     string
 }
 
 // AdminToken is one row in the tokens table.
@@ -576,3 +600,78 @@ func commaKeys(keys []string) string {
 // priorityName is the canonical name used by compact/UI. Exported so the
 // MCP package can use it from a single source of truth if it ever needs to.
 func PriorityName(p domain.Priority) string { return priorityLabel(p) }
+
+// NewPager computes the (page, pageCount, slice bounds) for a server-side
+// paginated table. It is its own helper so the same clamp math runs in the
+// handler — pure function plus thin I/O caller — and the result is easy to
+// test in isolation.
+//
+// total is the unfiltered row count; pageSize must be > 0. page is read
+// from the query string and clamped to [1, pageCount]; garbage input
+// (non-numeric, zero, negative) maps to page 1. PageCount is at least 1
+// even for empty tables, so an "empty" view is one empty page, not zero
+// pages — the control block is suppressed on PageCount == 1 anyway.
+//
+// preserve is the set of other query parameters whose current value must
+// be echoed in PrevURL/NextURL — the brief's rule that paging one table
+// must not reset the other. ParamName is the query parameter the caller
+// reads (e.g. "tok_page"); Page is rendered into it as a decimal. An
+// empty/nil preserve map is allowed (no carry-over); an empty ParamName
+// or empty BasePath returns the zero Pager with an empty URL — there is
+// no useful href to build, so the caller should not render a control in
+// that case either.
+func NewPager(basePath, paramName string, total, pageSize, page int, preserve url.Values) (Pager, int, int) {
+	p := Pager{Page: 1, PageCount: 1, Total: total, ParamName: paramName, BasePath: basePath}
+	if pageSize <= 0 {
+		return p, 0, 0
+	}
+	// Empty table: one page, nothing to slice. The caller suppresses the
+	// control block via PageCount == 1 so the user never sees a pager
+	// they cannot use.
+	if total <= 0 {
+		return p, 0, 0
+	}
+	pageCount := (total + pageSize - 1) / pageSize
+	if page < 1 {
+		page = 1
+	}
+	if page > pageCount {
+		page = pageCount
+	}
+	lo := (page - 1) * pageSize
+	hi := lo + pageSize
+	if hi > total {
+		hi = total
+	}
+	p.Page = page
+	p.PageCount = pageCount
+	p.HasPrev = page > 1
+	p.HasNext = page < pageCount
+	if paramName == "" || basePath == "" {
+		return p, lo, hi
+	}
+	p.PrevURL = buildPageURL(basePath, paramName, page-1, preserve)
+	p.NextURL = buildPageURL(basePath, paramName, page+1, preserve)
+	return p, lo, hi
+}
+
+// buildPageURL encodes one pager link while preserving the caller-supplied
+// query parameters (so paging tokens does not stomp proj_page and vice
+// versa). page <= 0 omits the parameter altogether — the base path with
+// the other parameters is the natural "back to first page" link, and a
+// stale ?tok_page=0 is just noise.
+func buildPageURL(basePath, paramName string, page int, preserve url.Values) string {
+	q := url.Values{}
+	for k, vs := range preserve {
+		for _, v := range vs {
+			q.Add(k, v)
+		}
+	}
+	if page >= 1 {
+		q.Set(paramName, strconv.Itoa(page))
+	}
+	if len(q) == 0 {
+		return basePath
+	}
+	return basePath + "?" + q.Encode()
+}

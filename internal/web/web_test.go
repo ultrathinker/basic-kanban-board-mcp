@@ -5,6 +5,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -127,10 +128,22 @@ func (s *authMemTokenStore) GetByName(_ context.Context, name string) (*domain.T
 	return nil, domain.NotFound("token", name)
 }
 func (s *authMemTokenStore) List(_ context.Context) ([]*domain.Token, error) {
+	// Sorted by name so callers get a stable order — Go map iteration is
+	// not stable across processes, and a few of the admin page's
+	// assertions (e.g. "page 2 must include the last token") read as
+	// flake if the row order is random. The real store sorts via SQL
+	// ORDER BY so this also keeps the test honest against production.
+	keys := make([]string, 0, len(s.tokens))
+	for k := range s.tokens {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
 	out := make([]*domain.Token, 0, len(s.tokens))
-	for _, t := range s.tokens {
-		cp := *t
-		out = append(out, &cp)
+	for _, k := range keys {
+		if t := s.tokens[k]; t != nil {
+			cp := *t
+			out = append(out, &cp)
+		}
 	}
 	return out, nil
 }
