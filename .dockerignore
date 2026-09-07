@@ -1,0 +1,18 @@
+# Keep the Docker build context small and free of local/VCS junk. The build
+# stage does `COPY . .` then `go build`, so it needs the Go sources and the
+# embedded asset trees under internal/web — but never these:
+.git
+.github
+bin/
+dist/
+data/
+.tools/
+.agentlogs/
+*.exe
+/kanban
+coverage.out
+*.cover
+*.log
+*.db
+*.sqlite
+*.sqlite3

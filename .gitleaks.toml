@@ -1,0 +1,19 @@
+# gitleaks configuration.
+#
+# Extends the built-in rule set, then allowlists the documentation example
+# tokens. The kbn_… strings in docs/ are illustrative placeholders, not live
+# credentials, so `gitleaks detect` stays clean for contributors and CI.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Documentation example tokens (kbn_… placeholders)"
+paths = [
+  '''docs/AGENT-SETUP\.md''',
+  '''docs/DEPLOY\.md''',
+  '''docs/reviews/.*\.md''',
+  '''README\.md''',
+]
+regexes = [
+  '''kbn_[A-Za-z0-9]{16,}''',
+]

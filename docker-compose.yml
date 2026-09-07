@@ -1,0 +1,24 @@
+# Minimal single-service deployment. `docker compose up` and open
+# http://localhost:8080. The board data persists in the named volume.
+#
+# For a public deployment, put a TLS-terminating reverse proxy in front and set
+# KANBAN_BASE_URL=https://your-host; do not expose plain HTTP to the internet.
+services:
+  kanban:
+    image: ghcr.io/ultrathinker/basic-kanban-board-mcp:latest
+    # To build from source instead of pulling the image, comment out `image:`
+    # above and uncomment:
+    # build: .
+    ports:
+      - "${KANBAN_PORT:-8080}:8080"
+    volumes:
+      - kanban-data:/data
+    environment:
+      # The image binds 0.0.0.0 (a loopback bind is unreachable through -p) and
+      # enables plain HTTP for local/eval use. Terminate TLS at a proxy for a
+      # real deployment.
+      KANBAN_INSECURE_HTTP: "true"
+    restart: unless-stopped
+
+volumes:
+  kanban-data:
