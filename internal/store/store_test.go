@@ -1050,7 +1050,7 @@ func TestBackup_OpensAndHasSameRows(t *testing.T) {
 	want := []string{
 		seedTask(t, ts, p, cols["Backlog"], "a", "alice").Key,
 		seedTask(t, ts, p, cols["Doing"], "b", "alice").Key,
-		seedTask(t, ts, p, cols["Review"], "c", "alice").Key,
+		seedTask(t, ts, p, cols["Doing"], "c", "alice").Key,
 		seedTask(t, ts, p, cols["Done"], "d", "alice").Key,
 	}
 	backupPath := filepath.Join(ts.dir, "backup.db")

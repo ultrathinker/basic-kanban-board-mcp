@@ -155,6 +155,19 @@ func TestTaskUpdate_MoveOutOfDoneArrivesUnclaimedForNext(t *testing.T) {
 // claimed task between active columns (Doing -> Review) is still work.
 func TestTaskUpdate_MoveWithinActiveColumnsKeepsLease(t *testing.T) {
 	env := openTestEnv(t)
+	// The default board has a single active column; this test needs two, so it
+	// declares its own Review column (the product default is three columns).
+	if _, err := env.svc.ProjectUpsert(context.Background(), env.actor, ProjectUpsertInput{
+		Mode: UpsertUpdate, Key: env.proj.Key, IfVersion: intPtrLocal(projectVersion(t, env)),
+		Columns: []ColumnSpec{
+			{Name: "Backlog", Kind: domain.KindBacklog},
+			{Name: "Doing", Kind: domain.KindActive, WIPLimit: intPtrLocal(3)},
+			{Name: "Review", Kind: domain.KindActive},
+			{Name: "Done", Kind: domain.KindDone},
+		},
+	}); err != nil {
+		t.Fatalf("declare Review column: %v", err)
+	}
 	task := makeBacklogTask(t, env, "still working")
 	startTask(t, env, task.Key)
 
@@ -383,13 +396,13 @@ func TestProjectUpsert_HerdOutOfDoneReleasesLease(t *testing.T) {
 		Key:           env.proj.Key,
 		IfVersion:     intPtrLocal(projectVersion(t, env)),
 		Columns:       specsKeeping("Done"),
-		RemoveColumns: []RemoveColumn{{Name: "Done", MoveTasksTo: "Review"}},
+		RemoveColumns: []RemoveColumn{{Name: "Done", MoveTasksTo: "Doing"}},
 	}); err != nil {
 		t.Fatalf("project_upsert: %v", err)
 	}
 	fresh := freshView(t, env, task.Key)
-	if fresh.ColumnName != "Review" {
-		t.Fatalf("ColumnName = %q, want Review after herding", fresh.ColumnName)
+	if fresh.ColumnName != "Doing" {
+		t.Fatalf("ColumnName = %q, want Doing after herding", fresh.ColumnName)
 	}
 	assertNoLease(t, "herded out of Done", fresh)
 }

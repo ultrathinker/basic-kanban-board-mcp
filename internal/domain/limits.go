@@ -89,6 +89,15 @@ const (
 )
 
 // DefaultColumns is what project_upsert creates when no columns are given.
+//
+// Three columns, not four: Backlog / Doing / Done is the legible minimum and
+// matches the agent loop exactly — task_next(start) moves into the first active
+// column and task_update(column:"Done") finishes. A Review column earns no
+// default space (task_next never routes into it, strict_done triggers on the
+// done column, it carries no WIP or special semantics, and the reviewer field
+// is column-independent), so it is left to whoever wants it: project_upsert
+// takes arbitrary columns per project. Existing boards keep their own columns —
+// this is only the default for a NEW project created without a column list.
 var DefaultColumns = []struct {
 	Name     string
 	Kind     Kind
@@ -96,7 +105,6 @@ var DefaultColumns = []struct {
 }{
 	{Name: "Backlog", Kind: KindBacklog},
 	{Name: "Doing", Kind: KindActive, WIPLimit: intPtr(3)},
-	{Name: "Review", Kind: KindActive},
 	{Name: "Done", Kind: KindDone},
 }
 

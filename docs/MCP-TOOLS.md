@@ -578,7 +578,7 @@ For `estimate`, `assignee`, `due_at`, and `parent`:
     {
       "key": "BMB-14",
       "if_version": 7,
-      "column": "Review",
+      "column": "Doing",
       "note": "PR #42 opened with the checkpoint fix."
     }
   ]
@@ -596,7 +596,7 @@ For `estimate`, `assignee`, `due_at`, and `parent`:
         "task": {
           "key": "BMB-14",
           "project": "BMB",
-          "column": "Review",
+          "column": "Doing",
           "column_kind": "active",
           "type": "bug",
           "priority": "high",
@@ -783,8 +783,11 @@ Creates or modifies project definition, workflow columns, and board-level settin
 When `columns` is omitted during `mode: "create"`, the project is initialized with:
 - **Backlog** (`kind: "backlog"`)
 - **Doing** (`kind: "active"`, `wip_limit: 3`)
-- **Review** (`kind: "active"`)
 - **Done** (`kind: "done"`)
+
+Three columns is the default on purpose — it is the legible minimum and matches
+the agent loop (`task_next(start)` → Doing → `task_update(column:"Done")`). Add a
+Review column (or any other) explicitly via `columns` when you want one.
 
 #### Example Call & Response
 
@@ -812,7 +815,6 @@ When `columns` is omitted during `mode: "create"`, the project is initialized wi
     "columns": [
       { "name": "Backlog", "kind": "backlog" },
       { "name": "Doing", "kind": "active", "wip_limit": 3 },
-      { "name": "Review", "kind": "active" },
       { "name": "Done", "kind": "done" }
     ]
   },

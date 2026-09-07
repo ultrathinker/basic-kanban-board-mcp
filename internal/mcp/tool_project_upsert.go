@@ -91,7 +91,7 @@ var projectUpsertDescription = "Create or update one project: identity, columns 
 	"Not sure which one applies? Call board_get with no `project` first: every project you can reach comes back with its key and version."
 
 // defaultColumnSummary renders domain.DefaultColumns the way the tool
-// description quotes them, e.g. `Backlog, Doing (WIP 3), Review, Done`.
+// description quotes them, e.g. `Backlog, Doing (WIP 3), Done`.
 func defaultColumnSummary() string {
 	parts := make([]string, 0, len(domain.DefaultColumns))
 	for _, c := range domain.DefaultColumns {
