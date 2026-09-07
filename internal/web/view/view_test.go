@@ -730,20 +730,20 @@ func TestMarkdownSummary(t *testing.T) {
 		},
 		{
 			name: "drops fenced code blocks with backticks",
-			in: "Before code\n```go\nfunc main() {\n    fmt.Println(\"secret\")\n}\n```\nAfter code",
-			n:  100,
+			in:   "Before code\n```go\nfunc main() {\n    fmt.Println(\"secret\")\n}\n```\nAfter code",
+			n:    100,
 			want: "Before code After code",
 		},
 		{
 			name: "drops fenced code blocks with tildes",
-			in: "Before code\n~~~json\n{\"foo\": \"bar\"}\n~~~\nAfter code",
-			n:  100,
+			in:   "Before code\n~~~json\n{\"foo\": \"bar\"}\n~~~\nAfter code",
+			n:    100,
 			want: "Before code After code",
 		},
 		{
 			name: "only code block",
-			in: "```sh\necho test\n```",
-			n:  100,
+			in:   "```sh\necho test\n```",
+			n:    100,
 			want: "",
 		},
 	}
@@ -756,4 +756,3 @@ func TestMarkdownSummary(t *testing.T) {
 		})
 	}
 }
-

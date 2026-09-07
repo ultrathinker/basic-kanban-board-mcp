@@ -814,5 +814,3 @@ func TestMCP_Wired(t *testing.T) {
 		t.Fatal("runStdioBridge is still the unwired stub")
 	}
 }
-
-

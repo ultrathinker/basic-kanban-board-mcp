@@ -972,7 +972,6 @@ func TestNeighbourRanks_InsertBottomMany(t *testing.T) {
 	}
 }
 
-
 // TestRenumberColumn verifies the function is idempotent and produces
 // strictly increasing, well-spaced ranks.
 func TestRenumberColumn(t *testing.T) {

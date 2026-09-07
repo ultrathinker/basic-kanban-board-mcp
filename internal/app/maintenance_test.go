@@ -276,4 +276,3 @@ func TestMaintainOnce_PrunesOldEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 }
-
