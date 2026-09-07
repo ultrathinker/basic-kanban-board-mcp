@@ -50,7 +50,11 @@ type bearerRoundTripper struct {
 
 func (b *bearerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	cloned := req.Clone(req.Context())
-	cloned.Header.Set("Authorization", "Bearer "+b.token)
+	// An empty token must not become "Bearer ": the server would answer 401 for
+	// a malformed header instead of the honest "no credentials were sent".
+	if b.token != "" {
+		cloned.Header.Set("Authorization", "Bearer "+b.token)
+	}
 	base := b.base
 	if base == nil {
 		base = http.DefaultTransport

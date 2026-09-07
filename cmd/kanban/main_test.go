@@ -798,6 +798,49 @@ func TestExportImport_RoundTrip(t *testing.T) {
 	if totalTasks == 0 {
 		t.Errorf("imported project has 0 tasks")
 	}
+
+	// The demo board contains a parent/child pair. Counting tasks alone would
+	// still pass if every hierarchy link were dropped on the way in, so assert
+	// the structure itself survived — that is the part import restores with a
+	// second write after the task already exists.
+	sourceParents := countParents(t, dir1)
+	if got := countParents(t, dir2); got != sourceParents {
+		t.Errorf("tasks with a parent after import = %d, want %d", got, sourceParents)
+	}
+	if sourceParents == 0 {
+		t.Fatal("demo data grew no parent links; this assertion no longer guards anything")
+	}
+}
+
+// countParents reports how many tasks in a data directory carry a parent.
+func countParents(t *testing.T, dataDir string) int {
+	t.Helper()
+	ctx := context.Background()
+	st, err := openStore(ctx, dataDir)
+	if err != nil {
+		t.Fatalf("openStore %s: %v", dataDir, err)
+	}
+	defer st.Close()
+
+	board, err := service.New(st, nil).BoardGet(ctx, service.Actor{
+		Name:   "tester",
+		Scopes: domain.Scopes{domain.ScopeAdmin, domain.ScopeWrite, domain.ScopeRead},
+	}, service.BoardGetInput{View: service.ViewTasks, DoneLimit: domain.MaxDoneLimit})
+	if err != nil {
+		t.Fatalf("BoardGet %s: %v", dataDir, err)
+	}
+
+	var n int
+	for _, p := range board.Projects {
+		for _, col := range p.Columns {
+			for _, task := range col.Tasks {
+				if task.ParentID != nil {
+					n++
+				}
+			}
+		}
+	}
+	return n
 }
 
 func TestMCP_Wired(t *testing.T) {

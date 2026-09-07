@@ -720,6 +720,9 @@ func runImport(args []string) error {
 		}
 
 		keyMap := make(map[string]string)
+		// Task versions after the last write, so a follow-up patch can pass the
+		// if_version the service demands for replacement-style fields.
+		versions := make(map[string]int)
 		type linkReq struct {
 			srcKey, dstKey string
 		}
@@ -762,6 +765,7 @@ func runImport(args []string) error {
 				if len(res.Tasks) > 0 {
 					createdTask := res.Tasks[0]
 					keyMap[tv.Key] = createdTask.Key
+					versions[createdTask.Key] = createdTask.Version
 
 					hasDone := false
 					for _, it := range tv.Acceptance {
@@ -771,15 +775,15 @@ func runImport(args []string) error {
 						}
 					}
 					if hasDone {
-						_, _ = svc.TaskUpdate(ctx, actor, service.TaskUpdateInput{
-							Patches: []service.TaskPatch{
-								{
-									Key:        createdTask.Key,
-									IfVersion:  &createdTask.Version,
-									Acceptance: tv.Acceptance,
-								},
-							},
+						updated, err := applyPatch(ctx, svc, actor, service.TaskPatch{
+							Key:        createdTask.Key,
+							IfVersion:  &createdTask.Version,
+							Acceptance: tv.Acceptance,
 						})
+						if err != nil {
+							return fmt.Errorf("import acceptance of %s: %w", createdTask.Key, err)
+						}
+						versions[createdTask.Key] = updated.Version
 					}
 
 					if tv.ParentID != nil {
@@ -800,15 +804,19 @@ func runImport(args []string) error {
 
 		for _, r := range reparents {
 			newParentKey, ok := keyMap[r.parentKey]
-			if ok {
-				_, _ = svc.TaskUpdate(ctx, actor, service.TaskUpdateInput{
-					Patches: []service.TaskPatch{
-						{
-							Key:    r.taskKey,
-							Parent: service.FieldString{Set: true, Value: newParentKey},
-						},
-					},
-				})
+			if !ok {
+				continue
+			}
+			version, ok := versions[r.taskKey]
+			if !ok {
+				return fmt.Errorf("import parent of %s: no version recorded for the created task", r.taskKey)
+			}
+			if _, err := applyPatch(ctx, svc, actor, service.TaskPatch{
+				Key:       r.taskKey,
+				IfVersion: &version,
+				Parent:    service.FieldString{Set: true, Value: newParentKey},
+			}); err != nil {
+				return fmt.Errorf("import parent of %s: %w", r.taskKey, err)
 			}
 		}
 
@@ -831,6 +839,32 @@ func runImport(args []string) error {
 		fmt.Fprintf(os.Stdout, "Imported project %s (%s)\n", bp.Key, bp.Name)
 	}
 	return nil
+}
+
+// applyPatch sends a single patch through TaskUpdate and turns a rejected item
+// into a real error. TaskUpdate reports per-item failures inside
+// ItemResult.Err and still returns a nil error, so a caller that only checks
+// the returned error silently discards them — that is exactly how import used
+// to lose every parent link.
+func applyPatch(ctx context.Context, svc service.Service, actor service.Actor, patch service.TaskPatch) (*domain.TaskView, error) {
+	res, err := svc.TaskUpdate(ctx, actor, service.TaskUpdateInput{Patches: []service.TaskPatch{patch}})
+	if err != nil {
+		return nil, err
+	}
+	if len(res.Items) == 0 {
+		return nil, fmt.Errorf("task_update returned no result for %s", patch.Key)
+	}
+	item := res.Items[0]
+	if !item.OK {
+		if item.Err != nil {
+			return nil, item.Err
+		}
+		return nil, fmt.Errorf("task_update rejected %s without an error", patch.Key)
+	}
+	if item.Task == nil {
+		return nil, fmt.Errorf("task_update accepted %s but returned no task", patch.Key)
+	}
+	return item.Task, nil
 }
 
 func runBackup(args []string) error {
