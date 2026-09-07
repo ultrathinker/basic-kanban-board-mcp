@@ -405,6 +405,38 @@
     });
   }
 
+  // -- 6.1 dialogs (prompts, new project) --------------------------------
+
+  // Native <dialog> popups, opened from a topbar link by data-dialog-open="#id"
+  // and closed by a data-dialog-close button, the Escape key (free with
+  // <dialog>), or a click on the backdrop. The opener is a real <a href="…">,
+  // so a browser without <dialog>.showModal (or with JS off) just follows the
+  // link to the same content rendered on a page.
+  function initDialog() {
+    document.addEventListener('click', function (e) {
+      var opener = e.target.closest && e.target.closest('[data-dialog-open]');
+      if (opener) {
+        var sel = opener.getAttribute('data-dialog-open');
+        var dlg = sel && document.querySelector(sel);
+        if (dlg && typeof dlg.showModal === 'function') {
+          e.preventDefault();
+          dlg.showModal();
+        }
+        return;
+      }
+      var closer = e.target.closest && e.target.closest('[data-dialog-close]');
+      if (closer) {
+        var owner = closer.closest('dialog');
+        if (owner) { e.preventDefault(); owner.close(); }
+        return;
+      }
+      // A click whose target is the <dialog> element itself lands on the
+      // backdrop (content sits in inner elements), so it closes the dialog.
+      var open = e.target.closest && e.target.closest('dialog[open]');
+      if (open && e.target === open) open.close();
+    });
+  }
+
   // The project switcher used to carry onchange="this.form.submit()", which
   // the CSP blocks: the switcher silently did nothing.
   function initAutoSubmit() {
@@ -709,6 +741,7 @@
     initMoveMenu();
     initAcceptance();
     initCopy();
+    initDialog();
     initAutoSubmit();
     initProjectCombobox();
     startLive();

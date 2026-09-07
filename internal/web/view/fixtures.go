@@ -135,6 +135,8 @@ func SamplePage(title, nav string, model any) Page {
 			Projects:      SampleProjects,
 			CurrentKey:    "BMB",
 			LoggedInActor: "alex",
+			IsAdmin:       true,
+			Prompts:       StandardPrompts(),
 		},
 		Model: model,
 	}

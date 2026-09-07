@@ -284,6 +284,40 @@ func (w *Web) handleProjectExport(rw http.ResponseWriter, r *http.Request) {
 	writeJSONIndent(rw, board.Projects[0])
 }
 
+// handleProjectCreate is "POST /projects": the admin-only "New project" form
+// (the overview section and the topbar dialog both submit here). Creating a
+// project is an admin operation — project_upsert requires the admin scope — so
+// this requires an admin session, not merely a write one.
+func (w *Web) handleProjectCreate(rw http.ResponseWriter, r *http.Request) {
+	tok, ok := w.requireSessionPage(rw, r, domain.ScopeAdmin)
+	if !ok {
+		return
+	}
+	if err := w.verifyCSRF(r); err != nil {
+		w.pageError(rw, r, err)
+		return
+	}
+	key, err := domain.ValidateProjectKey(r.FormValue("key"))
+	if err != nil {
+		w.pageError(rw, r, err)
+		return
+	}
+	name := strings.TrimSpace(r.FormValue("name"))
+	if name == "" {
+		w.pageError(rw, r, domain.Invalid("name", "name is required to create a project", "Enter a display name."))
+		return
+	}
+	if _, err := w.d.Service.ProjectUpsert(r.Context(), actorFor(tok), service.ProjectUpsertInput{
+		Mode: service.UpsertCreate,
+		Key:  key,
+		Name: name,
+	}); err != nil {
+		w.pageError(rw, r, err)
+		return
+	}
+	http.Redirect(rw, r, "/p/"+key, http.StatusSeeOther)
+}
+
 func derefStr(p *string) string {
 	if p == nil {
 		return ""

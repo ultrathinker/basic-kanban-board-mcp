@@ -614,6 +614,50 @@ select, .field input, .field textarea {
 /* --- empty states -------------------------------------------------------- */
 .empty { padding: 2rem 0; color: var(--ink-subtle); font-size: var(--fs-3); }
 
+/* --- modal dialog (prompts, new project) --------------------------------- */
+/* A native <dialog>, styled in the same vocabulary as everything else: a
+   hairline ink box on paper, square corners, no elevation. The backdrop is a
+   neutral grey wash (equal channels, so it stays greyscale). */
+.modal {
+  padding: 0;
+  border: 1px solid var(--ink);
+  border-radius: 0;
+  background: var(--paper);
+  color: var(--ink);
+  max-width: 46rem;
+  width: calc(100% - 2rem);
+}
+.modal.modal-sm { max-width: 26rem; }
+.modal::backdrop { background: rgba(0, 0, 0, 0.5); }
+.modal-head {
+  display: flex; align-items: center; gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--ink);
+}
+.modal-head h2 { margin: 0; font-size: var(--fs-6); }
+.modal-body { padding: 1rem; max-height: 70vh; overflow-y: auto; }
+.modal-body > p { color: var(--ink-muted); }
+
+.prompt-list { display: flex; flex-direction: column; }
+.prompt-card { padding: 1rem 0; border-top: 1px solid var(--rule); }
+.prompt-card:first-child { padding-top: 0.25rem; border-top: 0; }
+.prompt-card > h3 { margin-bottom: 0.1rem; }
+.prompt-card .desc { font-size: var(--fs-2); color: var(--ink-muted); margin-bottom: 0.5rem; max-width: var(--measure); }
+.prompt-text {
+  background: var(--sunken);
+  border-left: 2px solid var(--rule-strong);
+  padding: 0.7rem 0.9rem;
+  margin: 0 0 0.5rem;
+  max-width: none;
+  font-family: var(--font-sans);
+  font-size: var(--fs-2);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 18rem;
+  overflow-y: auto;
+}
+
 /* --- reduced motion ------------------------------------------------------ */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

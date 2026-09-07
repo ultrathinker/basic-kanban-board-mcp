@@ -448,6 +448,38 @@ func renderCases() []renderCase {
 			wants:    []string{"Agent setup"},
 			notWants: []string{"<no value>"},
 		},
+		{
+			name:     "chrome/prompt-cards",
+			template: "prompt-cards",
+			data:     boardPage(),
+			// The placeholder the user fills in, the copy hook app.js reads,
+			// and the language-preservation line that must survive every edit.
+			wants:    []string{"PROJECT_KEY", "data-copy", "Copy prompt", "language we have been using"},
+			notWants: []string{"<no value>"},
+		},
+		{
+			name:     "chrome/prompts-dialog",
+			template: "prompts-dialog",
+			data:     boardPage(),
+			wants:    []string{`id="prompts-dialog"`, "Agent prompts", "data-dialog-close", "data-copy"},
+			notWants: []string{"onclick=", "<no value>"},
+		},
+		{
+			name:     "chrome/new-project-form",
+			template: "new-project-form",
+			data:     boardPage(),
+			// The form must POST to /projects with a CSRF field and the two
+			// inputs the handler reads.
+			wants:    []string{`action="/projects"`, `name="csrf_token"`, `name="key"`, `name="name"`},
+			notWants: []string{"onchange=", "<no value>"},
+		},
+		{
+			name:     "chrome/new-project-dialog",
+			template: "new-project-dialog",
+			data:     boardPage(),
+			wants:    []string{`id="new-project-dialog"`, "New project", `action="/projects"`, "data-dialog-close"},
+			notWants: []string{"<no value>"},
+		},
 	}
 }
 

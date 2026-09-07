@@ -212,8 +212,16 @@
   {{end}}
 </div>
 {{else}}
-<p class="empty">No projects yet. An agent creates the first one with <code>project_upsert</code>, or run <code>kanban serve --demo</code> for sample data.</p>
+<p class="empty">No projects yet. {{if $.Layout.IsAdmin}}Use <strong>New project</strong> below,{{else}}An agent creates the first one with <code>project_upsert</code>,{{end}} or run <code>kanban serve --demo</code> for sample data.</p>
 {{end}}
+{{end}}
+
+{{if .Layout.IsAdmin}}
+<section class="section" id="new-project" aria-label="New project">
+  <h2>New project</h2>
+  <p class="text-muted">Create a project with the default columns. Agents work its tasks with a write token; only an admin creates or reconfigures a project.</p>
+  {{template "new-project-form" .}}
+</section>
 {{end}}
 {{template "layout-foot" .}}
 {{end}}
@@ -303,6 +311,14 @@
   {{.BaseURL}}/mcp</pre>
 </section>
 {{end}}
+
+<section class="section" id="prompts" aria-label="Agent prompts">
+  <h2>Operating prompts</h2>
+  <p class="text-muted">Copy one into your agent's chat to route a session's work onto the board. Replace <code>PROJECT_KEY</code> (and <code>PROJECT NAME</code>) with yours.</p>
+  <div class="prompt-list">
+    {{template "prompt-cards" .}}
+  </div>
+</section>
 {{template "layout-foot" .}}
 {{end}}
 

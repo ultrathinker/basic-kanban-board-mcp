@@ -151,3 +151,75 @@
   <span class="dot" aria-hidden="true"></span><span data-live-label>live</span>
 </span>
 {{end}}
+
+{{define "prompt-cards"}}
+{{- /* expects the Page as dot; iterates .Layout.Prompts. Each card carries
+       the prompt in a <pre> to read and on the copy button's data-copy for
+       app.js's existing copy handler — the same duplication the agent-setup
+       snippets use. */ -}}
+{{- range .Layout.Prompts}}
+<article class="prompt-card" id="prompt-{{.ID}}">
+  <h3>{{.Title}}</h3>
+  <p class="desc">{{.When}}</p>
+  <pre class="prompt-text" aria-label="{{.Title}} prompt">{{.Text}}</pre>
+  <div class="row">
+    <button type="button" class="btn btn-sm" data-copy="{{.Text}}">Copy prompt</button>
+  </div>
+</article>
+{{- end}}
+{{end}}
+
+{{define "prompts-dialog"}}
+{{- /* The topbar "Prompts" popup. A native <dialog>: app.js opens it from the
+       topbar link (progressive enhancement); without JS the link falls back to
+       /agent-setup#prompts, which renders the same cards. */ -}}
+<dialog class="modal" id="prompts-dialog" aria-labelledby="prompts-dialog-title" data-dialog>
+  <div class="modal-head">
+    <h2 id="prompts-dialog-title">Agent prompts</h2>
+    <span class="spacer"></span>
+    <button type="button" class="icon-btn" data-dialog-close aria-label="Close">✕</button>
+  </div>
+  <div class="modal-body">
+    <p class="text-muted">Paste one into your agent's chat to route this session's work onto the board. Replace <code>PROJECT_KEY</code> (and <code>PROJECT NAME</code>) with yours.</p>
+    <div class="prompt-list">
+      {{template "prompt-cards" .}}
+    </div>
+  </div>
+</dialog>
+{{end}}
+
+{{define "new-project-form"}}
+{{- /* expects the Page as dot (for .CSRFToken). POSTs to the admin-only
+       /projects handler; the default columns (Backlog, Doing, Done) are
+       applied server-side. */ -}}
+<form method="post" action="/projects" class="form" novalidate>
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <div class="field">
+    <label for="np-key">Key</label>
+    <input id="np-key" name="key" required minlength="2" placeholder="BMB" autocomplete="off" spellcheck="false">
+  </div>
+  <div class="field">
+    <label for="np-name">Name</label>
+    <input id="np-name" name="name" required placeholder="BeeMemoryBank" autocomplete="off">
+  </div>
+  <div class="row">
+    <button type="submit" class="btn btn-primary">Create project</button>
+  </div>
+</form>
+{{end}}
+
+{{define "new-project-dialog"}}
+{{- /* The admin-only "New project" popup, mirrored by the no-JS form on the
+       overview page. Only rendered (and only openable) for an admin session. */ -}}
+<dialog class="modal modal-sm" id="new-project-dialog" aria-labelledby="new-project-title" data-dialog>
+  <div class="modal-head">
+    <h2 id="new-project-title">New project</h2>
+    <span class="spacer"></span>
+    <button type="button" class="icon-btn" data-dialog-close aria-label="Close">✕</button>
+  </div>
+  <div class="modal-body">
+    <p class="text-muted">Creates a project with the default columns (Backlog, Doing, Done). Reconfigure columns later with <code>project_upsert</code>.</p>
+    {{template "new-project-form" .}}
+  </div>
+</dialog>
+{{end}}

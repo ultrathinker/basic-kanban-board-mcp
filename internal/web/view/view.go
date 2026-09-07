@@ -55,6 +55,98 @@ type Layout struct {
 	// current row.
 	CurrentName   string
 	LoggedInActor string
+	// IsAdmin gates the admin-only chrome (the "New project" control). It is
+	// derived from the session token's scopes in newPage, never from a
+	// request parameter.
+	IsAdmin bool
+	// Prompts are the ready-to-paste operating prompts shown in the topbar
+	// "Prompts" dialog. They are static text; every page carries them so the
+	// dialog, which lives in the shared layout, can render on any page.
+	Prompts []PromptCard
+}
+
+// PromptCard is one ready-to-paste operating prompt. A human copies one into
+// their agent's chat to route the current session's work onto the board; the
+// same cards appear in the topbar "Prompts" dialog and on the agent-setup page.
+type PromptCard struct {
+	ID    string
+	Title string
+	When  string // one line: which situation this prompt is for
+	Text  string // the prompt itself — English, paste-ready, with placeholders
+}
+
+// StandardPrompts returns the operating prompts the "Prompts" dialog offers.
+//
+// They are deliberately static English with PROJECT_KEY / "PROJECT NAME"
+// placeholders the user fills in — the human picks the project, so a literal
+// placeholder is clearer than a half-guessed key. Two things are load-bearing
+// and easy to lose in an edit: the create-project prompt says out loud that
+// project creation needs an admin token (a write-scoped agent gets forbidden),
+// and every prompt's last line tells the agent to keep replying in the human's
+// own language, so pasting an English prompt does not switch the conversation.
+func StandardPrompts() []PromptCard { return standardPrompts }
+
+const promptLangNote = "Note: keep replying to me in this chat in the language we have been using. The board content is English, but do not switch the language of our conversation."
+
+var standardPrompts = []PromptCard{
+	{
+		ID:    "route",
+		Title: "Track this work in an existing project",
+		When:  "You already have a project on the board and want the agent to run this session's work through it.",
+		Text: "From now on, track our work on the kanban board through the `kanban` MCP server, in project PROJECT_KEY.\n" +
+			"1. Call board_get(project:\"PROJECT_KEY\") to read the current columns and tasks.\n" +
+			"2. Create one task for the main goal we have been discussing (task_create). Break the rest into subtasks by setting each subtask's parent to that task, and link real dependencies with blocked_by.\n" +
+			"3. Then drive the work through the board: take the next ready item with task_next(action:\"start\"), log progress with task_update notes as you go, and move a task to Done only when its acceptance criteria are met.\n" +
+			"4. On any field that competes with other writers (title, body, column, acceptance), send if_version from your last read; on a conflict, merge the returned state and retry.\n" +
+			"Never send an \"actor\" field — identity comes from the token.\n\n" +
+			promptLangNote,
+	},
+	{
+		ID:    "create",
+		Title: "Create a new project and drive the work through it",
+		When:  "There is no project yet for this work. Creating a project needs an admin-scoped token.",
+		Text: "Create a new kanban project through the `kanban` MCP server, then track our work in it.\n" +
+			"1. Call project_upsert(mode:\"create\", key:\"PROJECT_KEY\", name:\"PROJECT NAME\"). NOTE: creating a project needs an admin-scoped token. If your token is write-only this call returns a \"forbidden\" error — in that case stop and ask me to create the project (or to give you an admin token) rather than working off the board.\n" +
+			"2. Once the project exists, create one task for the main goal and subtasks for the pieces (set parent, and blocked_by for dependencies).\n" +
+			"3. Then drive all further work through the board: board_get to read, task_next(action:\"start\") to take the next ready task, task_update notes for progress, Done only when acceptance is met, if_version on competing edits.\n\n" +
+			promptLangNote,
+	},
+	{
+		ID:    "standing",
+		Title: "Standing rule for the agent (AGENTS.md / system prompt)",
+		When:  "You want every future session in this repo to use the board automatically. Paste into AGENTS.md or the system prompt.",
+		Text: "This repository tracks work on a kanban board via the `kanban` MCP server. For any non-trivial request:\n" +
+			"- At the start of the session, call board_get(project:\"PROJECT_KEY\").\n" +
+			"- Capture the goal as a task; break large work into subtasks (parent) with dependencies (blocked_by).\n" +
+			"- Take work with task_next(action:\"start\"); never work a task you have not claimed.\n" +
+			"- Log progress with task_update notes; move a task to Done only when its acceptance criteria are met.\n" +
+			"- Always send if_version on fields that compete with other writers; on a conflict, merge and retry.\n" +
+			"- Never send an \"actor\" field — identity comes from the bearer token.\n" +
+			"- Creating or reconfiguring a project is an admin action; if you lack admin scope, ask the human instead of guessing.\n\n" +
+			"Always reply to the human in the language they are writing in. The board is English; the conversation is not.",
+	},
+	{
+		ID:    "next",
+		Title: "Just take the next task",
+		When:  "The board is already set up and you want the agent to pull and work the next ready task.",
+		Text: "Work the kanban board via the `kanban` MCP server for project PROJECT_KEY:\n" +
+			"1. board_get(project:\"PROJECT_KEY\") to read the current state.\n" +
+			"2. task_next(action:\"start\") to claim and start the top ready task in one call.\n" +
+			"3. Do the work, logging progress with task_update notes.\n" +
+			"4. When the acceptance criteria are met, move it to Done (task_update column:\"Done\", if_version:<n>), then repeat from step 2.\n" +
+			"If task_next returns nothing ready, tell me what is blocking it (its reasons) and stop.\n\n" +
+			promptLangNote,
+	},
+	{
+		ID:    "plan",
+		Title: "Break a big goal into a task tree (plan only)",
+		When:  "You want the agent to turn the discussion into a structured backlog without starting work yet.",
+		Text: "Turn what we have discussed into a structured backlog on the kanban board (project PROJECT_KEY) via the `kanban` MCP server, but do NOT start any work yet.\n" +
+			"1. board_get(project:\"PROJECT_KEY\") to see what already exists.\n" +
+			"2. Create one parent task for the overall goal, then subtasks for each concrete piece (set parent). Use @ref to express dependencies between the new tasks in the same task_create batch, and set priority and a short acceptance list where it helps.\n" +
+			"3. Show me the resulting tree (keys + titles) and stop — I will decide what to start.\n\n" +
+			promptLangNote,
+	},
 }
 
 // ProjectSummary is the dropdown entry in the project switcher.

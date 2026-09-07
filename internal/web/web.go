@@ -146,6 +146,9 @@ func (w *Web) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /p/{key}", w.handleBoard)
 	mux.HandleFunc("GET /p/{key}/activity", w.handleActivity)
 	mux.HandleFunc("GET /projects/search", w.handleProjectsSearch)
+	// Admin-only project creation (the "New project" form). POST because it
+	// changes state and carries a CSRF token; the handler enforces admin scope.
+	mux.HandleFunc("POST /projects", w.handleProjectCreate)
 	// POST, not GET: an anchor cannot carry a CSRF token, and these three
 	// either write to disk (backup) or stream the whole board out (exports).
 	// The templates submit them as forms with a csrf_token field.

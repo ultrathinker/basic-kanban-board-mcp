@@ -249,9 +249,15 @@ func (w *Web) newPage(ctx context.Context, rw http.ResponseWriter, r *http.Reque
 		CSRF:      csrfTok,
 		BaseURL:   w.d.BaseURL,
 	}
+	// The operating prompts are static and live in the shared layout (the
+	// topbar "Prompts" dialog), so every page carries them.
+	p.Layout.Prompts = view.StandardPrompts()
 	if tok != nil {
 		p.CurrentUser = tok.Name
 		p.Layout.LoggedInActor = tok.Name
+		// IsAdmin gates the "New project" chrome; it comes from the session
+		// token's scopes, never from the request.
+		p.Layout.IsAdmin = tok.Scopes.Has(domain.ScopeAdmin)
 		projs := w.projectSummaries(ctx, tok)
 		p.Layout.Projects = projs
 		// CurrentName is what the topbar combobox prints when the user has

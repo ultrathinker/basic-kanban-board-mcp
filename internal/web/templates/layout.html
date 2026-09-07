@@ -28,6 +28,10 @@
 {{define "layout-foot"}}
   </main>
   {{template "footer" .}}
+  {{if .CurrentUser}}
+    {{template "prompts-dialog" .}}
+    {{if .Layout.IsAdmin}}{{template "new-project-dialog" .}}{{end}}
+  {{end}}
   <div class="toast-region" id="toasts" role="status" aria-live="polite"></div>
   {{/* Only two scripts, and both of them do something. htmx, its SSE
        extension and Alpine are still vendored under web/static/vendor but
@@ -59,6 +63,11 @@
     {{if .CurrentUser}}
       <a href="/agent-setup" class="{{if eq .Nav "agent-setup"}}active{{end}}">Agents</a>
       <a href="/admin" class="{{if eq .Nav "admin"}}active{{end}}">Admin</a>
+      {{/* Prompts opens a dialog (app.js) and falls back to the agent-setup
+           section without JS. New project is admin-only and opens the create
+           dialog, falling back to the overview form. */}}
+      <a href="/agent-setup#prompts" data-dialog-open="#prompts-dialog">Prompts</a>
+      {{if .Layout.IsAdmin}}<a href="/#new-project" data-dialog-open="#new-project-dialog">New project</a>{{end}}
     {{end}}
   </nav>
   <span class="spacer"></span>
