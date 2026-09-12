@@ -751,6 +751,12 @@ select, .field input, .field textarea {
 /* The header pair: manual ("assessed") and automatic ("tasks done") stand
    side by side, each with its caps label, so the two numbers are never
    mistaken for each other. */
+/* KANB-12: the live-region wrapper around both bars must not itself become a
+   flex item — that would stack the two .proj-progress spans inside it
+   instead of letting them sit as direct children of .page-head's flex row.
+   display:contents keeps it invisible to layout while still giving app.js a
+   stable #project-progress id to refresh in place. */
+.proj-progress-group { display: contents; }
 .proj-progress {
   display: inline-flex;
   align-items: baseline;

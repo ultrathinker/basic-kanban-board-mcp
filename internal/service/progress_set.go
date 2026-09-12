@@ -56,6 +56,7 @@ func (s *svc) ProgressSet(ctx context.Context, a Actor, in ProgressSetInput) (*P
 	ctx = store.WithActor(ctx, a.Name)
 
 	var result ProgressSetResult
+	var pending []domain.Event
 	err := s.store.Write(ctx, func(tx store.Tx) error {
 		if hasTask {
 			t, err := s.resolveTask(tx, a, in.TaskKey)
@@ -76,6 +77,10 @@ func (s *svc) ProgressSet(ctx context.Context, a Actor, in ProgressSetInput) (*P
 				ETA:       in.ETA,
 			}
 			if err := s.store.Progress().Add(tx, m); err != nil {
+				return err
+			}
+			if err := s.emit(tx, &pending, a.Name, domain.EventProgressRecorded, p.ID, &t.ID,
+				map[string]any{"key": t.Key}); err != nil {
 				return err
 			}
 
@@ -113,6 +118,12 @@ func (s *svc) ProgressSet(ctx context.Context, a Actor, in ProgressSetInput) (*P
 		if err := s.store.Progress().Add(tx, m); err != nil {
 			return err
 		}
+		// No task id: this is a project-level assessment, so there is no
+		// natural "key" target to carry (mirrors how other project-scoped
+		// events pass a nil task id).
+		if err := s.emit(tx, &pending, a.Name, domain.EventProgressRecorded, p.ID, nil, nil); err != nil {
+			return err
+		}
 
 		latest, err := s.store.Progress().LatestByAssessor(tx, p.ID, nil)
 		if err != nil {
@@ -129,5 +140,6 @@ func (s *svc) ProgressSet(ctx context.Context, a Actor, in ProgressSetInput) (*P
 	if err != nil {
 		return nil, err
 	}
+	s.publishAll(pending)
 	return &result, nil
 }

@@ -20,8 +20,16 @@
        AIs said about the project as a whole, "tasks done" is what the
        board itself says. Their gap is the interesting number. A nil
        metric renders nothing — see the progress-bar partial. */ -}}
+  {{- /* Wrapped so KANB-12's live refresh has one stable id to target when a
+       progress.recorded event fires for this project — neither bar lives
+       inside #board, so without this wrapper a project-level assessment
+       would have nowhere to land without a full page reload. display:contents
+       (app.css) keeps the wrapper invisible to the header's flex layout, so
+       the two bars still sit side by side exactly as before. */ -}}
+  <span id="project-progress" class="proj-progress-group">
   {{- if .ManualProgress}}<span class="proj-progress" title="Manual progress: the mean of the latest AI assessments of this project. Task-level marks are not included."><span class="caps text-subtle">assessed</span>{{template "progress-bar" (dict "Progress" .ManualProgress)}}</span>{{end}}
   {{- if .AutoProgress}}<span class="proj-progress" title="Automatic progress: the share of this project's tasks sitting in done columns. Computed from the board, not from any assessment."><span class="caps text-subtle">tasks done</span>{{template "progress-bar" (dict "Progress" .AutoProgress)}}</span>{{end}}
+  </span>
   {{if .Chat}}<button type="button" class="btn btn-sm" data-chat-toggle
         aria-expanded="false" aria-controls="chat-panel">Thoughts</button>{{end}}
   {{template "live-status" .}}
@@ -37,6 +45,14 @@
 {{template "focus-banner" (dict "Focus" .Focus)}}
 
 <div data-live-source="/events/p/{{.Project.Key}}" data-live-region="#board" hidden></div>
+{{- /* KANB-12: two more live regions outside #board. The project-level
+     progress bars live in the page header (see #project-progress above);
+     the thoughts feed is handled by app.js as a special case (it appends
+     new entries in place rather than replacing the region wholesale — see
+     the "ai thoughts panel" section of app.js), but it still needs to be
+     declared here so liveRegions() picks it up on every refresh tick. */ -}}
+<div data-live-region="#project-progress" hidden></div>
+{{if .Chat}}<div data-live-region="#chat-feed" hidden></div>{{end}}
 
 {{- /* Split layout: the thoughts panel (when open) takes a fixed-ish left
      column and the whole board compresses proportionally to its right —
@@ -53,13 +69,17 @@
       <span class="spacer"></span>
       <span class="mono text-subtle">{{.Chat.Count}}</span>
     </header>
-    {{if hasAny .Chat.Entries}}
-    <ol class="chat-feed" data-chat-feed>
+    {{- /* The <ol> always renders, even with zero entries: its id is the
+         live-region target (see data-live-region="#chat-feed" above), and
+         app.js's appendChatEntry needs somewhere to land the project's very
+         first message the moment it arrives — a panel that started empty
+         must not need a reload just because it had nothing to show yet.
+         app.js reveals it (and hides the placeholder) the first time it
+         appends an entry. */ -}}
+    <ol class="chat-feed" id="chat-feed" data-chat-feed{{if not (hasAny .Chat.Entries)}} hidden{{end}}>
       {{range .Chat.Entries}}{{template "chat-entry" .}}{{end}}
     </ol>
-    {{else}}
-    <p class="chat-empty text-subtle">No thoughts yet. Agents post here with the <code>project_post</code> tool.</p>
-    {{end}}
+    <p class="chat-empty text-subtle" data-chat-empty{{if hasAny .Chat.Entries}} hidden{{end}}>No thoughts yet. Agents post here with the <code>project_post</code> tool.</p>
     {{- /* Unobtrusive "new messages" marker: hidden until app.js reveals it
          (a message arrived while the owner had scrolled away from the
          bottom). Clicking it scrolls to the bottom and hides it again —
@@ -84,7 +104,7 @@
      page's initial <ol> range above and by "chat-entries" below, so there is
      exactly one definition of what a chat entry looks like — the reason
      "card" is a shared template rather than being inlined twice. */ -}}
-{{define "chat-entry"}}<li class="chat-entry">
+{{define "chat-entry"}}<li class="chat-entry" data-chat-id="{{.ID}}">
   <div class="chat-head"><span class="chat-author {{.AuthorColor}}">{{.Author}}</span> <span class="text-subtle text-xs" title="{{.FullTime}}">{{.When}}</span></div>
   <div class="chat-text">{{.TextHTML}}</div>
 </li>

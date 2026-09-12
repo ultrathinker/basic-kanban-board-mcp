@@ -380,6 +380,15 @@ const (
 	EventLinkRemoved     EventType = "link.removed"
 	EventNoteAdded       EventType = "note.added"
 	EventFocusChanged    EventType = "focus.changed"
+	// EventProgressRecorded fires after a new progress mark (task- or
+	// project-scoped) commits. It carries only enough to identify the scope,
+	// same as every other event — the mark itself lives in progress_marks and
+	// is read from there, never from the event payload (KANB-12).
+	EventProgressRecorded EventType = "progress.recorded"
+	// EventChatPosted fires after a new chat message commits. The message
+	// body is never carried in the payload: the event is a change signal,
+	// the chat_messages table is the only source of truth for what was said.
+	EventChatPosted EventType = "chat.posted"
 )
 
 // Event is append-only. It feeds SSE, the activity view and any future audit.

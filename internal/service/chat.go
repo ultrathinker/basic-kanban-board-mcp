@@ -42,6 +42,7 @@ func (s *svc) ChatAdd(ctx context.Context, a Actor, in ChatAddInput) (*domain.Ch
 
 	ctx = store.WithActor(ctx, a.Name)
 	var out domain.ChatMessage
+	var pending []domain.Event
 	err = s.store.Write(ctx, func(tx store.Tx) error {
 		p, err := s.resolveProject(tx, a, canonicalKey)
 		if err != nil {
@@ -56,12 +57,19 @@ func (s *svc) ChatAdd(ctx context.Context, a Actor, in ChatAddInput) (*domain.Ch
 		if err := s.store.Chat().Add(tx, m); err != nil {
 			return err
 		}
+		// The message body is never carried in the event payload — it lives
+		// in chat_messages and is read from there (KANB-12): this is only the
+		// "something changed" signal.
+		if err := s.emit(tx, &pending, a.Name, domain.EventChatPosted, p.ID, nil, nil); err != nil {
+			return err
+		}
 		out = *m
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
+	s.publishAll(pending)
 	return &out, nil
 }
 

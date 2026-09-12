@@ -238,6 +238,10 @@ func eventVerb(t domain.EventType) string {
 		return "added a note to"
 	case domain.EventFocusChanged:
 		return "changed focus to"
+	case domain.EventProgressRecorded:
+		return "recorded progress on"
+	case domain.EventChatPosted:
+		return "posted a thought in"
 	default:
 		return string(t)
 	}

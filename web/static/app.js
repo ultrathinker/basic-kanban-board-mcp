@@ -174,6 +174,95 @@
     }
   }
 
+  // progressBarKey/trackKey/captureProgressState/restoreProgressState — KANB-12.
+  //
+  // A live region such as #board or #project-progress can contain several
+  // independent progress bars (one per card, plus the project's own two).
+  // Blindly replacing that region's innerHTML — which is exactly what the
+  // block below does, and rightly so: it is the one swap mechanism this page
+  // uses — throws away two kinds of per-bar UI state the server does not
+  // know about at all: an open history chart (KANB-13) and an armed
+  // delete-track confirmation (section 8 above). Neither is reflected in the
+  // freshly rendered HTML (a bar's chart container always renders closed;
+  // a track row never renders pre-armed), so without this, a progress
+  // assessment landing on ANY task would silently close the chart the owner
+  // has open on a DIFFERENT one, or cancel a confirmation they were about to
+  // click through — exactly the "yanked view" this feature must not cause.
+  //
+  // The fix is to capture what was open, by identity (project/task/assessor
+  // — stable across a re-render, unlike any DOM node reference), before the
+  // swap, then restore it into the freshly swapped-in markup afterwards. The
+  // chart's restore uses the HTML already fetched for it rather than firing
+  // a second request: it was fetched once under the "fetch once, cache in
+  // the DOM" contract fetchProgressChart documents, and the swap just threw
+  // that cached DOM node away, not the fact that it was already fetched.
+  function progressBarKey(bar) {
+    return (bar.getAttribute('data-project') || '') + ' ' + (bar.getAttribute('data-task') || '');
+  }
+
+  function trackKey(row) {
+    return (row.getAttribute('data-project') || '') + ' ' +
+      (row.getAttribute('data-task') || '') + ' ' +
+      (row.getAttribute('data-assessor') || '');
+  }
+
+  function captureProgressState(root) {
+    var openCharts = {};
+    var bars = root.querySelectorAll('[data-progress-chart-toggle][aria-expanded="true"]');
+    for (var i = 0; i < bars.length; i++) {
+      var container = progressChartContainer(bars[i]);
+      if (container && container.childElementCount > 0) {
+        openCharts[progressBarKey(bars[i])] = container.innerHTML;
+      }
+    }
+    var armed = {};
+    var rows = root.querySelectorAll('.progress-track.is-confirming');
+    for (var j = 0; j < rows.length; j++) {
+      armed[trackKey(rows[j])] = true;
+    }
+    return { openCharts: openCharts, armed: armed };
+  }
+
+  function restoreProgressState(root, state) {
+    var bars = root.querySelectorAll('[data-progress-chart-toggle]');
+    for (var i = 0; i < bars.length; i++) {
+      var html = state.openCharts[progressBarKey(bars[i])];
+      if (html === undefined) continue;
+      var container = progressChartContainer(bars[i]);
+      if (!container) continue;
+      container.innerHTML = html;
+      setProgressChartOpen(bars[i], container, true);
+    }
+    var rows = root.querySelectorAll('[data-progress-track]');
+    for (var j = 0; j < rows.length; j++) {
+      if (state.armed[trackKey(rows[j])]) rows[j].classList.add('is-confirming');
+    }
+  }
+
+  // appendNewChatEntries is the thoughts-feed's own swap strategy — never a
+  // blind innerHTML replace like the generic path below. fresh is the
+  // freshly fetched document's counterpart of the live <ol>; every entry in
+  // it not already present (matched by data-chat-id, the message's own,
+  // stable id) is handed to appendChatEntry ONE AT A TIME, in order, so each
+  // one gets the real append-then-follow-or-mark behaviour that function
+  // implements instead of a wholesale re-render that would reset scroll and
+  // re-trigger every entry as "new".
+  function appendNewChatEntries(fresh) {
+    var feed = chatFeedEl();
+    if (!feed) return;
+    var known = {};
+    var existing = feed.querySelectorAll('[data-chat-id]');
+    for (var i = 0; i < existing.length; i++) {
+      known[existing[i].getAttribute('data-chat-id')] = true;
+    }
+    var incoming = fresh.querySelectorAll('[data-chat-id]');
+    for (var j = 0; j < incoming.length; j++) {
+      var id = incoming[j].getAttribute('data-chat-id');
+      if (!id || known[id]) continue;
+      appendChatEntry(document.importNode(incoming[j], true));
+    }
+  }
+
   function refreshLiveRegions() {
     if (live.inFlight || live.dragging) return;
     var regions = liveRegions();
@@ -193,9 +282,17 @@
           var current = regions[i];
           var fresh = current.id ? doc.getElementById(current.id) : null;
           if (!fresh) continue;
+          // The thoughts feed never gets the generic wholesale swap: see
+          // appendNewChatEntries's own comment for why.
+          if (current.hasAttribute('data-chat-feed')) {
+            appendNewChatEntries(fresh);
+            continue;
+          }
           var firstRow = current.querySelector('.row');
           var previousFirstRowText = firstRow ? firstRow.textContent.trim() : null;
+          var progressState = captureProgressState(current);
           current.innerHTML = fresh.innerHTML;
+          restoreProgressState(current, progressState);
           markNewRows(current, previousFirstRowText);
         }
         initSortables();
@@ -783,16 +880,27 @@
     if (marker) marker.hidden = true;
   }
 
+  // revealChatFeed un-hides the feed <ol> (and hides the "No thoughts yet"
+  // placeholder next to it) the first time a message actually lands on a
+  // project that had none when the page rendered. The <ol> is always in the
+  // DOM precisely so this moment does not need a reload — see pages.html's
+  // comment on the chat-feed markup.
+  function revealChatFeed(feed) {
+    if (feed.hidden) feed.hidden = false;
+    var empty = document.querySelector('[data-chat-empty]');
+    if (empty && !empty.hidden) empty.hidden = true;
+  }
+
   // appendChatEntry is the single path anything that adds a message to the
-  // live end of the feed must go through — today that is nothing (live
-  // arrival over SSE is KANB-12's job, not this one), but the mechanism has
-  // to exist and behave correctly before that task can wire an incoming
-  // message to it: append the node, then either follow it to the bottom —
-  // if the owner was already there — or leave their scroll position alone
-  // and raise the unobtrusive marker instead.
+  // live end of the feed goes through — SSE arrival (KANB-12) and, above,
+  // the initial reveal of a feed that started empty. It appends the node,
+  // then either follows it to the bottom — if the owner was already there —
+  // or leaves their scroll position alone and raises the unobtrusive marker
+  // instead.
   function appendChatEntry(li) {
     var feed = chatFeedEl();
     if (!feed || !li) return;
+    revealChatFeed(feed);
     var pinned = isChatPinnedToBottom(feed);
     feed.appendChild(li);
     if (pinned) {

@@ -164,6 +164,12 @@ type ProjectSummary struct {
 // turns recognized, existing task keys into links. Text is kept alongside it
 // (plain, unescaped) for callers that want the raw string rather than markup.
 type ChatEntry struct {
+	// ID is the chat message's own id. It rides into the rendered markup
+	// (data-chat-id) purely as a client-side dedup key: app.js diffs a
+	// freshly fetched feed against what is already on screen by this id so a
+	// live refresh appends only genuinely new entries (see the "ai thoughts
+	// panel" section of app.js) instead of re-rendering the whole feed.
+	ID     string
 	Author string
 	// AuthorColor is one of a fixed set of 8 CSS classes ("chat-c0".."chat-c7"),
 	// chosen by a stable hash of Author's bytes (see authorColorClass). It is
@@ -230,6 +236,7 @@ func ChatEntriesOldestFirst(msgs []domain.ChatMessage, now time.Time, knownKeys 
 	entries := make([]ChatEntry, len(msgs))
 	for i, m := range msgs {
 		entries[len(msgs)-1-i] = ChatEntry{
+			ID:          m.ID,
 			Author:      m.Author,
 			AuthorColor: authorColorClass(m.Author),
 			When:        relTime(m.CreatedAt, now),
