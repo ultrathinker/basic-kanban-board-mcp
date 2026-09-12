@@ -176,9 +176,12 @@ func attachProgress(ctx context.Context, svc service.Service, a service.Actor, p
 
 // tracksFromService maps the service's per-assessor breakdown onto the view
 // package's own type. A thin, deliberate copy rather than a shared type: the
-// view package must not import service (it is the render-only leaf of the
-// dependency graph), so this is the one place the two shapes are kept in
-// sync.
+// view package's exported types must stay free of service's own shapes, so a
+// template only ever binds to plain render data — not because view may never
+// import service at all (view/chart.go legitimately does, to reuse
+// service.RoundMeanHalfUp rather than duplicate that rounding rule; see its
+// own comment). This is the one place the two TRACK shapes are kept in sync
+// by hand.
 func tracksFromService(in []service.AssessorTrack) []view.ProgressTrack {
 	if len(in) == 0 {
 		return nil
@@ -240,6 +243,8 @@ func eventVerb(t domain.EventType) string {
 		return "changed focus to"
 	case domain.EventProgressRecorded:
 		return "recorded progress on"
+	case domain.EventProgressTrackDeleted:
+		return "removed a progress track from"
 	case domain.EventChatPosted:
 		return "posted a thought in"
 	default:

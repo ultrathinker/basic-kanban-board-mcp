@@ -133,6 +133,132 @@ func TestProgressSet_ProjectScope_PublishesSignalWithNoTask(t *testing.T) {
 	}
 }
 
+// TestProgressTrackDelete_TaskScope_PublishesSignalOnly closes the gap an
+// independent review found: ProgressSet and ChatAdd both emit a "something
+// changed" signal on success, but track delete emitted nothing at all, so
+// every OTHER open tab on the board kept showing the deleted track's old
+// mean until some unrelated event happened to refresh it, and the activity
+// feed carried no record that a track vanished. This pins the same contract
+// the two tests above pin for their own features: the event reaches a
+// subscriber, names the scope, and its payload never smuggles the assessor
+// or the marks that were just permanently removed.
+func TestProgressTrackDelete_TaskScope_PublishesSignalOnly(t *testing.T) {
+	env := openTestEnv(t)
+	rec := &recordingPublisher{}
+	svc := New(env.Store, rec)
+
+	task := makeBacklogTask(t, env, "tracked task")
+	addProgressMark(t, env, "m1", &task.ID, "alpha", 40, progressTestBase)
+
+	res, err := svc.ProgressTrackDelete(context.Background(), env.actor, ProgressTrackDeleteInput{
+		ProjectKey: env.proj.Key, TaskKey: task.Key, Assessor: "alpha",
+	})
+	if err != nil {
+		t.Fatalf("ProgressTrackDelete: %v", err)
+	}
+	if res.Removed != 1 {
+		t.Fatalf("removed = %d, want 1 — the store side of this call", res.Removed)
+	}
+
+	evs := rec.forTask(task.ID)
+	if len(evs) != 1 {
+		t.Fatalf("published %d events for the task, want exactly 1: %+v", len(evs), evs)
+	}
+	e := evs[0]
+	if e.Type != domain.EventProgressTrackDeleted {
+		t.Fatalf("event type = %q, want %q", e.Type, domain.EventProgressTrackDeleted)
+	}
+	if e.ProjectID != env.proj.ID {
+		t.Fatalf("event ProjectID = %q, want %q", e.ProjectID, env.proj.ID)
+	}
+	if e.TaskID == nil || *e.TaskID != task.ID {
+		t.Fatalf("event TaskID = %v, want %s", e.TaskID, task.ID)
+	}
+	if got := e.Payload["key"]; got != task.Key {
+		t.Fatalf("event payload[key] = %v, want %q", got, task.Key)
+	}
+	for _, field := range []string{"assessor", "percent", "count"} {
+		if _, ok := e.Payload[field]; ok {
+			t.Fatalf("event payload carries %q — the deleted track's own data must never resurface via the event, it is simply gone", field)
+		}
+	}
+
+	stored := eventsInStore(t, env, env.proj.ID)
+	found := false
+	for _, se := range stored {
+		if se.Type == domain.EventProgressTrackDeleted && se.TaskID != nil && *se.TaskID == task.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("progress.track_deleted event was published but never persisted to the events table")
+	}
+}
+
+// TestProgressTrackDelete_ProjectScope_PublishesSignalWithNoTask covers the
+// project-level track delete (empty TaskKey): the event must still fire, and
+// must carry a nil TaskID, the same convention ProgressSet's own
+// project-scope test already pins.
+func TestProgressTrackDelete_ProjectScope_PublishesSignalWithNoTask(t *testing.T) {
+	env := openTestEnv(t)
+	rec := &recordingPublisher{}
+	svc := New(env.Store, rec)
+
+	addProgressMark(t, env, "m1", nil, "alpha", 40, progressTestBase)
+
+	res, err := svc.ProgressTrackDelete(context.Background(), env.actor, ProgressTrackDeleteInput{
+		ProjectKey: env.proj.Key, Assessor: "alpha",
+	})
+	if err != nil {
+		t.Fatalf("ProgressTrackDelete: %v", err)
+	}
+	if res.Removed != 1 {
+		t.Fatalf("removed = %d, want 1", res.Removed)
+	}
+
+	evs := rec.all()
+	if len(evs) != 1 {
+		t.Fatalf("published %d events, want exactly 1: %+v", len(evs), evs)
+	}
+	e := evs[0]
+	if e.Type != domain.EventProgressTrackDeleted {
+		t.Fatalf("event type = %q, want %q", e.Type, domain.EventProgressTrackDeleted)
+	}
+	if e.ProjectID != env.proj.ID {
+		t.Fatalf("event ProjectID = %q, want %q", e.ProjectID, env.proj.ID)
+	}
+	if e.TaskID != nil {
+		t.Fatalf("event TaskID = %v, want nil for a project-level track delete", e.TaskID)
+	}
+}
+
+// TestProgressTrackDelete_UnknownAssessorEmitsNoEvent pins the other half of
+// the "removed > 0" guard: deleting an assessor nobody ever recorded a mark
+// for is a clean no-op at the store layer (TestProgressTrackDelete_ProxiesToStore
+// already proves that), and a no-op must not fan out a false "something
+// changed" signal to every other open tab — nothing changed.
+func TestProgressTrackDelete_UnknownAssessorEmitsNoEvent(t *testing.T) {
+	env := openTestEnv(t)
+	rec := &recordingPublisher{}
+	svc := New(env.Store, rec)
+
+	task := makeBacklogTask(t, env, "untouched task")
+	addProgressMark(t, env, "m1", &task.ID, "alpha", 40, progressTestBase)
+
+	res, err := svc.ProgressTrackDelete(context.Background(), env.actor, ProgressTrackDeleteInput{
+		ProjectKey: env.proj.Key, TaskKey: task.Key, Assessor: "nobody",
+	})
+	if err != nil {
+		t.Fatalf("ProgressTrackDelete: %v", err)
+	}
+	if res.Removed != 0 {
+		t.Fatalf("removed = %d, want 0 (unknown assessor is a no-op)", res.Removed)
+	}
+	if evs := rec.all(); len(evs) != 0 {
+		t.Fatalf("a no-op delete published %d events, want 0: %+v", len(evs), evs)
+	}
+}
+
 // TestChatAdd_PublishesSignalWithoutTheMessageBody pins acceptance criterion
 // 2 (a chat message can appear live) plus the "journal is only a signal"
 // rule from the opposite direction of the progress test above: the payload

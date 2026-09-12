@@ -129,7 +129,13 @@
     timer: null,
     announceTimer: null,
     inFlight: false,
-    dragging: false
+    dragging: false,
+    // dirtyChartKeys accumulates progressBarKey()-shaped keys for metrics a
+    // progress.recorded/progress.track_deleted SSE event named, between now
+    // and the next refreshLiveRegions pass — see markProgressEventDirty and
+    // captureProgressState's own comment for why an open chart on one of
+    // these keys must not be restored from its cache.
+    dirtyChartKeys: {}
   };
 
   function setLiveState(state, label) {
@@ -196,23 +202,73 @@
   // a second request: it was fetched once under the "fetch once, cache in
   // the DOM" contract fetchProgressChart documents, and the swap just threw
   // that cached DOM node away, not the fact that it was already fetched.
+  //
+  // The one case that must NOT reuse the cache: the metric an open chart is
+  // itself scoped to just recorded a new mark or lost a track (see
+  // markProgressEventDirty below). The whole reason to open a chart is
+  // watching the descent; restoring yesterday's cached SVG onto a bar whose
+  // percent just changed would silently hide the one point the owner opened
+  // it to see. captureProgressState/restoreProgressState drop the cache and
+  // fetch fresh instead, but ONLY for a bar named in live.dirtyChartKeys — an
+  // open chart on an unrelated task/project is left on its cheap cached copy
+  // exactly as before.
   function progressBarKey(bar) {
-    return (bar.getAttribute('data-project') || '') + ' ' + (bar.getAttribute('data-task') || '');
+    return (bar.getAttribute('data-project') || '') + ' ' + (bar.getAttribute('data-task') || '');
+  }
+
+  // currentLiveProjectKey reads the project key straight out of the page's
+  // own SSE source URL ("/events/p/BMB" -> "BMB") rather than a second
+  // server-provided data attribute: every progress bar on a board page
+  // already scopes its own subscription to exactly one project, so this is
+  // the same key data-project already carries on every bar here, just read
+  // from the one place that exists regardless of whether any bar is on the
+  // page at all.
+  function currentLiveProjectKey() {
+    var decl = document.querySelector('[data-live-source]');
+    var url = decl && decl.getAttribute('data-live-source');
+    var m = url && /\/events\/p\/([^/?]+)/.exec(url);
+    return m ? m[1] : '';
+  }
+
+  // markProgressEventDirty reads one incoming SSE frame's JSON payload (a
+  // domain.Event) and, if it is a progress.recorded or progress.track_deleted
+  // event, records the metric it names in live.dirtyChartKeys so the next
+  // refreshLiveRegions pass knows not to trust that one chart's cache. Any
+  // other event type, or a payload that fails to parse, is ignored here —
+  // scheduleRefresh runs regardless either way; this only tracks which
+  // chart(s), if any, must be treated as stale by that refresh.
+  function markProgressEventDirty(e) {
+    var ev;
+    try { ev = JSON.parse(e.data); } catch (err) { return; }
+    if (!ev || (ev.Type !== 'progress.recorded' && ev.Type !== 'progress.track_deleted')) return;
+    var project = currentLiveProjectKey();
+    if (!project) return;
+    var taskKey = (ev.Payload && ev.Payload.key) || '';
+    live.dirtyChartKeys[project + ' ' + taskKey] = true;
   }
 
   function trackKey(row) {
-    return (row.getAttribute('data-project') || '') + ' ' +
-      (row.getAttribute('data-task') || '') + ' ' +
+    return (row.getAttribute('data-project') || '') + ' ' +
+      (row.getAttribute('data-task') || '') + ' ' +
       (row.getAttribute('data-assessor') || '');
   }
 
   function captureProgressState(root) {
     var openCharts = {};
+    var staleCharts = {};
     var bars = root.querySelectorAll('[data-progress-chart-toggle][aria-expanded="true"]');
     for (var i = 0; i < bars.length; i++) {
+      var key = progressBarKey(bars[i]);
       var container = progressChartContainer(bars[i]);
-      if (container && container.childElementCount > 0) {
-        openCharts[progressBarKey(bars[i])] = container.innerHTML;
+      if (!container || container.childElementCount === 0) continue;
+      if (live.dirtyChartKeys[key]) {
+        // This exact metric just recorded a mark or lost a track: the
+        // cached SVG is now showing stale data, so it must not be restored.
+        // staleCharts remembers only that the chart WAS open, so the
+        // restore step below re-opens it and fetches a fresh copy instead.
+        staleCharts[key] = true;
+      } else {
+        openCharts[key] = container.innerHTML;
       }
     }
     var armed = {};
@@ -220,16 +276,26 @@
     for (var j = 0; j < rows.length; j++) {
       armed[trackKey(rows[j])] = true;
     }
-    return { openCharts: openCharts, armed: armed };
+    return { openCharts: openCharts, staleCharts: staleCharts, armed: armed };
   }
 
   function restoreProgressState(root, state) {
     var bars = root.querySelectorAll('[data-progress-chart-toggle]');
     for (var i = 0; i < bars.length; i++) {
-      var html = state.openCharts[progressBarKey(bars[i])];
-      if (html === undefined) continue;
+      var key = progressBarKey(bars[i]);
       var container = progressChartContainer(bars[i]);
       if (!container) continue;
+      if (state.staleCharts[key]) {
+        // Reopen against an empty container (the fresh markup's own chart
+        // container always renders empty) so fetchProgressChart's "already
+        // filled" guard does not treat this as already current, then fetch
+        // the real, up-to-date chart the same way a first click would.
+        setProgressChartOpen(bars[i], container, true);
+        fetchProgressChart(bars[i], container);
+        continue;
+      }
+      var html = state.openCharts[key];
+      if (html === undefined) continue;
       container.innerHTML = html;
       setProgressChartOpen(bars[i], container, true);
     }
@@ -295,6 +361,11 @@
           restoreProgressState(current, progressState);
           markNewRows(current, previousFirstRowText);
         }
+        // Every region has now either restored or refetched every chart
+        // markProgressEventDirty flagged since the last refresh: the flags
+        // are one-shot, so clear them rather than carrying them into the
+        // NEXT refresh and refetching a chart a second time for nothing.
+        live.dirtyChartKeys = {};
         initSortables();
         announceUpdate();
       })
@@ -328,8 +399,18 @@
     // The server names every event three ways: its own domain.EventType, and
     // the "board-update" / "activity-feed" aliases. Listening to the two
     // aliases covers every task/project event without enumerating them.
+    //
+    // markProgressEventDirty inspects the frame's own JSON payload before
+    // scheduling the refresh every event triggers regardless: a
+    // progress.recorded/progress.track_deleted frame additionally flags its
+    // metric so a chart the owner has open on that exact metric is refetched
+    // rather than restored from its (now stale) cache — see that function's
+    // own comment.
     ['board-update', 'activity-feed'].forEach(function (name) {
-      es.addEventListener(name, scheduleRefresh);
+      es.addEventListener(name, function (e) {
+        markProgressEventDirty(e);
+        scheduleRefresh();
+      });
     });
 
     // A resync sentinel means the replay buffer could not cover the gap, so
@@ -1036,21 +1117,43 @@
     li.classList.remove('is-confirming');
   }
 
-  // replaceProgressMetric swaps the bar and (if present) the track list for
-  // the freshly rendered fragment. The "progress-bar" template always
-  // emits the track list, when there is one, as the element immediately
-  // following the bar span — no id needed, just that fixed adjacency — so
-  // inserting the new fragment right before the old list and then removing
-  // both old nodes lands the replacement in exactly the right place, even
-  // when the fragment is empty (the deleted track was the metric's last
-  // one, so nothing renders any more).
-  function replaceProgressMetric(oldList, html) {
-    if (!oldList || !oldList.parentNode) return;
-    var oldBar = oldList.previousElementSibling;
-    if (!oldBar || !oldBar.classList.contains('pbar')) oldBar = null;
-    oldList.insertAdjacentHTML('beforebegin', html);
-    oldList.parentNode.removeChild(oldList);
-    if (oldBar && oldBar.parentNode) oldBar.parentNode.removeChild(oldBar);
+  // replaceProgressMetric swaps the ENTIRE metric — the bar, the optional
+  // forecast badge, the optional chart container and the track list, all
+  // together — for the freshly rendered fragment, rather than patching
+  // pieces of it in place.
+  //
+  // This used to instead find "the old bar" by walking to the track list's
+  // previousElementSibling and requiring it to carry the .pbar class —
+  // correct only for as long as the bar and the track list stayed direct
+  // siblings with nothing between them. KANB-13 (the history chart) then
+  // inserted a chart container between them for every Clickable metric,
+  // i.e. every metric this handler ever runs against (a metric with no
+  // tracks has nothing to delete), so that lookup was silently wrong
+  // (oldBar always null, the check on .pbar never true) from the day the
+  // chart shipped: every delete left the stale bar, forecast badge and
+  // chart container on screen and inserted a second, fresh metric right
+  // next to them — two progress bars for the same metric, showing
+  // different numbers. None of the Go tests caught it because they check
+  // the HTTP response body, never a DOM mutation.
+  //
+  // The template now wraps the whole emission in one always-present
+  // .progress-metric container per metric (data-progress-metric), so there
+  // is nothing left to find by position: climb from wherever the delete
+  // happened to that one container and replace it whole. This removes the
+  // whole class of "which sibling is it now" bugs, not just this instance
+  // of it — a future task inserting yet another element into the metric
+  // cannot break this again, because nothing here depends on what the
+  // metric's internals look like any more. When the deleted track was the
+  // metric's last one the server responds with an empty fragment; there is
+  // then nothing to insert, so the old container is simply removed and
+  // nothing takes its place — the same "no data, no bar" rule the template
+  // itself follows.
+  function replaceProgressMetric(anchor, html) {
+    if (!anchor) return;
+    var oldMetric = anchor.closest('[data-progress-metric]');
+    if (!oldMetric || !oldMetric.parentNode) return;
+    if (html) oldMetric.insertAdjacentHTML('beforebegin', html);
+    oldMetric.parentNode.removeChild(oldMetric);
   }
 
   function submitProgressDelete(li) {

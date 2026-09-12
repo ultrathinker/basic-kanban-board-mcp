@@ -633,6 +633,38 @@ func TestProgressSet_DescriptionContent(t *testing.T) {
 	}
 }
 
+// TestProgressSet_AssessorTooLongRejected verifies that the assessor field is
+// bounded by the same limit (domain.MaxAssigneeLen) a chat author already is
+// — an independent review found this missing: an unbounded assessor name is
+// stored forever (progress_marks is append-only, thinning is forbidden by
+// the owner) and re-rendered on every board load and every chart open, so an
+// oversized name is a permanent, repeating cost rather than a one-off one.
+// The schema itself refuses anything past the limit before the handler even
+// runs, so the service is never reached and never called.
+func TestProgressSet_AssessorTooLongRejected(t *testing.T) {
+	t.Parallel()
+	cs, svc := roundtripServer(t, NewServer)
+
+	res, err := cs.CallTool(context.Background(), &gomcp.CallToolParams{
+		Name: "progress_set",
+		Arguments: map[string]any{
+			"task":     "KANB-3",
+			"assessor": strings.Repeat("x", domain.MaxAssigneeLen+1),
+			"percent":  50,
+		},
+	})
+	if err != nil {
+		t.Fatalf("CallTool unexpected protocol error: %v", err)
+	}
+	env := errorEnvelopeOf(t, res)
+	if env["code"] != string(domain.CodeValidation) {
+		t.Errorf("code = %v, want %v", env["code"], domain.CodeValidation)
+	}
+	if svc.LastProgressSet.Assessor != "" {
+		t.Errorf("service was called despite an over-length assessor: %+v", svc.LastProgressSet)
+	}
+}
+
 // TestProgressSet_EmptyAssessorRejected verifies that an empty assessor is rejected.
 func TestProgressSet_EmptyAssessorRejected(t *testing.T) {
 	t.Parallel()

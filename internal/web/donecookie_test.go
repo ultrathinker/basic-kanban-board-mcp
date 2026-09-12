@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -269,6 +270,46 @@ func TestParseDoneShownCookie_EmptyAndOversized(t *testing.T) {
 	got := parseDoneShownCookie(strings.Repeat("q", 100000))
 	if len(got) != 0 {
 		t.Fatalf("oversized garbage produced %v, want empty set", got)
+	}
+}
+
+// TestEncodeDoneShownCookie_BoundedAtWriteTime closes a gap an independent
+// review found: parseDoneShownCookie already tolerates and truncates an
+// oversized incoming value, but nothing bounded what got WRITTEN. With
+// hundreds of remembered projects the joined value would silently cross the
+// browser's own per-cookie ceiling (commonly ~4KB) and the whole cookie —
+// every project's remembered choice, not just the newest one — would vanish
+// the next time it was set. This proves the encoder itself now stays inside
+// maxDoneCookieBytes no matter how large the set, and that whatever it does
+// write is still a clean, parseable value (valid project keys, nothing
+// truncated mid-key).
+func TestEncodeDoneShownCookie_BoundedAtWriteTime(t *testing.T) {
+	// Each key is 8 bytes (the maximum project key length), and there are
+	// far more of them than could ever fit in maxDoneCookieBytes at 8 bytes
+	// plus a comma each — comfortably past the ceiling.
+	set := make(map[string]bool, 2000)
+	for i := 0; i < 2000; i++ {
+		set[fmt.Sprintf("P%07d", i)] = true
+	}
+
+	encoded := encodeDoneShownCookie(set)
+	if len(encoded) > maxDoneCookieBytes {
+		t.Fatalf("encoded cookie is %d bytes, want <= %d (the browser's own per-cookie ceiling)", len(encoded), maxDoneCookieBytes)
+	}
+	if encoded == "" {
+		t.Fatal("bounded encode produced nothing at all from a non-empty set")
+	}
+
+	// What was written must still parse back cleanly: no key truncated
+	// mid-string for parseDoneShownCookie to choke on or silently drop.
+	decoded := parseDoneShownCookie(encoded)
+	if len(decoded) == 0 {
+		t.Fatal("bounded encode produced a value that decoded to an empty set")
+	}
+	for k := range decoded {
+		if _, err := domain.ValidateProjectKey(k); err != nil {
+			t.Fatalf("decoded key %q is not a valid project key: %v", k, err)
+		}
 	}
 }
 

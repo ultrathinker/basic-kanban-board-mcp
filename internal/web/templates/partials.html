@@ -30,12 +30,29 @@
        instead of inventing a second alarm language; the rest is quiet,
        muted text so a holding forecast never competes with the bar.
 
-       The owner's delete-track control (one row per assessor, with its own
-       cross + in-place confirmation) is a SEPARATE block, "progress-tracks",
-       called right after this one closes — see its own comment below. It
-       reads .Progress.Tracks, a different field from Forecast, so the two
-       features coexist on the same metric without either recomputing or
-       overriding the other.
+       The owner's delete-track control ("progress-tracks", one row per
+       assessor with its own cross + in-place confirmation) is called last,
+       INSIDE the same wrapper as the bar above — see its own comment below.
+       It reads .Progress.Tracks, a different field from Forecast, so the
+       two features coexist on the same metric without either recomputing
+       or overriding the other.
+
+       EVERYTHING above and .Progress.Tracks below render inside ONE
+       .progress-metric wrapper (data-progress-metric), never as loose
+       siblings. That wrapper, not sibling order, is what a client-side
+       delete replaces wholesale afterwards — see app.js's
+       replaceProgressMetric. A prior version of this template emitted the
+       bar and the track list as siblings and had the delete handler find
+       "the old bar" by walking to the track list's previous sibling; that
+       broke the moment KANB-13 inserted the chart container between them
+       (the lookup kept compiling and kept passing every Go test — nothing
+       here executes app.js — while quietly leaving a stale bar on screen
+       after every delete). A single always-present container removes the
+       whole class of "which sibling is it now" bugs rather than fixing one
+       instance of it. display:contents in app.css keeps the extra element
+       invisible to whichever flex layout it lands in (the header's
+       .proj-progress, a task card's plain block flow), so this changes no
+       visible spacing.
 
        KANB-13: clicking the bar opens its history chart underneath it;
        clicking again closes it. Only a metric built from marks has anything
@@ -47,15 +64,15 @@
        needs to fetch "GET /p/{key}/progress/chart" the first time it is
        opened — see app.js's "progress chart toggle" section — and an empty
        hidden container, "progress-chart", is rendered right after it (as a
-       CHILD of a sibling, never inside .progress-tracks) for that fragment
-       to land in. role/tabindex/aria-expanded make the toggle a real
-       keyboard target, matching every other custom control on this board
-       (chat-toggle, progress-track-delete): a span with only a click
-       listener would be invisible to Tab. The chart is fetched, not
-       rendered here, so it costs nothing on every page load for cards
-       nobody opens — see REPORT.md for the measured page-weight argument. */ -}}
-{{- if .Progress}}<span class="pbar{{with .Class}} {{.}}{{end}}{{if .Progress.Clickable}} pbar-clickable{{end}}" data-filled="{{.Progress.Filled}}" title="{{.Progress.Label}}" aria-label="{{.Progress.Label}}"{{if .Progress.Clickable}} data-progress-chart-toggle data-project="{{.Progress.ProjectKey}}" data-task="{{.Progress.TaskKey}}" role="button" tabindex="0" aria-expanded="false"{{end}}>{{range .Progress.Cells}}{{if .}}<i class="f"></i>{{else}}<i></i>{{end}}{{end}}<span class="pbar-label mono">{{.Progress.Label}}</span></span>{{if .Progress.Forecast}}<span class="forecast" title="Forecast by {{.Progress.Forecast.By}}">{{if .Progress.Forecast.Overdue}}<span class="mark">overdue</span> {{end}}<span class="text-subtle">eta {{.Progress.Forecast.Text}} · {{.Progress.Forecast.By}}</span></span>{{end}}{{if .Progress.Clickable}}<div class="progress-chart" data-progress-chart hidden></div>{{end}}{{- end}}
-{{- if .Progress}}{{template "progress-tracks" .Progress}}{{end}}
+       CHILD of the wrapper, a sibling of the bar, never inside
+       .progress-tracks) for that fragment to land in. role/tabindex/
+       aria-expanded make the toggle a real keyboard target, matching every
+       other custom control on this board (chat-toggle, progress-track-
+       delete): a span with only a click listener would be invisible to Tab.
+       The chart is fetched, not rendered here, so it costs nothing on every
+       page load for cards nobody opens — see REPORT.md for the measured
+       page-weight argument. */ -}}
+{{- if .Progress}}<span class="progress-metric" data-progress-metric data-project="{{.Progress.ProjectKey}}" data-task="{{.Progress.TaskKey}}"><span class="pbar{{with .Class}} {{.}}{{end}}{{if .Progress.Clickable}} pbar-clickable{{end}}" data-filled="{{.Progress.Filled}}" title="{{.Progress.Label}}" aria-label="{{.Progress.Label}}"{{if .Progress.Clickable}} data-progress-chart-toggle data-project="{{.Progress.ProjectKey}}" data-task="{{.Progress.TaskKey}}" role="button" tabindex="0" aria-expanded="false"{{end}}>{{range .Progress.Cells}}{{if .}}<i class="f"></i>{{else}}<i></i>{{end}}{{end}}<span class="pbar-label mono">{{.Progress.Label}}</span></span>{{if .Progress.Forecast}}<span class="forecast" title="Forecast by {{.Progress.Forecast.By}}">{{if .Progress.Forecast.Overdue}}<span class="mark">overdue</span> {{end}}<span class="text-subtle">eta {{.Progress.Forecast.Text}} · {{.Progress.Forecast.By}}</span></span>{{end}}{{if .Progress.Clickable}}<div class="progress-chart" data-progress-chart hidden></div>{{end}}{{template "progress-tracks" .Progress}}</span>{{- end}}
 {{end}}
 
 {{define "progress-chart-fragment"}}

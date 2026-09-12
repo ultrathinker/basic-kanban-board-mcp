@@ -66,13 +66,33 @@ func parseDoneShownCookie(raw string) map[string]bool {
 // encodeDoneShownCookie renders the set back to the cookie's wire format: a
 // sorted, comma-joined list of project keys. Sorting keeps the value (and
 // therefore anything asserting on it) deterministic across runs.
+//
+// Bounded at write time to the same maxDoneCookieBytes the reader already
+// tolerates: with hundreds of remembered projects the joined value would
+// otherwise silently cross the browser's own per-cookie limit (commonly
+// ~4KB) and the whole cookie -- every project's remembered choice, not just
+// the newest one -- would vanish the next time it was set. Keys are added in
+// sorted order until the next one would not fit; the ones that do not fit
+// are simply left out of this write, the same "degrade, never break"
+// posture parseDoneShownCookie already takes on the read side.
 func encodeDoneShownCookie(set map[string]bool) string {
 	keys := make([]string, 0, len(set))
 	for k := range set {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	return strings.Join(keys, ",")
+	var b strings.Builder
+	for _, k := range keys {
+		add := k
+		if b.Len() > 0 {
+			add = "," + k
+		}
+		if b.Len()+len(add) > maxDoneCookieBytes {
+			break
+		}
+		b.WriteString(add)
+	}
+	return b.String()
 }
 
 // readDoneShown reads the caller's done-shown cookie. A missing cookie and

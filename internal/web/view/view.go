@@ -1,7 +1,12 @@
 // Package view holds the view-models and template helpers used by the web
-// templates. The package is intentionally independent of internal/store and
-// internal/service: today it is fed by fixtures (so the UI can be developed
-// and reviewed without a database); later it is fed by service calls.
+// templates. The package must never import internal/store: it renders data
+// already fetched by someone else, it never fetches its own (today that is
+// fixtures, so the UI can be developed and reviewed without a database;
+// later it is service calls). It MAY import internal/service, but only to
+// reuse a handful of pure, already-agreed computation rules — chart.go calls
+// service.RoundMeanHalfUp for exactly this reason, so the rounding rule has
+// one definition, not two that can drift apart — never to reach back into
+// the service for data of its own.
 //
 // Anything that ends up in a template lives here. Templates bind to
 // `Page.Model`, which is an interface — concrete models (`BoardModel`,

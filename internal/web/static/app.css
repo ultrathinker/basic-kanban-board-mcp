@@ -353,6 +353,15 @@ select, .field input, .field textarea {
 .focus-banner .title { font-weight: 600; }
 
 /* --- live status --------------------------------------------------------- */
+/* .page-head is a flex row with a uniform 0.75rem gap between every pair of
+   its children (export, activity, hide/show done, live status, Thoughts...).
+   The owner singled out just one of those gaps as too tight: the Thoughts
+   toggle sits right before the live-status indicator. [data-chat-toggle] is
+   unique to that one button (see pages.html), so this widens only that one
+   pairing — every other header gap, and the uniform rule itself, is
+   untouched. */
+[data-chat-toggle] { margin-right: 0.5rem; }
+
 .live-status {
   display: inline-flex; align-items: center; gap: 0.4rem;
   font-size: var(--fs-1); color: var(--ink-subtle);
@@ -716,6 +725,25 @@ select, .field input, .field textarea {
 }
 .card .pbar { margin-top: 0.25rem; }
 
+/* The "progress-bar" template wraps its whole emission (the bar, the
+   optional forecast badge, the optional chart container and the delete-
+   track list) in one .progress-metric element so app.js has a single,
+   always-present node to replace wholesale after a track delete — see
+   app.js's replaceProgressMetric for why "find the old bar by DOM
+   adjacency" was the bug and a stable container is the fix. display:contents
+   keeps it invisible to whichever flex layout it lands in (the header's
+   .proj-progress, or a task card's plain block flow), so nesting one more
+   element here changes no visible spacing anywhere. */
+.progress-metric { display: contents; }
+
+/* The header's "tasks done 93%" / "assessed 30%" pairing sits tighter than
+   the owner wants between the caps label and the percent that follows the
+   bar's squares: bump .pbar-label's gap for the header pairing specifically,
+   leaving the base rule above (and therefore every task card, which shares
+   the exact same markup) untouched — see REPORT.md for why the two contexts
+   got different values instead of one shared bump. */
+.proj-progress .pbar-label { margin-left: 0.75rem; }
+
 /* --- progress history chart: click a bar open, click again to close -----
    Only a bar with a mark history behind it (view.ProgressView.Clickable —
    never the automatic done-share bar) gets the pointer cursor and the
@@ -975,6 +1003,11 @@ select, .field input, .field textarea {
 }
 .progress-track-label {
   font-family: var(--font-mono);
+  /* An assessor name is free text (bounded server-side at 80 bytes, same as
+     a chat author — see domain.ValidateActorName), not a token: a long name
+     with no spaces must wrap inside the row rather than push the delete
+     cross off the metric's width, exactly like .chat-author already does. */
+  overflow-wrap: anywhere;
 }
 .progress-track-delete {
   flex: none;

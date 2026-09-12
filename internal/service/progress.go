@@ -374,6 +374,14 @@ func (s *svc) ProgressHistory(ctx context.Context, a Actor, in ProgressHistoryIn
 // DeleteTrack with keys resolved to ids and the usual write-scope checks —
 // no rules of its own: which tracks may be deleted and what it means is
 // already decided at the storage boundary.
+//
+// A real removal (Removed > 0) emits domain.EventProgressTrackDeleted, the
+// same "something changed, go re-read the real data" signal ProgressSet and
+// ChatAdd already emit — see their own comments. Without it, every OTHER
+// open tab on this board keeps showing the metric's old mean until some
+// unrelated event happens to refresh it, and the activity feed carries no
+// record that a track vanished at all. An unknown-assessor no-op (Removed
+// == 0) emits nothing: nothing changed, so there is nothing to signal.
 func (s *svc) ProgressTrackDelete(ctx context.Context, a Actor, in ProgressTrackDeleteInput) (*ProgressTrackDeleteResult, error) {
 	if err := requireWrite(a); err != nil {
 		return nil, err
@@ -385,12 +393,14 @@ func (s *svc) ProgressTrackDelete(ctx context.Context, a Actor, in ProgressTrack
 	ctx = store.WithActor(ctx, a.Name)
 
 	var result ProgressTrackDeleteResult
+	var pending []domain.Event
 	err := s.store.Write(ctx, func(tx store.Tx) error {
 		p, err := s.resolveProject(tx, a, in.ProjectKey)
 		if err != nil {
 			return err
 		}
 		var taskID *string
+		var taskKey string
 		if in.TaskKey != "" {
 			t, err := s.store.Tasks().GetByKey(tx, in.TaskKey)
 			if err != nil {
@@ -400,16 +410,31 @@ func (s *svc) ProgressTrackDelete(ctx context.Context, a Actor, in ProgressTrack
 				return domain.NotFound("task", in.TaskKey)
 			}
 			taskID = &t.ID
+			taskKey = t.Key
 		}
 		removed, err := s.store.Progress().DeleteTrack(tx, p.ID, taskID, in.Assessor)
 		if err != nil {
 			return err
 		}
 		result.Removed = removed
+		if removed > 0 {
+			// No assessor name and no counts in the payload — the same rule
+			// ProgressSet's own emit follows: the event is a signal, never a
+			// second copy of the data that lives in progress_marks (or, in
+			// this case, no longer lives there at all).
+			var payload map[string]any
+			if taskID != nil {
+				payload = map[string]any{"key": taskKey}
+			}
+			if err := s.emit(tx, &pending, a.Name, domain.EventProgressTrackDeleted, p.ID, taskID, payload); err != nil {
+				return err
+			}
+		}
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
+	s.publishAll(pending)
 	return &result, nil
 }

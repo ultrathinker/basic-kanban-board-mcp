@@ -38,6 +38,15 @@ func (s *svc) ProgressSet(ctx context.Context, a Actor, in ProgressSetInput) (*P
 	if assessor == "" {
 		return nil, domain.Invalid("assessor", "assessor is required", "Pass an assessor name representing your agent identity.")
 	}
+	// Bounded the same way a chat author is (domain.ValidateActorName, 80
+	// bytes): the mark is stored forever (append-only, no thinning) and the
+	// name is re-rendered on every board load and every chart click, so an
+	// unbounded assessor name is a permanent, ever-repeating cost, not a
+	// one-time one. The MCP schema also caps this; this is the backstop for
+	// the web layer and any other direct caller.
+	if err := domain.ValidateActorName("assessor", assessor); err != nil {
+		return nil, err
+	}
 
 	if in.Percent < 0 || in.Percent > 100 {
 		return nil, domain.Invalid("percent", fmt.Sprintf("progress percent %d is outside 0..100", in.Percent), "Send a percent between 0 and 100.")

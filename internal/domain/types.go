@@ -385,6 +385,15 @@ const (
 	// same as every other event — the mark itself lives in progress_marks and
 	// is read from there, never from the event payload (KANB-12).
 	EventProgressRecorded EventType = "progress.recorded"
+	// EventProgressTrackDeleted fires after an assessor's whole progress
+	// track (every mark that assessor logged for a scope) is permanently
+	// removed. Like EventProgressRecorded, it carries only enough to
+	// identify the scope — never the assessor's name or the marks that were
+	// lost, which are gone from progress_marks and must not resurface via
+	// the event payload. Other open tabs on this board have no other way to
+	// learn the metric they are showing is now stale (KANB-12's live refresh
+	// re-reads the real aggregate; this event is only what tells it to).
+	EventProgressTrackDeleted EventType = "progress.track_deleted"
 	// EventChatPosted fires after a new chat message commits. The message
 	// body is never carried in the payload: the event is a change signal,
 	// the chat_messages table is the only source of truth for what was said.

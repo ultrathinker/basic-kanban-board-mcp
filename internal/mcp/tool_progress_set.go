@@ -62,6 +62,7 @@ func progressSetTool() *gomcp.Tool {
 	s := schemaFor[progressSetInput]()
 	setMin(prop(s, "percent"), 0)
 	setMax(prop(s, "percent"), 100)
+	setMaxLen(prop(s, "assessor"), domain.MaxAssigneeLen)
 
 	return &gomcp.Tool{
 		Name:        opProgressSet,

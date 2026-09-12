@@ -218,6 +218,65 @@ func TestProgressBar_ChartClickTargetDoesNotSwallowTrackDelete(t *testing.T) {
 	}
 }
 
+// TestProgressBar_WrappedInOneStableContainer pins the fix for an
+// independent review's headline defect: deleting an assessor's track used to
+// leave a stale bar on screen because app.js found "the old bar" by walking
+// to the track list's fixed previous sibling, and a later task (the history
+// chart, KANB-13) broke that fixed adjacency by inserting a new element
+// between them — silently, forever, since no Go test executes app.js. The
+// fix wraps the bar, the optional forecast badge, the optional chart
+// container and the whole track list in ONE always-present container
+// (data-progress-metric) so a client-side delete can replace it wholesale
+// instead of depending on sibling order at all.
+//
+// This is the one part of that fix a Go test CAN pin: the container exists,
+// wraps the fragment's ENTIRE output (nothing renders outside it — a stray
+// element outside the wrapper would be exactly the kind of thing a future
+// edit could leave behind for app.js to orphan again), and carries the
+// metric's own scope so a delete POST's (project, task) always matches the
+// container the bar itself was scoped to. The actual DOM replacement (app.js's
+// replaceProgressMetric) cannot be exercised from Go — see REPORT.md for how
+// that side was verified instead.
+func TestProgressBar_WrappedInOneStableContainer(t *testing.T) {
+	pv := view.NewAssessedProgress(percentPtr(60), 2, nil, "").
+		WithTracks("BMB", "BMB-1", []view.ProgressTrack{{Assessor: "alpha", Percent: 60, Count: 3}})
+	html := strings.TrimSpace(renderProgress(t, "progress-bar", map[string]any{"Progress": pv}))
+
+	if n := countOccurrences(html, "data-progress-metric"); n != 1 {
+		t.Fatalf("expected exactly one data-progress-metric container, found %d: %s", n, html)
+	}
+	if !strings.HasPrefix(html, `<span class="progress-metric" data-progress-metric data-project="BMB" data-task="BMB-1">`) {
+		t.Fatalf("fragment does not open with the progress-metric wrapper carrying the metric's own scope: %s", html)
+	}
+	if !strings.HasSuffix(html, "</span>") {
+		t.Fatalf("fragment does not end with the wrapper's own closing tag — something renders outside the container: %s", html)
+	}
+	// Both the bar and the track list must sit INSIDE that one wrapper, not
+	// as its siblings — otherwise a whole-container replace would still
+	// leave one of them behind.
+	metricStart := strings.Index(html, "data-progress-metric")
+	barIdx := strings.Index(html, `class="pbar`)
+	tracksIdx := strings.Index(html, `<ul class="progress-tracks"`)
+	if barIdx < metricStart || tracksIdx < metricStart {
+		t.Fatalf("bar or tracks list appears before the wrapper opens: metric=%d bar=%d tracks=%d\n%s", metricStart, barIdx, tracksIdx, html)
+	}
+}
+
+// TestProgressBar_ContainerPresentEvenWithoutTracks proves the wrapper is not
+// conditioned on Tracks being non-empty: a Clickable metric with no tracks
+// at all (WithTracks called with a nil slice — e.g. every mark for it was
+// just deleted except this render still shows the surviving percent) still
+// gets the same stable container, so app.js's replaceProgressMetric can rely
+// on data-progress-metric being present unconditionally for every metric a
+// delete-track POST can ever target.
+func TestProgressBar_ContainerPresentEvenWithoutTracks(t *testing.T) {
+	pv := view.NewAssessedProgress(percentPtr(30), 1, nil, "").WithTracks("BMB", "", nil)
+	html := renderProgress(t, "progress-bar", map[string]any{"Progress": pv})
+	if !strings.Contains(html, "data-progress-metric") {
+		t.Fatalf("Clickable metric with no tracks did not get a progress-metric container: %s", html)
+	}
+}
+
 // TestProgressMarkup_NoInlineStylesNoHandlers enforces the CSP constraints on
 // the new markup: the painted count is carried by a class/attribute and
 // painted in app.css — never a style="width:…", never an inline event

@@ -317,6 +317,47 @@ func TestProgressTrackDelete_BearerTokenCannotDelete(t *testing.T) {
 	}
 }
 
+// TestProgressTrackDelete_AdminScopeBearerCannotDelete closes the gap an
+// independent review found in TestProgressTrackDelete_BearerTokenCannotDelete
+// above: that test only proves a WRITE-scope bearer is refused, which is
+// true even if the handler were mistakenly changed to gate on scope
+// (requireAPIAuth(domain.ScopeAdmin)) rather than on credential TYPE
+// (requireOwnerSession, session cookie only) — a write-scope bearer fails
+// either way, so that mutation would have left every test in this file
+// green while a bearer minted with ADMIN scope could delete through the web
+// door. The actual invariant this feature promises is stronger than "no
+// write-scope bearer": no bearer or API-key token, of ANY scope including
+// admin, may ever reach this handler — an AI never authenticates with a
+// browser session, so a session-only gate is the only thing that can honour
+// that promise, and this is the case that would catch a regression back to
+// scope-based gating.
+func TestProgressTrackDelete_AdminScopeBearerCannotDelete(t *testing.T) {
+	env := newProgressDeleteEnv(t)
+	env.addMark(t, &env.task.ID, "alpha", 50)
+
+	ctx := context.Background()
+	secret, err := env.mgr.MintAndStore(ctx, &domain.Token{
+		Name: "ai-agent-admin", Scopes: domain.Scopes{domain.ScopeAdmin},
+	})
+	if err != nil {
+		t.Fatalf("mint admin-scope token: %v", err)
+	}
+
+	req := httptest.NewRequest("POST", "/fragments/progress/delete",
+		strings.NewReader("project=BMB&task="+env.task.Key+"&assessor=alpha"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Authorization", "Bearer "+secret)
+	rec := httptest.NewRecorder()
+	env.w.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("bearer (admin-scope) request status = %d, want 403; body=%q", rec.Code, rec.Body.String())
+	}
+	if got := env.countMarks(t, &env.task.ID, "alpha"); got != 1 {
+		t.Fatalf("alpha's mark did not survive an admin-scope bearer attempt: %d rows, want 1", got)
+	}
+}
+
 // TestProgressTrackDelete_WriteScopeSessionCannotDelete proves the session
 // path itself is admin-gated: a signed-in session with only write scope
 // (not the owner) is refused, same as an AI's bearer token, just through
