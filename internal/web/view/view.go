@@ -11,8 +11,10 @@ package view
 
 import (
 	"fmt"
+	"hash/fnv"
 	"html/template"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -157,13 +159,25 @@ type ProjectSummary struct {
 }
 
 // ChatEntry is one AI message in the thoughts panel: who said it, when, and
-// what. The body is stored verbatim — html/template escapes it at render
-// time — and wraps, because a long message must never stretch the panel.
+// what. The body is stored verbatim; TextHTML is what the template actually
+// renders (see linkifyChatText) — it escapes the whole body and additionally
+// turns recognized, existing task keys into links. Text is kept alongside it
+// (plain, unescaped) for callers that want the raw string rather than markup.
 type ChatEntry struct {
-	Author   string
-	When     string // relative age ("12m ago"), the cards' convention
-	FullTime string // RFC3339, carried for the hover title
-	Text     string
+	Author string
+	// AuthorColor is one of a fixed set of 8 CSS classes ("chat-c0".."chat-c7"),
+	// chosen by a stable hash of Author's bytes (see authorColorClass). It is
+	// never user input and needs no escaping, but html/template escapes it
+	// like any other field anyway.
+	AuthorColor string
+	When        string // relative age ("12m ago"), the cards' convention
+	FullTime    string // RFC3339, carried for the hover title
+	Text        string
+	// TextHTML is Text with HTML escaped throughout and, on top of the
+	// escaped text, any mentioned task key that is a KNOWN key (see
+	// linkifyChatText / CandidateTaskKeys) turned into a link. It is the only
+	// field the chat-entry template renders for the body.
+	TextHTML template.HTML
 }
 
 // ChatPanel is the project's "AI thoughts" side panel: the short messages
@@ -187,8 +201,16 @@ type ChatPanel struct {
 // ChatEntriesOldestFirst — the same helper the "older messages" endpoint
 // uses for its pages, so the two rendering paths cannot drift apart on
 // ordering.
-func NewChatPanel(msgs []domain.ChatMessage, nextCursor string, now time.Time) *ChatPanel {
-	entries := ChatEntriesOldestFirst(msgs, now)
+//
+// knownKeys is the set of task keys (canonical uppercase form) that the
+// caller has already confirmed exist, for exactly the messages in this page
+// — see CandidateTaskKeys. A key mentioned in a message but absent from
+// knownKeys (because it does not exist, or because the caller never checked)
+// is rendered as plain escaped text, never as a link: this is what keeps a
+// stale or made-up key from ever becoming a broken link. A nil map is valid
+// and simply means no message body gets a link, which is safe.
+func NewChatPanel(msgs []domain.ChatMessage, nextCursor string, now time.Time, knownKeys map[string]struct{}) *ChatPanel {
+	entries := ChatEntriesOldestFirst(msgs, now, knownKeys)
 	return &ChatPanel{
 		Entries:    entries,
 		Count:      len(entries),
@@ -202,17 +224,113 @@ func NewChatPanel(msgs []domain.ChatMessage, nextCursor string, now time.Time) *
 // disagree about it — the initial board render (via NewChatPanel) and the
 // "GET /p/{key}/chat/older" pagination endpoint, which renders a page of
 // older messages to prepend above the panel's current first entry.
-func ChatEntriesOldestFirst(msgs []domain.ChatMessage, now time.Time) []ChatEntry {
+//
+// See NewChatPanel for what knownKeys means.
+func ChatEntriesOldestFirst(msgs []domain.ChatMessage, now time.Time, knownKeys map[string]struct{}) []ChatEntry {
 	entries := make([]ChatEntry, len(msgs))
 	for i, m := range msgs {
 		entries[len(msgs)-1-i] = ChatEntry{
-			Author:   m.Author,
-			When:     relTime(m.CreatedAt, now),
-			FullTime: m.CreatedAt.Format(time.RFC3339),
-			Text:     m.Body,
+			Author:      m.Author,
+			AuthorColor: authorColorClass(m.Author),
+			When:        relTime(m.CreatedAt, now),
+			FullTime:    m.CreatedAt.Format(time.RFC3339),
+			Text:        m.Body,
+			TextHTML:    linkifyChatText(m.Body, knownKeys),
 		}
 	}
 	return entries
+}
+
+// authorColorClass maps an author name to one of 8 fixed chat-colour CSS
+// classes ("chat-c0".."chat-c7") via FNV-1a over the name's own bytes. FNV-1a
+// is a pure function: no map iteration order, no rand, no address, no clock
+// enters it, so the same name lands on the same class on every render,
+// including after a process restart — which a hash seeded from anything
+// other than the bytes themselves could not promise. An empty name still
+// hashes to a definite class (FNV-1a's offset basis), so it never panics or
+// falls back to "no colour".
+func authorColorClass(name string) string {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(name))
+	return fmt.Sprintf("chat-c%d", h.Sum32()%8)
+}
+
+// taskKeyRefRe matches a task-key-shaped token inside free text: one letter,
+// then 1-7 more letters/digits (the same 2-8 character project-key shape
+// domain.ValidateProjectKey enforces), a dash, then one or more digits. The
+// \b word boundaries on both ends are load-bearing:
+//   - "KANB-7X" does not match: \b cannot hold between the trailing digit and
+//     the following letter, and the digit run cannot back off (it requires
+//     at least one digit), so the whole token is rejected rather than
+//     matching a truncated "KANB-7".
+//   - "xKANB-7" is still matched (a leading letter is syntactically a valid,
+//     longer project-key prefix), but the token it names is "XKANB-7", a
+//     different key from "KANB-7" — it only ever becomes a link if that
+//     literal key exists, which existence-checking (not the regex) rules
+//     out in the ordinary case.
+//   - a bare "7" never matches: there is no dash, so no key shape at all.
+var taskKeyRefRe = regexp.MustCompile(`\b[A-Za-z][A-Za-z0-9]{1,7}-[0-9]+\b`)
+
+// CandidateTaskKeys returns the distinct task-key-shaped tokens mentioned
+// across a page of chat messages, normalized to their canonical uppercase
+// form, capped at domain.MaxGetKeys (the most service.TaskGet accepts in one
+// call). The web layer resolves this list against the service with exactly
+// ONE batched call per page of messages — never one call per message, and
+// never one per character — and only the keys that call confirms exist may
+// ever be turned into links by linkifyChatText.
+func CandidateTaskKeys(msgs []domain.ChatMessage) []string {
+	seen := make(map[string]struct{})
+	var out []string
+	for _, m := range msgs {
+		for _, tok := range taskKeyRefRe.FindAllString(m.Body, -1) {
+			norm := strings.ToUpper(tok)
+			if _, ok := seen[norm]; ok {
+				continue
+			}
+			seen[norm] = struct{}{}
+			out = append(out, norm)
+			if len(out) >= domain.MaxGetKeys {
+				return out
+			}
+		}
+	}
+	return out
+}
+
+// linkifyChatText renders a chat message body as safe HTML: every byte of
+// text is escaped via template.HTMLEscapeString, and the only markup ever
+// introduced is an <a> around a task-key-shaped token whose normalized form
+// is a key in knownKeys. The href is built from that normalized, matched
+// token (taskURL(norm)) — never by concatenating a slice of the raw message
+// text into an attribute — and the visible link text is the escaped
+// original token. A token that is not key-shaped, or is key-shaped but not
+// in knownKeys, is escaped and left as plain text: it never becomes a link,
+// broken or otherwise.
+func linkifyChatText(text string, knownKeys map[string]struct{}) template.HTML {
+	locs := taskKeyRefRe.FindAllStringIndex(text, -1)
+	if len(locs) == 0 {
+		return template.HTML(template.HTMLEscapeString(text))
+	}
+	var buf strings.Builder
+	last := 0
+	for _, loc := range locs {
+		start, end := loc[0], loc[1]
+		buf.WriteString(template.HTMLEscapeString(text[last:start]))
+		token := text[start:end]
+		norm := strings.ToUpper(token)
+		if _, ok := knownKeys[norm]; ok {
+			buf.WriteString(`<a href="`)
+			buf.WriteString(template.HTMLEscapeString(taskURL(norm)))
+			buf.WriteString(`">`)
+			buf.WriteString(template.HTMLEscapeString(token))
+			buf.WriteString(`</a>`)
+		} else {
+			buf.WriteString(template.HTMLEscapeString(token))
+		}
+		last = end
+	}
+	buf.WriteString(template.HTMLEscapeString(text[last:]))
+	return template.HTML(buf.String())
 }
 
 // BoardModel is what the board page renders.

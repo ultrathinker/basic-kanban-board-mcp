@@ -85,8 +85,8 @@
      exactly one definition of what a chat entry looks like — the reason
      "card" is a shared template rather than being inlined twice. */ -}}
 {{define "chat-entry"}}<li class="chat-entry">
-  <div class="chat-head"><span class="chat-author">{{.Author}}</span> <span class="text-subtle text-xs" title="{{.FullTime}}">{{.When}}</span></div>
-  <div class="chat-text">{{.Text}}</div>
+  <div class="chat-head"><span class="chat-author {{.AuthorColor}}">{{.Author}}</span> <span class="text-subtle text-xs" title="{{.FullTime}}">{{.When}}</span></div>
+  <div class="chat-text">{{.TextHTML}}</div>
 </li>
 {{end}}
 

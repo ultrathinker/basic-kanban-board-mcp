@@ -35,7 +35,7 @@ func boardWithChat(chat *view.ChatPanel, open bool) view.BoardModel {
 // message with its author and its time — the two things the owner needs to
 // tell one agent's thought from another's.
 func TestChatPanel_RendersMessagesWithAuthorsAndTimes(t *testing.T) {
-	m := boardWithChat(view.NewChatPanel(chatFixtureMsgs, "next-cursor-str", chatFixtureNow), true)
+	m := boardWithChat(view.NewChatPanel(chatFixtureMsgs, "next-cursor-str", chatFixtureNow, nil), true)
 	html := renderProgress(t, "page-board", view.SamplePage("Test", "board", m))
 
 	for _, want := range []string{
@@ -65,7 +65,7 @@ func TestChatPanel_RendersMessagesWithAuthorsAndTimes(t *testing.T) {
 // of app.js), which only reads right if the newest entry is actually last
 // in the DOM.
 func TestChatFeed_NewestLastAtBottom(t *testing.T) {
-	m := boardWithChat(view.NewChatPanel(chatFixtureMsgs, "", chatFixtureNow), true)
+	m := boardWithChat(view.NewChatPanel(chatFixtureMsgs, "", chatFixtureNow, nil), true)
 	html := renderProgress(t, "page-board", view.SamplePage("Test", "board", m))
 
 	newest := strings.Index(html, "found the root cause")
@@ -82,7 +82,7 @@ func TestChatFeed_NewestLastAtBottom(t *testing.T) {
 // opens the panel into a clear empty state — not an error, not a broken
 // template, not a lie about messages existing.
 func TestChatPanel_EmptyProjectShowsSaneEmptiness(t *testing.T) {
-	m := boardWithChat(view.NewChatPanel(nil, "", chatFixtureNow), true)
+	m := boardWithChat(view.NewChatPanel(nil, "", chatFixtureNow, nil), true)
 	html := renderProgress(t, "page-board", view.SamplePage("Test", "board", m))
 	if !strings.Contains(html, "No thoughts yet") {
 		t.Fatalf("empty project panel does not explain itself: %s", html)
@@ -106,9 +106,9 @@ func TestChatPanel_EmptyProjectShowsSaneEmptiness(t *testing.T) {
 // closed; app.js flips it.
 func TestBoardLayout_ClosedVsOpenMarkup(t *testing.T) {
 	closed := renderProgress(t, "page-board",
-		view.SamplePage("Test", "board", boardWithChat(view.NewChatPanel(chatFixtureMsgs, "", chatFixtureNow), false)))
+		view.SamplePage("Test", "board", boardWithChat(view.NewChatPanel(chatFixtureMsgs, "", chatFixtureNow, nil), false)))
 	open := renderProgress(t, "page-board",
-		view.SamplePage("Test", "board", boardWithChat(view.NewChatPanel(chatFixtureMsgs, "", chatFixtureNow), true)))
+		view.SamplePage("Test", "board", boardWithChat(view.NewChatPanel(chatFixtureMsgs, "", chatFixtureNow, nil), true)))
 
 	if !strings.Contains(closed, `class="board-split" data-chat-split`) {
 		t.Fatalf("closed page lost the plain split wrapper: %s", closed[:0])
@@ -132,7 +132,7 @@ func TestBoardLayout_ClosedVsOpenMarkup(t *testing.T) {
 // classes), no inline event handlers (the toggle is wired in app.js by
 // data-attribute).
 func TestChatMarkup_NoInlineStylesNoHandlers(t *testing.T) {
-	m := boardWithChat(view.NewChatPanel(chatFixtureMsgs, "", chatFixtureNow), true)
+	m := boardWithChat(view.NewChatPanel(chatFixtureMsgs, "", chatFixtureNow, nil), true)
 	html := renderProgress(t, "page-board", view.SamplePage("Test", "board", m))
 	if strings.Contains(html, `style="`) || strings.Contains(html, `style='`) {
 		t.Fatal("board page carries an inline style attribute")
@@ -156,7 +156,7 @@ func TestChatEntriesOldestFirst_FullOrder(t *testing.T) {
 		{ID: "m2", Author: "agent-b", Body: "second", CreatedAt: now.Add(-time.Minute)},
 		{ID: "m1", Author: "agent-a", Body: "first, oldest", CreatedAt: now.Add(-2 * time.Minute)},
 	}
-	entries := view.ChatEntriesOldestFirst(msgs, now)
+	entries := view.ChatEntriesOldestFirst(msgs, now, nil)
 	if len(entries) != 3 {
 		t.Fatalf("got %d entries, want 3", len(entries))
 	}
@@ -182,7 +182,7 @@ func TestChatEntriesOldestFirst_FullOrder(t *testing.T) {
 // TestChatEntriesOldestFirst_Empty: an empty page maps to an empty (not
 // nil-that-panics-on-range, not one-element) slice.
 func TestChatEntriesOldestFirst_Empty(t *testing.T) {
-	entries := view.ChatEntriesOldestFirst(nil, chatFixtureNow)
+	entries := view.ChatEntriesOldestFirst(nil, chatFixtureNow, nil)
 	if len(entries) != 0 {
 		t.Fatalf("got %d entries for an empty page, want 0", len(entries))
 	}
@@ -195,7 +195,7 @@ func TestChatTextEscaped(t *testing.T) {
 	msgs := []domain.ChatMessage{
 		{ID: "m1", Author: "agent-x", Body: `<script>alert(1)</script> A & B καλημέρα`, CreatedAt: chatFixtureNow},
 	}
-	m := boardWithChat(view.NewChatPanel(msgs, "", chatFixtureNow), true)
+	m := boardWithChat(view.NewChatPanel(msgs, "", chatFixtureNow, nil), true)
 	html := renderProgress(t, "page-board", view.SamplePage("Test", "board", m))
 
 	if strings.Contains(html, "<script>alert(1)") {

@@ -785,7 +785,76 @@ select, .field input, .field textarea {
   font-weight: 600;
   font-size: var(--fs-2);
   overflow-wrap: anywhere;
+  position: relative;
+  padding-left: 0.9em;
 }
+/* --- chat author colour: COLOUR PERMITTED HERE ONLY --------------------
+   COMMON.md / the owner's standing rule: the portal is black and white
+   everywhere except this one feed. KANB-11 assigns each author a colour by
+   hashing their name (view.go, authorColorClass) into one of these 8 fixed
+   slots — never a setting, never stored, never varying between restarts.
+   The colour rides on a small square swatch in front of the author's name,
+   not on the name's own glyphs: the name stays in --ink at full contrast in
+   both themes, and the swatch (a non-text UI element, not a text run) only
+   has to be visibly distinct from --paper, which every one of these 8
+   hues is. This is the ONE exemption to the file's greyscale rule; it is
+   deliberately fenced by these two comments so the exemption is auditable
+   and does not leak — TestStylesheetIsGreyscale strips exactly this
+   fenced span before checking the rest of the file for hue.
+   Hues are the validated 8-slot categorical palette (light/dark steps
+   picked for CVD-safe adjacent-pair separation in both modes); dark steps
+   follow the same two-block mechanism every other themed token in this
+   file uses, so the manual toggle and the OS preference agree. */
+:root {
+  --chat-1: #2a78d6; /* blue */
+  --chat-2: #eb6834; /* orange */
+  --chat-3: #1baf7a; /* aqua */
+  --chat-4: #eda100; /* yellow */
+  --chat-5: #e87ba4; /* magenta */
+  --chat-6: #008300; /* green */
+  --chat-7: #4a3aa7; /* violet */
+  --chat-8: #e34948; /* red */
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --chat-1: #3987e5;
+    --chat-2: #d95926;
+    --chat-3: #199e70;
+    --chat-4: #c98500;
+    --chat-5: #d55181;
+    --chat-6: #008300;
+    --chat-7: #9085e9;
+    --chat-8: #e66767;
+  }
+}
+:root[data-theme="dark"] {
+  --chat-1: #3987e5;
+  --chat-2: #d95926;
+  --chat-3: #199e70;
+  --chat-4: #c98500;
+  --chat-5: #d55181;
+  --chat-6: #008300;
+  --chat-7: #9085e9;
+  --chat-8: #e66767;
+}
+.chat-author::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0.2em;
+  width: 0.6em;
+  height: 0.6em;
+  background: var(--chat-author-colour, var(--rule-strong));
+}
+.chat-c0 { --chat-author-colour: var(--chat-1); }
+.chat-c1 { --chat-author-colour: var(--chat-2); }
+.chat-c2 { --chat-author-colour: var(--chat-3); }
+.chat-c3 { --chat-author-colour: var(--chat-4); }
+.chat-c4 { --chat-author-colour: var(--chat-5); }
+.chat-c5 { --chat-author-colour: var(--chat-6); }
+.chat-c6 { --chat-author-colour: var(--chat-7); }
+.chat-c7 { --chat-author-colour: var(--chat-8); }
+/* --- end chat author colour: COLOUR PERMITTED HERE ONLY --------------- */
 .chat-text {
   margin-top: 0.125rem;
   font-size: var(--fs-3);

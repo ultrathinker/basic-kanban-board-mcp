@@ -41,6 +41,17 @@ var commentRe = regexp.MustCompile(`(?s)/\*.*?\*/`)
 
 func stripComments(css string) string { return commentRe.ReplaceAllString(css, " ") }
 
+// chatColourZoneRe strips the ONE region of app.css where colour is
+// permitted by design (COMMON.md / the owner's standing rule: "the portal is
+// black and white... colour is allowed only inside the AI chat feed").
+// KANB-11 fences its author-colour tokens and classes between two literal
+// marker comments precisely so this exemption is narrow and auditable: it is
+// stripped here, before the greyscale check runs, and nowhere else — every
+// other line of the stylesheet must still be pure grey, exactly as before.
+var chatColourZoneRe = regexp.MustCompile(`(?s)/\* --- chat author colour: COLOUR PERMITTED HERE ONLY.*?/\* --- end chat author colour: COLOUR PERMITTED HERE ONLY.*?\*/`)
+
+func stripChatColourZone(css string) string { return chatColourZoneRe.ReplaceAllString(css, " ") }
+
 var hexRe = regexp.MustCompile(`#([0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})\b`)
 
 // TestStylesheetIsGreyscale is the load-bearing one. A kanban board without
@@ -49,7 +60,12 @@ var hexRe = regexp.MustCompile(`#([0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[
 // priority in weight and rules falls apart.
 func TestStylesheetIsGreyscale(t *testing.T) {
 	t.Parallel()
-	css := stripComments(readAsset(t, canonicalCSS))
+	// The chat-colour zone must be stripped BEFORE stripComments: it is
+	// delimited by two marker comments, and stripComments (which removes one
+	// isolated /* ... */ block at a time, non-greedy) would eat the two
+	// markers individually and leave the coloured rules between them
+	// unstripped and unguarded. See stripChatColourZone.
+	css := stripComments(stripChatColourZone(readAsset(t, canonicalCSS)))
 
 	for _, m := range hexRe.FindAllStringSubmatch(css, -1) {
 		r, g, b, ok := expandHex(m[1])
@@ -294,22 +310,34 @@ func TestStaticMirrorMatchesCanonicalSource(t *testing.T) {
 	})
 }
 
-// tokensInBlock returns the custom properties declared in the block that
-// starts at the given selector text.
+// tokensInBlock returns the custom properties declared across EVERY block
+// that starts with the given selector text — not just the first one. A
+// theme selector (":root {", the two dark guards) is free to appear more
+// than once in the file: KANB-11's chat-colour tokens deliberately sit in
+// their own second occurrence of each selector, right inside the "ai
+// thoughts panel" section, rather than in the shared top-of-file token
+// block. Stopping at the first match would silently blind
+// TestDarkThemeIsCompleteInBothDirections to every token declared in a
+// later occurrence — not just KANB-11's, but any future one — which is a
+// gap in the check, not a property of a correct stylesheet.
 func tokensInBlock(t *testing.T, css, selector string) map[string]bool {
 	t.Helper()
 	out := map[string]bool{}
-	idx := strings.Index(css, selector)
-	if idx < 0 {
-		return out
-	}
-	rest := css[idx+len(selector):]
-	end := strings.Index(rest, "}")
-	if end < 0 {
-		t.Fatalf("unterminated block for selector %q", selector)
-	}
-	for _, m := range varDefRe.FindAllStringSubmatch(rest[:end], -1) {
-		out[m[1]] = true
+	pos := 0
+	for {
+		idx := strings.Index(css[pos:], selector)
+		if idx < 0 {
+			break
+		}
+		start := pos + idx + len(selector)
+		end := strings.Index(css[start:], "}")
+		if end < 0 {
+			t.Fatalf("unterminated block for selector %q", selector)
+		}
+		for _, m := range varDefRe.FindAllStringSubmatch(css[start:start+end], -1) {
+			out[m[1]] = true
+		}
+		pos = start + end
 	}
 	return out
 }

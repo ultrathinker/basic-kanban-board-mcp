@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -11,6 +12,34 @@ import (
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/service"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/web/view"
 )
+
+// knownChatTaskKeys resolves which of the task-key-shaped tokens mentioned in
+// one page of chat messages are real tasks, in exactly one batched call to
+// the service — never one call per message. This is the "which keys exist"
+// knowledge the chat feed needs to turn a mention into a link without ever
+// turning a made-up or stale key into a broken one (KANB-11).
+//
+// It is best-effort like the chat read it feeds: a failed lookup (or no
+// candidates at all) yields an empty set, which is always safe — it just
+// means no key in this page links, never that a bad link appears.
+// service.TaskGet reports missing/inaccessible keys as NotFound rather than
+// erroring the whole call, so a mix of real and made-up keys in one page
+// still resolves the real ones.
+func knownChatTaskKeys(ctx context.Context, svc service.Service, a service.Actor, msgs []domain.ChatMessage) map[string]struct{} {
+	known := make(map[string]struct{})
+	candidates := view.CandidateTaskKeys(msgs)
+	if len(candidates) == 0 {
+		return known
+	}
+	res, err := svc.TaskGet(ctx, a, service.TaskGetInput{Keys: candidates})
+	if err != nil {
+		return known
+	}
+	for _, t := range res.Tasks {
+		known[strings.ToUpper(t.Key)] = struct{}{}
+	}
+	return known
+}
 
 // formatEstimateLabel renders an estimate number + unit as the compact
 // "2h"/"30m" string the drawer pill shows. It mirrors internal/web/view's
@@ -116,7 +145,8 @@ func (w *Web) handleBoard(rw http.ResponseWriter, r *http.Request) {
 	if chat, err := w.d.Service.ChatList(r.Context(), actorFor(tok), service.ChatListInput{
 		ProjectKey: key,
 	}); err == nil {
-		model.Chat = view.NewChatPanel(chat.Messages, chat.Cursor, w.d.Now())
+		known := knownChatTaskKeys(r.Context(), w.d.Service, actorFor(tok), chat.Messages)
+		model.Chat = view.NewChatPanel(chat.Messages, chat.Cursor, w.d.Now(), known)
 	}
 
 	page := w.newPage(r.Context(), rw, r, tok, "board")
@@ -171,7 +201,8 @@ func (w *Web) handleChatOlder(rw http.ResponseWriter, r *http.Request) {
 		apiError(rw, err)
 		return
 	}
-	entries := view.ChatEntriesOldestFirst(result.Messages, w.d.Now())
+	known := knownChatTaskKeys(r.Context(), w.d.Service, actorFor(tok), result.Messages)
+	entries := view.ChatEntriesOldestFirst(result.Messages, w.d.Now(), known)
 	rw.Header().Set("X-Chat-Next-Cursor", result.Cursor)
 	w.renderFragment(rw, r, http.StatusOK, "chat-entries", entries)
 }

@@ -2,6 +2,7 @@ package view_test
 
 import (
 	"bytes"
+	"html/template"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -526,10 +527,11 @@ func renderCases() []renderCase {
 			name:     "chat/entry",
 			template: "chat-entry",
 			data: view.ChatEntry{
-				Author: "agent-alpha", When: "2m ago",
+				Author: "agent-alpha", AuthorColor: "chat-c3", When: "2m ago",
 				FullTime: "2026-09-12T12:00:00Z", Text: "investigating the flaky test",
+				TextHTML: template.HTML("investigating the flaky test"),
 			},
-			wants:    []string{"agent-alpha", "2m ago", "investigating the flaky test", `title="2026-09-12T12:00:00Z"`},
+			wants:    []string{"agent-alpha", "chat-c3", "2m ago", "investigating the flaky test", `title="2026-09-12T12:00:00Z"`},
 			notWants: []string{"<no value>"},
 		},
 		{
@@ -539,8 +541,8 @@ func renderCases() []renderCase {
 			name:     "chat/entries-page",
 			template: "chat-entries",
 			data: []view.ChatEntry{
-				{Author: "agent-a", When: "5m ago", FullTime: "2026-09-12T11:55:00Z", Text: "older thought"},
-				{Author: "agent-b", When: "3m ago", FullTime: "2026-09-12T11:57:00Z", Text: "newer thought"},
+				{Author: "agent-a", When: "5m ago", FullTime: "2026-09-12T11:55:00Z", Text: "older thought", TextHTML: template.HTML("older thought")},
+				{Author: "agent-b", When: "3m ago", FullTime: "2026-09-12T11:57:00Z", Text: "newer thought", TextHTML: template.HTML("newer thought")},
 			},
 			wants: []string{"agent-a", "older thought", "agent-b", "newer thought"},
 			// The wrapping <ol> belongs to the page that already rendered;
