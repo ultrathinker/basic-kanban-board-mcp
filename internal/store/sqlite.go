@@ -419,6 +419,9 @@ func (s *sqlStore) Links() LinkRepo {
 func (s *sqlStore) Notes() NoteRepo {
 	return s.repo("notes", func() any { return &noteRepo{s: s} }).(NoteRepo)
 }
+func (s *sqlStore) Progress() ProgressRepo {
+	return s.repo("progress", func() any { return &progressRepo{s: s} }).(ProgressRepo)
+}
 func (s *sqlStore) Events() EventRepo {
 	return s.repo("events", func() any { return &eventRepo{s: s} }).(EventRepo)
 }

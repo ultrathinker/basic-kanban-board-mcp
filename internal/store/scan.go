@@ -162,16 +162,26 @@ func decodePayload(s string) (map[string]any, error) {
 // Constraint / sqlite error mapping
 // ---------------------------------------------------------------------------
 //
-// modernc.org/sqlite does not currently expose an ExtendedCode() method on
-// its *sqlite.Error, so we cannot rely on SQLITE_CONSTRAINT_UNIQUE etc.
-// The driver does, however, format the error message in a stable
-// human-readable form. We assert on substrings ("UNIQUE constraint failed",
-// "FOREIGN KEY constraint failed") which are stable in the upstream
-// SQLite library and have been so for years.
+// modernc.org/sqlite returns the EXTENDED result code from
+// *sqlite.Error.Code() (there is no separate ExtendedCode() method): the low
+// byte is the primary code, so every constraint failure carries 19 there —
+// 275 for CHECK, 787 for FOREIGN KEY, 2067 for UNIQUE. Classification below
+// therefore first accepts the constraint family, then asserts on the message
+// substring ("UNIQUE constraint failed", "FOREIGN KEY constraint failed")
+// which is stable in the upstream SQLite library and has been so for years.
+
+// isConstraintCode reports whether code belongs to the SQLITE_CONSTRAINT
+// family, either as the bare primary code (19) or as any extended code
+// derived from it. Comparing against the bare 19 alone matches nothing on a
+// driver that returns extended codes, and turns every constraint branch
+// below into dead code.
+func isConstraintCode(code int) bool {
+	return code&0xff == 19
+}
 
 // IsUniqueViolation reports whether err is a UNIQUE constraint failure.
 func IsUniqueViolation(err error) bool {
-	if sqliteCode(err) != 19 {
+	if !isConstraintCode(sqliteCode(err)) {
 		return false
 	}
 	return strings.Contains(err.Error(), "UNIQUE constraint failed")
@@ -180,7 +190,7 @@ func IsUniqueViolation(err error) bool {
 // IsForeignKeyViolation reports whether err is a FOREIGN KEY constraint
 // failure.
 func IsForeignKeyViolation(err error) bool {
-	if sqliteCode(err) != 19 {
+	if !isConstraintCode(sqliteCode(err)) {
 		return false
 	}
 	return strings.Contains(err.Error(), "FOREIGN KEY constraint failed")
@@ -188,7 +198,7 @@ func IsForeignKeyViolation(err error) bool {
 
 // IsCheckViolation reports whether err is a CHECK constraint failure.
 func IsCheckViolation(err error) bool {
-	if sqliteCode(err) != 19 {
+	if !isConstraintCode(sqliteCode(err)) {
 		return false
 	}
 	return strings.Contains(err.Error(), "CHECK constraint failed")

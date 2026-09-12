@@ -66,6 +66,7 @@ type Store interface {
 	Tasks() TaskRepo
 	Links() LinkRepo
 	Notes() NoteRepo
+	Progress() ProgressRepo
 	Events() EventRepo
 	Tokens() TokenRepo
 	Sessions() SessionRepo
@@ -209,6 +210,27 @@ type NoteRepo interface {
 	Add(tx Tx, n *domain.Note) error
 	ListByTask(tx Tx, taskID string, limit int, before *time.Time) ([]domain.Note, error)
 	CountByTasks(tx Tx, taskIDs []string) (map[string]int, error)
+}
+
+// ProgressRepo appends and reads progress estimates. The history is
+// append-only: an assessor revises by adding a new mark, never by updating
+// one, and nothing ever thins the table — the events pruner deletes events
+// rows only. The one delete is DeleteTrack, an explicit removal of one
+// assessor's whole track. A scope is either a single task's track scope or
+// the project-level scope (task_id IS NULL).
+type ProgressRepo interface {
+	// Add appends one estimate to the history.
+	Add(tx Tx, m *domain.ProgressMark) error
+	// LatestByAssessor returns the most recent mark of every assessor within
+	// the scope — exactly one row per assessor. A nil taskID reads the
+	// project-level scope (task_id IS NULL); a taskID reads that task.
+	LatestByAssessor(tx Tx, projectID string, taskID *string) ([]domain.ProgressMark, error)
+	// History returns every mark in the scope, oldest first.
+	History(tx Tx, projectID string, taskID *string) ([]domain.ProgressMark, error)
+	// DeleteTrack removes every mark for one (project, task, assessor) track —
+	// a real DELETE, no hidden flag. Returns the number of rows removed so the
+	// caller can report what it discarded.
+	DeleteTrack(tx Tx, projectID string, taskID *string, assessor string) (int64, error)
 }
 
 // EventRepo is append-only and backs SSE replay.

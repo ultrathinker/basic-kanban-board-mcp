@@ -294,6 +294,22 @@ type Note struct {
 	CreatedAt time.Time
 }
 
+// ProgressMark is one progress estimate of a task, or of the whole project
+// when TaskID is nil. Append-only: an assessor revises its answer by adding
+// a new mark, never by editing an old one, and nothing prunes the history —
+// the trend is the data. Assessor is the estimating agent's self-declared
+// name; it is not checked against any registry, because any agent may assess.
+type ProgressMark struct {
+	ID        string
+	ProjectID string
+	TaskID    *string // nil = an estimate of the project as a whole
+	Assessor  string
+	Percent   int // 0..100; a CHECK in migration 0005 is the backstop
+	// ETA is the optional forecast of when the assessed work will finish.
+	ETA       *time.Time
+	CreatedAt time.Time
+}
+
 // EventType enumerates everything that can appear in the activity feed.
 type EventType string
 
