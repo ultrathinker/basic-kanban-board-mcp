@@ -325,6 +325,51 @@ func (s *svc) ProjectProgress(ctx context.Context, a Actor, in ProjectProgressIn
 	return &result, nil
 }
 
+// ProgressHistory returns the raw mark history behind one metric's scope —
+// the project's manual track (TaskKey empty) or one task's track — for the
+// progress-history chart. It is a thin read wrapper over the store's own
+// History (already used above to build ManualTracks' counts): no averaging,
+// no rounding, no decimation happens here, because none of that is this
+// method's job — view.RenderProgressChart owns every rule about how marks
+// become a picture.
+func (s *svc) ProgressHistory(ctx context.Context, a Actor, in ProgressHistoryInput) (*ProgressHistoryResult, error) {
+	if err := requireRead(a); err != nil {
+		return nil, err
+	}
+	ctx = store.WithActor(ctx, a.Name)
+
+	var result ProgressHistoryResult
+	err := s.store.Read(ctx, func(tx store.Tx) error {
+		p, err := s.resolveProject(tx, a, in.ProjectKey)
+		if err != nil {
+			return err
+		}
+		result.ProjectKey = p.Key
+		var taskID *string
+		if in.TaskKey != "" {
+			t, err := s.store.Tasks().GetByKey(tx, in.TaskKey)
+			if err != nil {
+				return err
+			}
+			if t.ProjectID != p.ID {
+				return domain.NotFound("task", in.TaskKey)
+			}
+			taskID = &t.ID
+			result.TaskKey = t.Key
+		}
+		marks, err := s.store.Progress().History(tx, p.ID, taskID)
+		if err != nil {
+			return err
+		}
+		result.Marks = marks
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 // ProgressTrackDelete removes one assessor's whole track. It is the store's
 // DeleteTrack with keys resolved to ids and the usual write-scope checks —
 // no rules of its own: which tracks may be deleted and what it means is

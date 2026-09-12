@@ -40,6 +40,7 @@ type Service interface {
 
 	TaskProgress(ctx context.Context, a Actor, in TaskProgressInput) (*TaskProgressResult, error)
 	ProjectProgress(ctx context.Context, a Actor, in ProjectProgressInput) (*ProjectProgressResult, error)
+	ProgressHistory(ctx context.Context, a Actor, in ProgressHistoryInput) (*ProgressHistoryResult, error)
 	ProgressTrackDelete(ctx context.Context, a Actor, in ProgressTrackDeleteInput) (*ProgressTrackDeleteResult, error)
 	ProgressSet(ctx context.Context, a Actor, in ProgressSetInput) (*ProgressSetResult, error)
 	ChatAdd(ctx context.Context, a Actor, in ChatAddInput) (*domain.ChatMessage, error)
@@ -738,6 +739,29 @@ type ProjectProgressResult struct {
 	// purpose as TaskProgressItem.Tracks, for the project-level scope. Empty
 	// when nobody assessed the project as a whole.
 	ManualTracks []AssessorTrack
+}
+
+// ProgressHistoryInput asks for the full mark history behind one progress
+// metric: the project's manual scope (TaskKey empty) or one task's summary
+// scope (TaskKey set) — the same (project, task) scoping ProgressTrackDelete
+// and the Tracks breakdown already use. It powers the progress-history chart
+// (internal/web/view/chart.go), fetched once when a bar is first clicked
+// open rather than rendered for every metric on the page: see KANB-13's
+// REPORT.md for the measured argument. This method only fetches the marks;
+// the chart itself is drawn entirely by view.RenderProgressChart, which the
+// web layer calls with the Marks this returns.
+type ProgressHistoryInput struct {
+	ProjectKey string
+	TaskKey    string
+}
+
+// ProgressHistoryResult carries the marks in chronological order (the store's
+// own History order); nothing here re-sorts, de-duplicates or decimates —
+// that is chart.go's job, once, on the render path.
+type ProgressHistoryResult struct {
+	ProjectKey string
+	TaskKey    string
+	Marks      []domain.ProgressMark
 }
 
 // ProgressTrackDeleteInput names one (project, task, assessor) track. An

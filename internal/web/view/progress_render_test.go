@@ -156,6 +156,68 @@ func TestProjectHeader_ShowsBothLabelledMetrics(t *testing.T) {
 	}
 }
 
+// TestProgressView_Clickable pins the exact discriminator KANB-13's chart
+// click affordance relies on: only a WithTracks'd, marks-derived metric is
+// Clickable. A nil view, a bare NewAssessedProgress nobody attached a scope
+// to, and the automatic done-share bar must all read false — a false
+// positive here would render a dead click (a bar that looks openable but
+// has nothing to fetch); a false negative would silently hide the feature
+// on a real assessed metric.
+func TestProgressView_Clickable(t *testing.T) {
+	var nilView *view.ProgressView
+	if nilView.Clickable() {
+		t.Fatal("nil *ProgressView.Clickable() = true, want false")
+	}
+	bare := view.NewAssessedProgress(percentPtr(50), 1, nil, "")
+	if bare.Clickable() {
+		t.Fatal("assessed progress with no WithTracks call is Clickable, want false (nothing to fetch a scope for)")
+	}
+	auto := view.NewDoneShareProgress(percentPtr(50), 1, 2)
+	if auto.Clickable() {
+		t.Fatal("automatic done-share bar is Clickable, want false: it is not built from marks and has no history")
+	}
+	withScope := view.NewAssessedProgress(percentPtr(50), 1, nil, "").WithTracks("BMB", "BMB-1", nil)
+	if !withScope.Clickable() {
+		t.Fatal("assessed progress with WithTracks is not Clickable, want true")
+	}
+	// The project-level scope (empty TaskKey) must be Clickable too.
+	withProjectScope := view.NewAssessedProgress(percentPtr(50), 1, nil, "").WithTracks("BMB", "", nil)
+	if !withProjectScope.Clickable() {
+		t.Fatal("project-scope (empty TaskKey) assessed progress is not Clickable, want true")
+	}
+}
+
+// TestProgressBar_ChartClickTargetDoesNotSwallowTrackDelete: the chart click
+// affordance and the delete-track cross are structurally separate elements
+// (the toggle attribute lives only on .pbar; the cross lives inside the
+// sibling .progress-tracks list) — this pins that shape so a future edit
+// cannot accidentally nest one inside the other, which would let a click
+// meant for the cross also (or instead) toggle the chart.
+func TestProgressBar_ChartClickTargetDoesNotSwallowTrackDelete(t *testing.T) {
+	pv := view.NewAssessedProgress(percentPtr(60), 2, nil, "").
+		WithTracks("BMB", "BMB-1", []view.ProgressTrack{{Assessor: "alpha", Percent: 60, Count: 3}})
+	html := renderProgress(t, "progress-bar", map[string]any{"Progress": pv})
+
+	toggleIdx := strings.Index(html, "data-progress-chart-toggle")
+	tracksListIdx := strings.Index(html, `<ul class="progress-tracks"`)
+	deleteArmIdx := strings.Index(html, "data-progress-delete-arm")
+	if toggleIdx < 0 || tracksListIdx < 0 || deleteArmIdx < 0 {
+		t.Fatalf("expected all three markers present: toggle=%d tracksList=%d arm=%d\n%s", toggleIdx, tracksListIdx, deleteArmIdx, html)
+	}
+	// The chart toggle attribute must be written before the tracks <ul>
+	// even starts, and the delete cross must live after that <ul> opens —
+	// i.e. the two controls are siblings in document order, the cross is
+	// never inside the element the toggle attribute is on. A click handler
+	// scoped to [data-progress-chart-toggle] via closest() can therefore
+	// never match an event whose target is the cross.
+	if toggleIdx > tracksListIdx {
+		t.Fatalf("chart toggle attribute (%d) appears after the tracks list starts (%d): it must be on the earlier .pbar span", toggleIdx, tracksListIdx)
+	}
+	if deleteArmIdx < tracksListIdx {
+		t.Fatalf("delete-arm marker (%d) appears before the tracks list starts (%d): expected it inside <ul class=\"progress-tracks\">", deleteArmIdx, tracksListIdx)
+	}
+}
+
 // TestProgressMarkup_NoInlineStylesNoHandlers enforces the CSP constraints on
 // the new markup: the painted count is carried by a class/attribute and
 // painted in app.css — never a style="width:…", never an inline event

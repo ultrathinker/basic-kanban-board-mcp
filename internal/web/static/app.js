@@ -998,6 +998,117 @@
     });
   }
 
+  // -- 9. progress chart toggle ---------------------------------------------
+  //
+  // Clicking a progress bar's .pbar span (data-progress-chart-toggle, see
+  // partials.html's "progress-bar" define) opens its history chart in the
+  // hidden <div class="progress-chart"> rendered right after it; clicking
+  // again closes it. Works on a task card and in the project header alike —
+  // both go through the same "progress-bar" define, so there is only one
+  // place this is wired. The chart is fetched once, the first time a given
+  // bar opens — GET /p/{key}/progress/chart?task=<key> (task omitted
+  // selects the project-level scope) — and cached in the DOM afterwards, so
+  // reopening the same bar just toggles `hidden` with no second request.
+  // This mirrors loadOlderChatMessages's fetch-fragment shape (see that
+  // function's own comment above) rather than inventing a second
+  // convention; KANB-13's REPORT.md has the measured argument for fetching
+  // instead of rendering every chart on every card up front.
+  //
+  // The toggle attribute lives ONLY on the .pbar span, never on anything
+  // that also contains the delete-track control's <ul
+  // class="progress-tracks">: the two are rendered as SIBLINGS (see
+  // partials.html), so a click on the delete cross or its confirm/cancel
+  // buttons never reaches closest('[data-progress-chart-toggle]') at all —
+  // the DOM shape keeps them apart without this code needing to special-
+  // case anything. A bar with no history (view.ProgressView.Clickable
+  // false) carries no data-progress-chart-toggle attribute at all, so it is
+  // simply never matched here: no dead click, and app.css paints the
+  // pointer-cursor affordance only on .pbar-clickable.
+
+  // progressChartContainer finds the empty (or already-filled) chart
+  // container that belongs to one .pbar span: its next sibling, skipping
+  // over the forecast badge when one is rendered between them (the
+  // "progress-bar" define's fixed emission order is pbar, optional
+  // forecast, optional chart container). Anything else in between means
+  // this bar has no chart container — should not happen for a Clickable
+  // bar, but a missing container is simply treated as nothing to open.
+  function progressChartContainer(bar) {
+    var el = bar.nextElementSibling;
+    while (el) {
+      if (el.hasAttribute('data-progress-chart')) return el;
+      if (!el.classList.contains('forecast')) return null;
+      el = el.nextElementSibling;
+    }
+    return null;
+  }
+
+  function setProgressChartOpen(bar, container, open) {
+    bar.setAttribute('aria-expanded', open ? 'true' : 'false');
+    container.hidden = !open;
+  }
+
+  // fetchProgressChart loads the fragment exactly once per bar: a filled
+  // container (childElementCount > 0) is assumed current for the lifetime
+  // of the page, the same "fetch once, toggle after" contract
+  // loadOlderChatMessages's cursor guard gives the chat panel's pages.
+  function fetchProgressChart(bar, container) {
+    var project = bar.getAttribute('data-project') || '';
+    if (!project) return;
+    var task = bar.getAttribute('data-task') || '';
+    var url = '/p/' + encodeURIComponent(project) + '/progress/chart' +
+      (task ? '?task=' + encodeURIComponent(task) : '');
+    fetch(url, { credentials: 'same-origin', headers: { 'Accept': 'text/html' } })
+      .then(function (r) {
+        if (!r.ok) throw new Error('status ' + r.status);
+        return r.text();
+      })
+      .then(function (html) {
+        // An empty fragment means the history vanished between render and
+        // fetch (e.g. a track delete raced this click) — nothing to show,
+        // and the bar stays closed rather than opening on emptiness.
+        if (!html) return;
+        container.innerHTML = html;
+        setProgressChartOpen(bar, container, true);
+      })
+      .catch(function () {
+        toast('Could not load the progress chart.', 'error');
+      });
+  }
+
+  function toggleProgressChart(bar) {
+    var container = progressChartContainer(bar);
+    if (!container) return;
+    if (!container.hidden) {
+      setProgressChartOpen(bar, container, false);
+      return;
+    }
+    if (container.childElementCount > 0) {
+      setProgressChartOpen(bar, container, true);
+      return;
+    }
+    fetchProgressChart(bar, container);
+  }
+
+  function initProgressChart() {
+    document.addEventListener('click', function (e) {
+      var bar = e.target.closest && e.target.closest('[data-progress-chart-toggle]');
+      if (!bar) return;
+      toggleProgressChart(bar);
+    });
+    // role="button" on a <span> needs Enter/Space wired by hand — a real
+    // <button> gets both for free, but .pbar cannot be one (it also paints
+    // the ten square cells app.css positions as flex children).
+    document.addEventListener('keydown', function (e) {
+      if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+      var bar = e.target.closest && e.target.closest('[data-progress-chart-toggle]');
+      if (!bar) return;
+      // Space must not also scroll the page, the way it would with no
+      // handler at all on a focused, non-native "button".
+      e.preventDefault();
+      toggleProgressChart(bar);
+    });
+  }
+
   // -- boot ---------------------------------------------------------------
 
   function boot() {
@@ -1010,6 +1121,7 @@
     initProjectCombobox();
     initChatPanel();
     initProgressTrackDelete();
+    initProgressChart();
     startLive();
   }
 

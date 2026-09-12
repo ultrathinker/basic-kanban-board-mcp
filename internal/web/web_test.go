@@ -794,6 +794,9 @@ func (stubService) TaskProgress(context.Context, service.Actor, service.TaskProg
 func (stubService) ProjectProgress(context.Context, service.Actor, service.ProjectProgressInput) (*service.ProjectProgressResult, error) {
 	return nil, ErrServiceUnavailable
 }
+func (stubService) ProgressHistory(context.Context, service.Actor, service.ProgressHistoryInput) (*service.ProgressHistoryResult, error) {
+	return nil, ErrServiceUnavailable
+}
 func (stubService) ProgressTrackDelete(context.Context, service.Actor, service.ProgressTrackDeleteInput) (*service.ProgressTrackDeleteResult, error) {
 	return nil, ErrServiceUnavailable
 }

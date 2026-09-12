@@ -35,9 +35,44 @@
        called right after this one closes — see its own comment below. It
        reads .Progress.Tracks, a different field from Forecast, so the two
        features coexist on the same metric without either recomputing or
-       overriding the other. */ -}}
-{{- if .Progress}}<span class="pbar{{with .Class}} {{.}}{{end}}" data-filled="{{.Progress.Filled}}" title="{{.Progress.Label}}" aria-label="{{.Progress.Label}}">{{range .Progress.Cells}}{{if .}}<i class="f"></i>{{else}}<i></i>{{end}}{{end}}<span class="pbar-label mono">{{.Progress.Label}}</span></span>{{if .Progress.Forecast}}<span class="forecast" title="Forecast by {{.Progress.Forecast.By}}">{{if .Progress.Forecast.Overdue}}<span class="mark">overdue</span> {{end}}<span class="text-subtle">eta {{.Progress.Forecast.Text}} · {{.Progress.Forecast.By}}</span></span>{{end}}{{- end}}
+       overriding the other.
+
+       KANB-13: clicking the bar opens its history chart underneath it;
+       clicking again closes it. Only a metric built from marks has anything
+       to chart — .Progress.Clickable is false for the automatic done-share
+       bar (never built from marks, so it gets no click affordance, no
+       pointer cursor and no dead click: see view.ProgressView.Clickable's
+       own comment). When Clickable, the bar carries
+       data-progress-chart-toggle plus the (project, task) scope app.js
+       needs to fetch "GET /p/{key}/progress/chart" the first time it is
+       opened — see app.js's "progress chart toggle" section — and an empty
+       hidden container, "progress-chart", is rendered right after it (as a
+       CHILD of a sibling, never inside .progress-tracks) for that fragment
+       to land in. role/tabindex/aria-expanded make the toggle a real
+       keyboard target, matching every other custom control on this board
+       (chat-toggle, progress-track-delete): a span with only a click
+       listener would be invisible to Tab. The chart is fetched, not
+       rendered here, so it costs nothing on every page load for cards
+       nobody opens — see REPORT.md for the measured page-weight argument. */ -}}
+{{- if .Progress}}<span class="pbar{{with .Class}} {{.}}{{end}}{{if .Progress.Clickable}} pbar-clickable{{end}}" data-filled="{{.Progress.Filled}}" title="{{.Progress.Label}}" aria-label="{{.Progress.Label}}"{{if .Progress.Clickable}} data-progress-chart-toggle data-project="{{.Progress.ProjectKey}}" data-task="{{.Progress.TaskKey}}" role="button" tabindex="0" aria-expanded="false"{{end}}>{{range .Progress.Cells}}{{if .}}<i class="f"></i>{{else}}<i></i>{{end}}{{end}}<span class="pbar-label mono">{{.Progress.Label}}</span></span>{{if .Progress.Forecast}}<span class="forecast" title="Forecast by {{.Progress.Forecast.By}}">{{if .Progress.Forecast.Overdue}}<span class="mark">overdue</span> {{end}}<span class="text-subtle">eta {{.Progress.Forecast.Text}} · {{.Progress.Forecast.By}}</span></span>{{end}}{{if .Progress.Clickable}}<div class="progress-chart" data-progress-chart hidden></div>{{end}}{{- end}}
 {{- if .Progress}}{{template "progress-tracks" .Progress}}{{end}}
+{{end}}
+
+{{define "progress-chart-fragment"}}
+{{- /* Response body of "GET /p/{key}/progress/chart" (see
+       handleProgressChart in pages.go): expects . (dot) to be
+       *view.ProgressChartView, or nil. app.js inserts this fragment once,
+       the first time a clickable bar's data-progress-chart container is
+       opened, then just toggles it hidden/visible on later clicks without
+       fetching again. A nil chart (the history vanished between the click
+       and this request — e.g. the last mark's track was deleted a moment
+       before) renders nothing at all, the same "no data, no placeholder"
+       rule the bar itself follows; app.js treats an empty body as a no-op,
+       exactly like loadOlderChatMessages already does for an exhausted chat
+       page. The SVG itself is chart.go's own output, untouched — this
+       fragment only wraps it so app.js has one element to insert and later
+       toggle. */ -}}
+{{- if .}}<div class="progress-chart-inner">{{.SVG}}</div>{{end}}
 {{end}}
 
 {{define "progress-tracks"}}

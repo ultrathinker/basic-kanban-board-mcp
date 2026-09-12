@@ -606,6 +606,9 @@ func (adminPagerSvc) TaskProgress(context.Context, service.Actor, service.TaskPr
 func (adminPagerSvc) ProjectProgress(context.Context, service.Actor, service.ProjectProgressInput) (*service.ProjectProgressResult, error) {
 	return nil, ErrServiceUnavailable
 }
+func (adminPagerSvc) ProgressHistory(context.Context, service.Actor, service.ProgressHistoryInput) (*service.ProgressHistoryResult, error) {
+	return nil, ErrServiceUnavailable
+}
 func (adminPagerSvc) ProgressTrackDelete(context.Context, service.Actor, service.ProgressTrackDeleteInput) (*service.ProgressTrackDeleteResult, error) {
 	return nil, ErrServiceUnavailable
 }

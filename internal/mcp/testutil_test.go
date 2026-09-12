@@ -353,6 +353,15 @@ func (f *fakeService) ProjectProgress(ctx context.Context, a service.Actor, in s
 	}
 	return f.DefaultProjectProgress, f.DefaultProjectProgressEr
 }
+
+// ProgressHistory is not wired to any MCP tool (KANB-13 is web-only; the
+// history chart is a page feature, not an agent-facing read), so unlike its
+// siblings above this has no Next/Default/Last scaffolding — nothing in
+// this package's tests ever calls it, and the method exists purely to keep
+// fakeService satisfying service.Service.
+func (f *fakeService) ProgressHistory(ctx context.Context, a service.Actor, in service.ProgressHistoryInput) (*service.ProgressHistoryResult, error) {
+	return &service.ProgressHistoryResult{ProjectKey: in.ProjectKey, TaskKey: in.TaskKey}, nil
+}
 func (f *fakeService) ProgressTrackDelete(ctx context.Context, a service.Actor, in service.ProgressTrackDeleteInput) (*service.ProgressTrackDeleteResult, error) {
 	f.mu.Lock()
 	h := f.NextProgressTrackDelete

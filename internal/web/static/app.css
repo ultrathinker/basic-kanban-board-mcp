@@ -716,6 +716,38 @@ select, .field input, .field textarea {
 }
 .card .pbar { margin-top: 0.25rem; }
 
+/* --- progress history chart: click a bar open, click again to close -----
+   Only a bar with a mark history behind it (view.ProgressView.Clickable —
+   never the automatic done-share bar) gets the pointer cursor and the
+   keyboard focus ring below; everything else keeps the plain, inert bar it
+   already had. app.js wires the click/Enter/Space handler off
+   data-progress-chart-toggle; this file only paints the affordance and the
+   chart's own box, never the click itself. */
+.pbar-clickable {
+  cursor: pointer;
+}
+.pbar-clickable:hover,
+.pbar-clickable:focus-visible {
+  outline: 1px solid var(--rule-strong);
+  outline-offset: 2px;
+}
+.progress-chart {
+  margin-top: 0.35rem;
+}
+.card .progress-chart { margin-top: 0.25rem; }
+.progress-chart-inner {
+  border: 1px solid var(--rule);
+  padding: 0.35rem;
+  display: inline-block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.progress-chart .chart-progress {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
 /* The header pair: manual ("assessed") and automatic ("tasks done") stand
    side by side, each with its caps label, so the two numbers are never
    mistaken for each other. */

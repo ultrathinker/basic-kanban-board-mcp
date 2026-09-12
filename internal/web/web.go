@@ -149,6 +149,10 @@ func (w *Web) routes(mux *http.ServeMux) {
 	// pagination (scroll-to-top loads older chat history). See
 	// handleChatOlder's doc comment for the response shape.
 	mux.HandleFunc("GET /p/{key}/chat/older", w.handleChatOlder)
+	// JS-driven fragment, not a page: a progress bar's history chart,
+	// fetched the first time it is clicked open. See handleProgressChart's
+	// own doc comment for the response shape.
+	mux.HandleFunc("GET /p/{key}/progress/chart", w.handleProgressChart)
 	mux.HandleFunc("GET /projects/search", w.handleProjectsSearch)
 	// Admin-only project creation (the "New project" form). POST because it
 	// changes state and carries a CSRF token; the handler enforces admin scope.

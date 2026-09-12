@@ -207,6 +207,50 @@ func (w *Web) handleChatOlder(rw http.ResponseWriter, r *http.Request) {
 	w.renderFragment(rw, r, http.StatusOK, "chat-entries", entries)
 }
 
+// handleProgressChart is "GET /p/{key}/progress/chart?task=<key>": the
+// progress-history chart for one metric, fetched the first time its bar is
+// clicked open rather than rendered for every bar on the page — see
+// REPORT.md for the measured page-weight argument behind that choice. task
+// is optional; empty selects the project's manual scope, set selects one
+// task's summary scope — the same (project, task) convention
+// service.ProgressHistoryInput and the delete-track control already use.
+//
+// Like handleChatOlder and handleProgressTrackDelete, this is a JS-driven
+// fragment endpoint: requireAPIAuth, not requireSessionPage, so a failed or
+// unauthenticated call gets a non-2xx status for app.js to catch instead of
+// a redirect to /login. Read-only (ScopeRead), unlike the owner-only delete:
+// any caller who can already see the board's progress bars may open the
+// chart behind one.
+//
+// The response body is only the "progress-chart-fragment" fragment (see
+// partials.html): a bare wrapper around chart.go's own SVG, or nothing at
+// all when the scope's history has vanished since the bar was rendered
+// (e.g. a track delete raced the click) — app.js treats an empty body as a
+// no-op, the same way it already does for handleChatOlder's exhausted page.
+func (w *Web) handleProgressChart(rw http.ResponseWriter, r *http.Request) {
+	tok, ok := w.requireAPIAuth(rw, r, domain.ScopeRead)
+	if !ok {
+		return
+	}
+	key, err := domain.ValidateProjectKey(r.PathValue("key"))
+	if err != nil {
+		apiError(rw, err)
+		return
+	}
+	taskKey := strings.TrimSpace(r.URL.Query().Get("task"))
+
+	result, err := w.d.Service.ProgressHistory(r.Context(), actorFor(tok), service.ProgressHistoryInput{
+		ProjectKey: key,
+		TaskKey:    taskKey,
+	})
+	if err != nil {
+		apiError(rw, err)
+		return
+	}
+	chart := view.NewProgressChartView(result.Marks, view.DefaultChartWidth, view.DefaultChartHeight)
+	w.renderFragment(rw, r, http.StatusOK, "progress-chart-fragment", chart)
+}
+
 // handleDrawer is "/t/{key}": the full task detail view.
 func (w *Web) handleDrawer(rw http.ResponseWriter, r *http.Request) {
 	tok, ok := w.requireSessionPage(rw, r, domain.ScopeRead)

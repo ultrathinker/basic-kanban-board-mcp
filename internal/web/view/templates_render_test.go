@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/domain"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/web/templates"
@@ -200,7 +201,76 @@ func renderCases() []renderCase {
 				`data-filled="4"`,
 				"45% · 3 assessments",
 			},
+			// No WithTracks call here means Clickable is false (see
+			// view.ProgressView.Clickable): a bar nobody attached a scope to
+			// must not carry the chart click affordance or a dead click
+			// target with no way to fetch anything.
+			notWants: []string{"<no value>", "data-progress-chart-toggle", "pbar-clickable", "progress-chart"},
+		},
+		{
+			// KANB-13: a bar WithTracks did attach a scope to (a real
+			// marks-derived metric) is Clickable, carries the toggle's
+			// data-project/data-task/role/tabindex, and renders its own
+			// empty, hidden chart container ready for app.js to fill in on
+			// first click.
+			name:     "progress-bar/clickable-with-chart-container",
+			template: "progress-bar",
+			data: map[string]any{"Progress": view.NewAssessedProgress(percentPtr(60), 2, nil, "").
+				WithTracks("BMB", "BMB-1", []view.ProgressTrack{{Assessor: "alpha", Percent: 60, Count: 4}})},
+			wants: []string{
+				"pbar-clickable",
+				"data-progress-chart-toggle",
+				`data-project="BMB"`,
+				`data-task="BMB-1"`,
+				`role="button"`,
+				`tabindex="0"`,
+				`aria-expanded="false"`,
+				`data-progress-chart`,
+				"hidden",
+			},
 			notWants: []string{"<no value>"},
+		},
+		{
+			// The project-header manual metric is Clickable too (TaskKey
+			// empty selects the project-level scope, the same convention
+			// the delete-track control already uses).
+			name:     "progress-bar/clickable-project-scope-empty-task",
+			template: "progress-bar",
+			data: map[string]any{"Progress": view.NewAssessedProgress(percentPtr(30), 2, nil, "").
+				WithTracks("BMB", "", nil)},
+			wants: []string{
+				"data-progress-chart-toggle",
+				`data-project="BMB"`,
+				`data-task=""`,
+			},
+			notWants: []string{"<no value>"},
+		},
+		{
+			// The fragment "GET /p/{key}/progress/chart" responds with:
+			// wraps chart.go's own SVG output verbatim, nothing added or
+			// escaped a second time.
+			name:     "progress-chart-fragment/rendered",
+			template: "progress-chart-fragment",
+			data: view.NewProgressChartView([]domain.ProgressMark{
+				{ID: "m1", Assessor: "alpha", Percent: 30, CreatedAt: time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)},
+				{ID: "m2", Assessor: "alpha", Percent: 55, CreatedAt: time.Date(2026, 9, 12, 11, 0, 0, 0, time.UTC)},
+			}, view.DefaultChartWidth, view.DefaultChartHeight),
+			wants: []string{
+				"progress-chart-inner",
+				"<svg",
+				`data-assessor="alpha"`,
+			},
+			notWants: []string{"<no value>"},
+		},
+		{
+			// A vanished/never-existed history (the marks were deleted, or
+			// the fetch races a delete) renders nothing at all — no empty
+			// wrapper, no placeholder — the same "no data, no placeholder"
+			// rule the bar itself follows.
+			name:      "progress-chart-fragment/nil",
+			template:  "progress-chart-fragment",
+			data:      (*view.ProgressChartView)(nil),
+			wantEmpty: true,
 		},
 		{
 			// The delete-track control: one row per assessor, each

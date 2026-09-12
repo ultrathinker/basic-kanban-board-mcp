@@ -160,6 +160,22 @@ func NewDoneShareProgress(percent *int, done, total int) *ProgressView {
 	return v
 }
 
+// Clickable reports whether this metric has a mark history behind it worth
+// charting — true only for a marks-derived (assessed) metric, never for the
+// automatic done-share bar. It is not a new signal: WithTracks is the only
+// writer of ProjectKey, and it is only ever called on the assessed
+// constructor's output (a nil percent there already yields a nil view, so a
+// non-nil, WithTracks'd view always has at least one mark behind it). The
+// bar's own template calls this, rather than testing ProjectKey directly, so
+// that fact stays documented in one place instead of being tribal knowledge
+// the template silently depends on.
+//
+// A nil receiver is not clickable, matching every other method here that is
+// safe to call on "no bar at all".
+func (v *ProgressView) Clickable() bool {
+	return v != nil && v.ProjectKey != ""
+}
+
 // squaresFilled maps an already-aggregated percent onto the ten-square bar:
 // floor division, so 45% paints 4 squares and 100% paints all 10. The clamp
 // is defensive — the schema CHECK already holds percent inside 0..100 — but
