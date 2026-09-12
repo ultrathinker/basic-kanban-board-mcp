@@ -178,6 +178,42 @@ func (r *progressRepo) DeleteTrack(tx Tx, projectID string, taskID *string, asse
 	return res.RowsAffected()
 }
 
+// CountsByTask returns, for every task track of the project, how many marks
+// each assessor has logged — keyed by task id, then assessor. It is the
+// batched counterpart of LatestByTask: the delete-track control needs "how
+// many history points will be lost" for every card the board renders, and a
+// count-per-card would repeat LatestByTask's own per-card-query mistake.
+// Project-level marks (task_id IS NULL) are not included, matching
+// LatestByTask's own scope.
+func (r *progressRepo) CountsByTask(tx Tx, projectID string) (map[string]map[string]int, error) {
+	if projectID == "" {
+		return nil, domain.Invalid("project_id", "project id is empty", "Pass the project UUID.")
+	}
+	tw := tx.(*txWrap)
+	rows, err := tw.tx.QueryContext(tw.ctx(), `
+		SELECT task_id, assessor, COUNT(*)
+		FROM progress_marks
+		WHERE project_id = ? AND task_id IS NOT NULL
+		GROUP BY task_id, assessor`, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("store: counts progress marks by task: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]map[string]int{}
+	for rows.Next() {
+		var taskID, assessor string
+		var n int
+		if err := rows.Scan(&taskID, &assessor, &n); err != nil {
+			return nil, fmt.Errorf("store: scan task assessor count: %w", err)
+		}
+		if out[taskID] == nil {
+			out[taskID] = map[string]int{}
+		}
+		out[taskID][assessor] = n
+	}
+	return out, rows.Err()
+}
+
 func scanProgressMarks(rows *sql.Rows) ([]domain.ProgressMark, error) {
 	var out []domain.ProgressMark
 	for rows.Next() {

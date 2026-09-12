@@ -202,6 +202,43 @@ func renderCases() []renderCase {
 			notWants: []string{"<no value>"},
 		},
 		{
+			// The delete-track control: one row per assessor, each
+			// carrying its own scope/assessor data attributes and its
+			// own pre-rendered confirmation text (assessor + point
+			// count), so app.js never has to build that string itself.
+			name:     "progress-tracks/two-assessors",
+			template: "progress-tracks",
+			data: view.NewAssessedProgress(percentPtr(60), 2, nil, "").
+				WithTracks("BMB", "BMB-1", []view.ProgressTrack{
+					{Assessor: "alpha", Percent: 80, Count: 3},
+					{Assessor: "beta", Percent: 40, Count: 1},
+				}),
+			wants: []string{
+				"data-progress-track",
+				`data-project="BMB"`,
+				`data-task="BMB-1"`,
+				`data-assessor="alpha"`,
+				`data-assessor="beta"`,
+				"alpha 80%",
+				"beta 40%",
+				"Delete alpha's track — 3 points will be lost.",
+				"Delete beta's track — 1 point will be lost.",
+				"data-progress-delete-arm",
+				"data-progress-delete-confirm",
+				"data-progress-delete-cancel",
+			},
+			notWants: []string{"<no value>"},
+		},
+		{
+			// A metric with no per-assessor breakdown (the automatic
+			// done-share bar, or any ProgressView nobody attached tracks
+			// to) renders nothing — no empty <ul>, no stray markup.
+			name:      "progress-tracks/no-tracks",
+			template:  "progress-tracks",
+			data:      view.NewAssessedProgress(percentPtr(60), 1, nil, ""),
+			wantEmpty: true,
+		},
+		{
 			name:     "login/anonymous",
 			template: "page-login",
 			data:     view.SampleAnonymousPage("Sign in", "login", view.SampleLoginModel("", "/p/BMB")),

@@ -28,8 +28,48 @@
        forecast reuses .mark, the board's one existing "cannot miss this"
        alarm (already the overdue-due-date and critical-priority signal),
        instead of inventing a second alarm language; the rest is quiet,
-       muted text so a holding forecast never competes with the bar. */ -}}
+       muted text so a holding forecast never competes with the bar.
+
+       The owner's delete-track control (one row per assessor, with its own
+       cross + in-place confirmation) is a SEPARATE block, "progress-tracks",
+       called right after this one closes — see its own comment below. It
+       reads .Progress.Tracks, a different field from Forecast, so the two
+       features coexist on the same metric without either recomputing or
+       overriding the other. */ -}}
 {{- if .Progress}}<span class="pbar{{with .Class}} {{.}}{{end}}" data-filled="{{.Progress.Filled}}" title="{{.Progress.Label}}" aria-label="{{.Progress.Label}}">{{range .Progress.Cells}}{{if .}}<i class="f"></i>{{else}}<i></i>{{end}}{{end}}<span class="pbar-label mono">{{.Progress.Label}}</span></span>{{if .Progress.Forecast}}<span class="forecast" title="Forecast by {{.Progress.Forecast.By}}">{{if .Progress.Forecast.Overdue}}<span class="mark">overdue</span> {{end}}<span class="text-subtle">eta {{.Progress.Forecast.Text}} · {{.Progress.Forecast.By}}</span></span>{{end}}{{- end}}
+{{- if .Progress}}{{template "progress-tracks" .Progress}}{{end}}
+{{end}}
+
+{{define "progress-tracks"}}
+{{- /* expects . (dot) to be *view.ProgressView. One row per assessor behind
+       the metric above, each carrying the owner's delete-track control: a
+       cross that is visible on hover/focus (data-progress-track /
+       data-progress-delete-arm, wired in app.js section 8) and, once armed,
+       an in-place confirmation naming the assessor and the point count that
+       would be lost — never a modal. Nothing renders when there is nothing
+       to show: a nil Progress (guarded by the caller above), or a metric
+       with no per-assessor breakdown at all (the automatic done-share bar
+       has none — it is not built from marks, so there is nothing here a
+       track-delete could remove). */ -}}
+{{- $pv := . -}}
+{{- if $pv.Tracks}}
+<ul class="progress-tracks" aria-label="Assessor tracks behind this metric">
+  {{- range $pv.Tracks}}
+  <li class="progress-track" data-progress-track
+      data-project="{{$pv.ProjectKey}}" data-task="{{$pv.TaskKey}}"
+      data-assessor="{{.Assessor}}">
+    <span class="progress-track-label mono">{{.Assessor}} {{.Percent}}%</span>
+    <button type="button" class="progress-track-delete" data-progress-delete-arm
+            aria-label="Delete {{.Assessor}}'s track">&times;</button>
+    <span class="progress-track-confirm">
+      <span class="progress-track-confirm-text">Delete {{.Assessor}}'s track — {{.Count}} point{{if ne .Count 1}}s{{end}} will be lost.</span>
+      <button type="button" class="btn btn-sm" data-progress-delete-confirm>Delete</button>
+      <button type="button" class="btn btn-sm" data-progress-delete-cancel>Cancel</button>
+    </span>
+  </li>
+  {{- end}}
+</ul>
+{{- end}}
 {{end}}
 
 {{define "card"}}

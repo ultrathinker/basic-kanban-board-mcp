@@ -127,6 +127,39 @@ func (w *Web) requireAPIAuth(rw http.ResponseWriter, r *http.Request, minScope d
 	return tok, true
 }
 
+// requireOwnerSession resolves ONLY the browser session cookie — never a
+// bearer token or an API key — and requires the admin scope, writing a JSON
+// error on failure. It exists for exactly one handler:
+// handleProgressTrackDelete, the one board mutation an AI must never reach.
+// An AI agent always authenticates by presenting a credential of its own (a
+// bearer token or an API key); it never carries the owner's browser session
+// cookie. Calling sessionFromRequest directly, instead of requireAPIAuth's
+// shared auth middleware, is what makes that structurally true rather than a
+// policy an agent could talk its way around: there is no code path here that
+// even looks at Authorization or X-API-Key.
+func (w *Web) requireOwnerSession(rw http.ResponseWriter, r *http.Request) (*domain.Token, bool) {
+	tok, err := w.sessionFromRequest(r)
+	if err != nil {
+		apiError(rw, err)
+		return nil, false
+	}
+	if tok == nil {
+		apiError(rw, domain.Forbidden(
+			"sign in to do this",
+			"This action is only available to a signed-in owner, through the web session.",
+		))
+		return nil, false
+	}
+	if !tok.Scopes.Has(domain.ScopeAdmin) {
+		apiError(rw, domain.Forbidden(
+			"this session does not have the admin scope",
+			"Sign in as the owner to delete a progress track.",
+		))
+		return nil, false
+	}
+	return tok, true
+}
+
 // statusPeek lets requireAPIAuth tell whether the wrapped RequireAuth
 // middleware already wrote a response (it writes 401/403/413/429 directly on
 // failure) so we don't double-write.

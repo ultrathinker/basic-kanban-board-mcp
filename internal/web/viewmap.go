@@ -126,7 +126,11 @@ func buildBoardModel(proj service.BoardProject, hideDone bool) view.BoardModel {
 // as "no data" instead of lying about a percentage.
 func attachProgress(ctx context.Context, svc service.Service, a service.Actor, projectKey string, m *view.BoardModel) {
 	if pp, err := svc.ProjectProgress(ctx, a, service.ProjectProgressInput{ProjectKey: projectKey}); err == nil && pp != nil {
-		m.ManualProgress = view.NewAssessedProgress(pp.Manual, pp.ManualAssessors, pp.ManualForecastETA, pp.ManualForecastBy)
+		m.ManualProgress = view.NewAssessedProgress(pp.Manual, pp.ManualAssessors, pp.ManualForecastETA, pp.ManualForecastBy).
+			WithTracks(projectKey, "", tracksFromService(pp.ManualTracks))
+		// The automatic bar is not built from marks — nothing a track-delete
+		// could remove, and no forecast to carry either — so it stays a
+		// plain NewDoneShareProgress with no Tracks/scope/Forecast attached.
 		m.AutoProgress = view.NewDoneShareProgress(pp.Auto, pp.DoneTasks, pp.TotalTasks)
 	}
 
@@ -163,10 +167,27 @@ func attachProgress(ctx context.Context, svc service.Service, a service.Actor, p
 		for ti := range m.Columns[ci].Tasks {
 			card := &m.Columns[ci].Tasks[ti]
 			if item, ok := byKey[strings.ToUpper(card.Key)]; ok {
-				card.Progress = view.NewAssessedProgress(item.Percent, item.Assessors, item.ForecastETA, item.ForecastBy)
+				card.Progress = view.NewAssessedProgress(item.Percent, item.Assessors, item.ForecastETA, item.ForecastBy).
+					WithTracks(projectKey, card.Key, tracksFromService(item.Tracks))
 			}
 		}
 	}
+}
+
+// tracksFromService maps the service's per-assessor breakdown onto the view
+// package's own type. A thin, deliberate copy rather than a shared type: the
+// view package must not import service (it is the render-only leaf of the
+// dependency graph), so this is the one place the two shapes are kept in
+// sync.
+func tracksFromService(in []service.AssessorTrack) []view.ProgressTrack {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]view.ProgressTrack, 0, len(in))
+	for _, t := range in {
+		out = append(out, view.ProgressTrack{Assessor: t.Assessor, Percent: t.Percent, Count: t.Count})
+	}
+	return out
 }
 
 // taskRefsFor turns a batch TaskGet result into TaskRef values, preserving

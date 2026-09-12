@@ -119,6 +119,36 @@ func latestForecast(marks []domain.ProgressMark) (*time.Time, string) {
 	return bestETA, bestBy
 }
 
+// buildTracks pairs each assessor's latest mark with how many marks make up
+// their whole track in this scope, for the delete-track control: it needs an
+// assessor's name and a point count, never the mean itself. counts may be
+// nil or missing an assessor (defaulting to 0) without panicking — every
+// assessor with a latest mark has logged at least one, so 0 never happens in
+// practice, but a caller with a stale or partial count map must not crash.
+func buildTracks(latest []domain.ProgressMark, counts map[string]int) []AssessorTrack {
+	if len(latest) == 0 {
+		return nil
+	}
+	out := make([]AssessorTrack, 0, len(latest))
+	for _, m := range latest {
+		out = append(out, AssessorTrack{Assessor: m.Assessor, Percent: m.Percent, Count: counts[m.Assessor]})
+	}
+	return out
+}
+
+// countByAssessor tallies a flat history read into per-assessor mark counts.
+// Used only for the project-level scope, which is read once per page render
+// (never once per card), so a full History() plus this Go-side tally costs
+// nothing worth a dedicated batched store method — that batching only
+// matters for TaskProgress, which is CountsByTask's job instead.
+func countByAssessor(marks []domain.ProgressMark) map[string]int {
+	out := make(map[string]int, len(marks))
+	for _, m := range marks {
+		out[m.Assessor]++
+	}
+	return out
+}
+
 // autoPercent is done/total as a 0..100 share, rounded halves up like every
 // other percent here. ok is false when the project has no tasks: there is
 // nothing measured, and 0% would claim work not started (and 100% would
@@ -173,6 +203,12 @@ func (s *svc) TaskProgress(ctx context.Context, a Actor, in TaskProgressInput) (
 		if err != nil {
 			return err
 		}
+		// Batched like LatestByTask: one query for the whole project, so the
+		// delete-track control's point counts cost nothing extra per card.
+		counts, err := s.store.Progress().CountsByTask(tx, p.ID)
+		if err != nil {
+			return err
+		}
 
 		result.Items = make([]TaskProgressItem, 0, len(in.Keys))
 		for _, rawKey := range in.Keys {
@@ -197,6 +233,7 @@ func (s *svc) TaskProgress(ctx context.Context, a Actor, in TaskProgressInput) (
 				Assessors:   assessors,
 				ForecastETA: forecastETA,
 				ForecastBy:  forecastBy,
+				Tracks:      buildTracks(latest[t.ID], counts[t.ID]),
 			})
 		}
 		return nil
@@ -240,6 +277,14 @@ func (s *svc) ProjectProgress(ctx context.Context, a Actor, in ProjectProgressIn
 		}
 		result.ManualAssessors = len(latest)
 		result.ManualForecastETA, result.ManualForecastBy = latestForecast(latest)
+		// The project-level scope is read once per page render (never once
+		// per card), so a full History() plus a Go-side tally is cheap here
+		// — CountsByTask's batching is what TaskProgress needs, not this.
+		hist, err := s.store.Progress().History(tx, p.ID, nil)
+		if err != nil {
+			return err
+		}
+		result.ManualTracks = buildTracks(latest, countByAssessor(hist))
 
 		// Auto: the board's own verdict, from column membership. IncludeDone
 		// is required — the filter's default hides done columns, which is a

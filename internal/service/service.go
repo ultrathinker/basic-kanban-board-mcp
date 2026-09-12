@@ -691,6 +691,21 @@ type TaskProgressItem struct {
 	// guaranteed to name the mark that produced it, never a different
 	// assessor's name.
 	ForecastBy string
+	// Tracks is the per-assessor breakdown behind Percent: one entry per
+	// assessor contributing to this task's summary, each carrying that
+	// assessor's latest percent and how many marks make up their whole
+	// track. Nothing recomputes Percent from this — meanPercent already did
+	// that — it exists purely so the owner's delete-track control can name
+	// an assessor and say how many history points a click would remove.
+	// Empty when nobody has assessed the task.
+	Tracks []AssessorTrack
+}
+
+// AssessorTrack is one assessor's contribution to a progress metric.
+type AssessorTrack struct {
+	Assessor string
+	Percent  int
+	Count    int
 }
 
 // ProjectProgressInput asks for both project-level progress views.
@@ -719,6 +734,10 @@ type ProjectProgressResult struct {
 	Auto       *int
 	DoneTasks  int
 	TotalTasks int
+	// ManualTracks is the per-assessor breakdown behind Manual — same
+	// purpose as TaskProgressItem.Tracks, for the project-level scope. Empty
+	// when nobody assessed the project as a whole.
+	ManualTracks []AssessorTrack
 }
 
 // ProgressTrackDeleteInput names one (project, task, assessor) track. An

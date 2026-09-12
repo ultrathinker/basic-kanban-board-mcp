@@ -177,6 +177,9 @@ func (w *Web) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /fragments/acceptance", w.handleFragmentAcceptance)
 	mux.HandleFunc("POST /fragments/notes", w.handleFragmentNote)
 	mux.HandleFunc("POST /fragments/claim", w.handleFragmentClaim)
+	// Owner-only, session-only: see handleProgressTrackDelete's own comment
+	// for why this is never reachable by a bearer/API-key (MCP) caller.
+	mux.HandleFunc("POST /fragments/progress/delete", w.handleProgressTrackDelete)
 
 	// SSE.
 	mux.HandleFunc("GET /events", w.handleEvents)

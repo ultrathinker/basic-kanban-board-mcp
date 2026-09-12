@@ -44,6 +44,19 @@ type ProgressView struct {
 	// no empty slot, no "not set" placeholder, the same rule the bar itself
 	// follows for a missing assessment.
 	Forecast *ForecastView
+
+	// ProjectKey and TaskKey identify the scope this metric was computed
+	// over, so the delete-track control knows what to post back. TaskKey is
+	// empty for the project-level (manual) metric. Both are empty (and
+	// Tracks nil) for the automatic done-share bar, which is not built from
+	// marks and has nothing a track-delete could remove.
+	ProjectKey string
+	TaskKey    string
+	// Tracks is the per-assessor breakdown behind Percent — one row per
+	// assessor, each with its own delete control. Nil when there is no
+	// breakdown to show (the automatic bar, or a caller that never attached
+	// one).
+	Tracks []ProgressTrack
 }
 
 // ForecastView is the "who promised what, when" badge shown next to a
@@ -71,6 +84,32 @@ type ForecastView struct {
 	// miss this" signal) — never colour, since the portal is black and
 	// white outside the chat feed.
 	Overdue bool
+}
+
+// ProgressTrack is one assessor's row in the delete-track control: their
+// latest percent (so the row still reads as a metric on its own) and how
+// many marks make up their whole track (the confirmation's point count).
+type ProgressTrack struct {
+	Assessor string
+	Percent  int
+	Count    int
+}
+
+// WithTracks attaches the scope identifiers and per-assessor breakdown the
+// delete-track control needs. It is separate from the constructors because
+// that data is not known at the point a bare percent/assessors pair is
+// turned into a bar — the caller (attachProgress, or the delete handler
+// rebuilding one bar after a delete) fetches it once it also has the scope's
+// keys in hand. Safe to call on a nil receiver (no assessment => no bar =>
+// nothing to attach anything to) so callers can chain it unconditionally.
+func (v *ProgressView) WithTracks(projectKey, taskKey string, tracks []ProgressTrack) *ProgressView {
+	if v == nil {
+		return nil
+	}
+	v.ProjectKey = projectKey
+	v.TaskKey = taskKey
+	v.Tracks = tracks
+	return v
 }
 
 // NewAssessedProgress builds the bar for a marks-derived metric (a task's

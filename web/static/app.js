@@ -898,6 +898,106 @@
     setChatOpen(!split.classList.contains('is-open'));
   });
 
+  // -- 8. progress track delete --------------------------------------------
+  //
+  // Hovering an assessor's row under a progress metric reveals a small
+  // cross (data-progress-delete-arm). Clicking it arms an in-place
+  // confirmation (adds .is-confirming to the row) naming the assessor and
+  // the point count — text already rendered server-side, nothing built
+  // here. A second click (data-progress-delete-confirm) posts the delete
+  // and swaps the whole metric (the bar and, if any tracks remain, the
+  // list) for the fresh fragment the server renders afterwards: the mean
+  // and the painted squares change along with the track list, so nothing
+  // short of a real re-render is honest here. No modal at any point.
+  //
+  // Delegated on document throughout, deliberately: the metric fragment is
+  // replaced wholesale on a successful delete, so anything bound to the old
+  // nodes would be lost the moment it mattered.
+
+  function armProgressDelete(li) {
+    // Only one row confirms at a time; arming another cancels whichever was
+    // armed before, so a stray confirmation never lingers.
+    var open = document.querySelectorAll('.progress-track.is-confirming');
+    for (var i = 0; i < open.length; i++) {
+      if (open[i] !== li) open[i].classList.remove('is-confirming');
+    }
+    li.classList.add('is-confirming');
+  }
+
+  function cancelProgressDelete(li) {
+    li.classList.remove('is-confirming');
+  }
+
+  // replaceProgressMetric swaps the bar and (if present) the track list for
+  // the freshly rendered fragment. The "progress-bar" template always
+  // emits the track list, when there is one, as the element immediately
+  // following the bar span — no id needed, just that fixed adjacency — so
+  // inserting the new fragment right before the old list and then removing
+  // both old nodes lands the replacement in exactly the right place, even
+  // when the fragment is empty (the deleted track was the metric's last
+  // one, so nothing renders any more).
+  function replaceProgressMetric(oldList, html) {
+    if (!oldList || !oldList.parentNode) return;
+    var oldBar = oldList.previousElementSibling;
+    if (!oldBar || !oldBar.classList.contains('pbar')) oldBar = null;
+    oldList.insertAdjacentHTML('beforebegin', html);
+    oldList.parentNode.removeChild(oldList);
+    if (oldBar && oldBar.parentNode) oldBar.parentNode.removeChild(oldBar);
+  }
+
+  function submitProgressDelete(li) {
+    var list = li.closest('.progress-tracks');
+    var fields = {
+      project: li.getAttribute('data-project') || '',
+      task: li.getAttribute('data-task') || '',
+      assessor: li.getAttribute('data-assessor') || ''
+    };
+    postForm('/fragments/progress/delete', fields).then(function (res) {
+      if (!res.ok) {
+        return errorMessage(res, 'Could not delete that track.').then(function (msg) {
+          toast(msg, 'error');
+        });
+      }
+      return res.text().then(function (html) {
+        replaceProgressMetric(list, html);
+      });
+    }).catch(function () {
+      toast('Could not delete that track.', 'error');
+    });
+  }
+
+  function initProgressTrackDelete() {
+    document.addEventListener('click', function (e) {
+      var el = e.target;
+      var arm = el.closest && el.closest('[data-progress-delete-arm]');
+      if (arm) {
+        var armRow = arm.closest('[data-progress-track]');
+        if (armRow) armProgressDelete(armRow);
+        return;
+      }
+      var cancel = el.closest && el.closest('[data-progress-delete-cancel]');
+      if (cancel) {
+        var cancelRow = cancel.closest('[data-progress-track]');
+        if (cancelRow) cancelProgressDelete(cancelRow);
+        return;
+      }
+      var confirm = el.closest && el.closest('[data-progress-delete-confirm]');
+      if (confirm) {
+        var confirmRow = confirm.closest('[data-progress-track]');
+        if (confirmRow) submitProgressDelete(confirmRow);
+      }
+    });
+
+    // Escape dismisses whichever row is currently armed, from anywhere
+    // inside it — a keyboard user must never be stuck with a confirmation
+    // there is no mouse to cancel.
+    document.addEventListener('keydown', function (e) {
+      if (e.key !== 'Escape') return;
+      var armed = e.target.closest && e.target.closest('.progress-track.is-confirming');
+      if (armed) cancelProgressDelete(armed);
+    });
+  }
+
   // -- boot ---------------------------------------------------------------
 
   function boot() {
@@ -909,6 +1009,7 @@
     initAutoSubmit();
     initProjectCombobox();
     initChatPanel();
+    initProgressTrackDelete();
     startLive();
   }
 

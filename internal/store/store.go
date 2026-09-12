@@ -233,6 +233,12 @@ type ProgressRepo interface {
 	LatestByTask(tx Tx, projectID string) (map[string][]domain.ProgressMark, error)
 	// History returns every mark in the scope, oldest first.
 	History(tx Tx, projectID string, taskID *string) ([]domain.ProgressMark, error)
+	// CountsByTask returns, for every task track of the project, how many
+	// marks each assessor logged — keyed by task id, then assessor. The
+	// batched counterpart of LatestByTask, so the delete-track control's
+	// "how many points will be lost" figure costs one query for the whole
+	// board, never one per card.
+	CountsByTask(tx Tx, projectID string) (map[string]map[string]int, error)
 	// DeleteTrack removes every mark for one (project, task, assessor) track —
 	// a real DELETE, no hidden flag. Returns the number of rows removed so the
 	// caller can report what it discarded.
