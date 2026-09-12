@@ -156,6 +156,65 @@ type ProjectSummary struct {
 	Focus string
 }
 
+// ChatEntry is one AI message in the thoughts panel: who said it, when, and
+// what. The body is stored verbatim — html/template escapes it at render
+// time — and wraps, because a long message must never stretch the panel.
+type ChatEntry struct {
+	Author   string
+	When     string // relative age ("12m ago"), the cards' convention
+	FullTime string // RFC3339, carried for the hover title
+	Text     string
+}
+
+// ChatPanel is the project's "AI thoughts" side panel: the short messages
+// agents post as they work, roughly one every few minutes.
+//
+// Entries are oldest first, newest LAST — a chat window, not a feed. The
+// owner sits in front of this panel for hours; the eye rests at the bottom,
+// and that is where a new thought must arrive. app.js scrolls the panel to
+// its bottom on first render and keeps it pinned there as long as the owner
+// has not scrolled away (see the "ai thoughts panel" section of app.js), so
+// "newest last" and "newest visible without scrolling" are the same thing.
+type ChatPanel struct {
+	Entries    []ChatEntry
+	Count      int
+	NextCursor string // keyset cursor for older messages; empty when exhausted
+}
+
+// NewChatPanel maps one ChatList page onto the panel view. now formats the
+// per-entry relative ages. ChatList returns msgs newest first; NewChatPanel
+// reverses that into the panel's oldest-first display order via
+// ChatEntriesOldestFirst — the same helper the "older messages" endpoint
+// uses for its pages, so the two rendering paths cannot drift apart on
+// ordering.
+func NewChatPanel(msgs []domain.ChatMessage, nextCursor string, now time.Time) *ChatPanel {
+	entries := ChatEntriesOldestFirst(msgs, now)
+	return &ChatPanel{
+		Entries:    entries,
+		Count:      len(entries),
+		NextCursor: nextCursor,
+	}
+}
+
+// ChatEntriesOldestFirst maps a ChatList page (newest first, the service's
+// own order) onto entries in display order: oldest first, newest last. It is
+// exported because two call sites need the exact same mapping and must never
+// disagree about it — the initial board render (via NewChatPanel) and the
+// "GET /p/{key}/chat/older" pagination endpoint, which renders a page of
+// older messages to prepend above the panel's current first entry.
+func ChatEntriesOldestFirst(msgs []domain.ChatMessage, now time.Time) []ChatEntry {
+	entries := make([]ChatEntry, len(msgs))
+	for i, m := range msgs {
+		entries[len(msgs)-1-i] = ChatEntry{
+			Author:   m.Author,
+			When:     relTime(m.CreatedAt, now),
+			FullTime: m.CreatedAt.Format(time.RFC3339),
+			Text:     m.Body,
+		}
+	}
+	return entries
+}
+
 // BoardModel is what the board page renders.
 type BoardModel struct {
 	Project   ProjectSummary
@@ -164,6 +223,16 @@ type BoardModel struct {
 	DoneTotal int
 	DoneShown int
 	HideDone  bool
+	// Chat is the thoughts panel content: one ChatList page, reordered to
+	// oldest first / newest last for display (see ChatPanel). Nil when the
+	// chat read failed — the page then renders without the panel rather
+	// than showing a lying "no messages yet".
+	Chat *ChatPanel
+	// ChatOpen is the split-layout switch. The server always renders the
+	// page closed; app.js restores the persisted state from localStorage
+	// (best effort, guarded) and toggles this class plus the panel's
+	// hidden attribute.
+	ChatOpen bool
 	// ManualProgress is the project's manual progress: the mean of the latest
 	// AI assessments of the project as a whole. Nil when nobody assessed it —
 	// the header then shows nothing, not an empty bar.

@@ -159,6 +159,8 @@ func hasAny(v any) bool {
 		return len(x) > 0
 	case []AcceptanceView:
 		return len(x) > 0
+	case []ChatEntry:
+		return len(x) > 0
 	case []AdminToken:
 		return len(x) > 0
 	case []AdminProject:

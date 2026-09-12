@@ -486,6 +486,40 @@ func renderCases() []renderCase {
 			notWants: []string{"onchange=", "<no value>"},
 		},
 		{
+			name:     "chat/entry",
+			template: "chat-entry",
+			data: view.ChatEntry{
+				Author: "agent-alpha", When: "2m ago",
+				FullTime: "2026-09-12T12:00:00Z", Text: "investigating the flaky test",
+			},
+			wants:    []string{"agent-alpha", "2m ago", "investigating the flaky test", `title="2026-09-12T12:00:00Z"`},
+			notWants: []string{"<no value>"},
+		},
+		{
+			// This is GET /p/{key}/chat/older's response body: a bare run of
+			// <li>s, oldest first, meant for insertAdjacentHTML into the
+			// panel's existing <ol> — not wrapped in one of its own.
+			name:     "chat/entries-page",
+			template: "chat-entries",
+			data: []view.ChatEntry{
+				{Author: "agent-a", When: "5m ago", FullTime: "2026-09-12T11:55:00Z", Text: "older thought"},
+				{Author: "agent-b", When: "3m ago", FullTime: "2026-09-12T11:57:00Z", Text: "newer thought"},
+			},
+			wants: []string{"agent-a", "older thought", "agent-b", "newer thought"},
+			// The wrapping <ol> belongs to the page that already rendered;
+			// this fragment must not carry a second one.
+			notWants: []string{"<ol", "<no value>"},
+		},
+		{
+			// An exhausted "older" page (no more history) renders nothing —
+			// app.js reads that as the stop signal, alongside the empty
+			// X-Chat-Next-Cursor header.
+			name:      "chat/entries-empty",
+			template:  "chat-entries",
+			data:      []view.ChatEntry{},
+			wantEmpty: true,
+		},
+		{
 			name:     "chrome/new-project-dialog",
 			template: "new-project-dialog",
 			data:     boardPage(),

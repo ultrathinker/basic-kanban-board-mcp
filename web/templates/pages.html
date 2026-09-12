@@ -22,6 +22,8 @@
        metric renders nothing — see the progress-bar partial. */ -}}
   {{- if .ManualProgress}}<span class="proj-progress" title="Manual progress: the mean of the latest AI assessments of this project. Task-level marks are not included."><span class="caps text-subtle">assessed</span>{{template "progress-bar" (dict "Progress" .ManualProgress)}}</span>{{end}}
   {{- if .AutoProgress}}<span class="proj-progress" title="Automatic progress: the share of this project's tasks sitting in done columns. Computed from the board, not from any assessment."><span class="caps text-subtle">tasks done</span>{{template "progress-bar" (dict "Progress" .AutoProgress)}}</span>{{end}}
+  {{if .Chat}}<button type="button" class="btn btn-sm" data-chat-toggle
+        aria-expanded="false" aria-controls="chat-panel">Thoughts</button>{{end}}
   {{template "live-status" .}}
   {{if .HideDone}}<a class="btn btn-sm" href="?hide_done=0">Show done</a>
   {{else}}<a class="btn btn-sm" href="?hide_done=1">Hide done</a>{{end}}
@@ -36,7 +38,40 @@
 
 <div data-live-source="/events/p/{{.Project.Key}}" data-live-region="#board" hidden></div>
 
-{{template "board-columns" (dict "Columns" .Columns "CSRF" $.CSRF)}}
+{{- /* Split layout: the thoughts panel (when open) takes a fixed-ish left
+     column and the whole board compresses proportionally to its right —
+     every column stays visible, no horizontal scroll. The server always
+     renders the closed state; app.js restores the persisted state and
+     toggles the class. With no chat content at all (read failed) neither
+     the button above nor the panel below renders. data-chat-project feeds
+     app.js the project key for the "older messages" endpoint. */ -}}
+<div class="board-split{{if .ChatOpen}} is-open{{end}}" data-chat-split data-chat-project="{{.Project.Key}}">
+  {{if .Chat}}
+  <aside class="chat-panel" id="chat-panel" data-chat-panel aria-label="AI thoughts"{{if not .ChatOpen}} hidden{{end}}>
+    <header class="chat-panel-head">
+      <span class="caps">thoughts</span>
+      <span class="spacer"></span>
+      <span class="mono text-subtle">{{.Chat.Count}}</span>
+    </header>
+    {{if hasAny .Chat.Entries}}
+    <ol class="chat-feed" data-chat-feed>
+      {{range .Chat.Entries}}{{template "chat-entry" .}}{{end}}
+    </ol>
+    {{else}}
+    <p class="chat-empty text-subtle">No thoughts yet. Agents post here with the <code>project_post</code> tool.</p>
+    {{end}}
+    {{- /* Unobtrusive "new messages" marker: hidden until app.js reveals it
+         (a message arrived while the owner had scrolled away from the
+         bottom). Clicking it scrolls to the bottom and hides it again —
+         wired by data-chat-new-marker, no inline handler. */ -}}
+    <button type="button" class="chat-new-marker" data-chat-new-marker hidden>New thoughts ↓</button>
+    {{if .Chat.NextCursor}}<span data-chat-next-cursor="{{.Chat.NextCursor}}" hidden></span>{{end}}
+  </aside>
+  {{end}}
+  <div class="board-region">
+    {{template "board-columns" (dict "Columns" .Columns "CSRF" $.CSRF)}}
+  </div>
+</div>
 
 <noscript>
   <p class="text-subtle">Drag-and-drop, live updates and the move menu need JavaScript. The board itself renders without it.</p>
@@ -44,6 +79,23 @@
 {{end}}
 {{template "layout-foot" .}}
 {{end}}
+
+{{- /* chat-entry renders one thoughts-panel message. Shared by the board
+     page's initial <ol> range above and by "chat-entries" below, so there is
+     exactly one definition of what a chat entry looks like — the reason
+     "card" is a shared template rather than being inlined twice. */ -}}
+{{define "chat-entry"}}<li class="chat-entry">
+  <div class="chat-head"><span class="chat-author">{{.Author}}</span> <span class="text-subtle text-xs" title="{{.FullTime}}">{{.When}}</span></div>
+  <div class="chat-text">{{.Text}}</div>
+</li>
+{{end}}
+
+{{- /* chat-entries is the response body of "GET /p/{key}/chat/older": a bare
+     run of chat-entry <li>s, oldest first, with no wrapping <ol> — the
+     caller already holds the real <ol> and inserts this straight above its
+     current first child with insertAdjacentHTML, which only accepts <li>
+     markup in that position. */ -}}
+{{define "chat-entries"}}{{range .}}{{template "chat-entry" .}}{{end}}{{end}}
 
 {{define "page-drawer"}}
 {{template "layout-head" .}}

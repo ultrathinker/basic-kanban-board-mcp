@@ -108,11 +108,70 @@ func (w *Web) handleBoard(rw http.ResponseWriter, r *http.Request) {
 	// Progress bars come from two batch reads (one for the project header,
 	// chunked ones for the cards) — never a query per card.
 	attachProgress(r.Context(), w.d.Service, actorFor(tok), key, &model)
+	// The thoughts panel reads one ChatList page (newest first) — a single
+	// call for the whole feed, best-effort like the reads above: a failed
+	// chat read costs the panel, not the board.
+	if chat, err := w.d.Service.ChatList(r.Context(), actorFor(tok), service.ChatListInput{
+		ProjectKey: key,
+	}); err == nil {
+		model.Chat = view.NewChatPanel(chat.Messages, chat.Cursor, w.d.Now())
+	}
 
 	page := w.newPage(r.Context(), rw, r, tok, "board")
 	page.Title = board.Projects[0].Name + " · basic-kanban-board-mcp"
 	page.Model = model
 	w.render(rw, r, http.StatusOK, "page-board", page)
+}
+
+// handleChatOlder is "GET /p/{key}/chat/older?before=<cursor>": one older
+// page of the thoughts panel's chat feed, for the panel's upward pagination
+// (scrolling to the top loads more history).
+//
+// It uses requireAPIAuth, not requireSessionPage: this is a JS-driven
+// fragment endpoint like /projects/search and the /fragments/* handlers, not
+// a page — a failed or unauthenticated call must get a non-2xx status for
+// app.js to catch, not a redirect to /login.
+//
+// The response body is only the "chat-entries" fragment (bare <li> markup,
+// oldest first — the same order and the same shared "chat-entry" template
+// the initial panel render uses, via view.ChatEntriesOldestFirst), so
+// app.js can insert it verbatim above the panel's current first entry with
+// insertAdjacentHTML: an <ol> only tolerates <li> children in that
+// position, so the next cursor cannot also ride in the body. It travels in
+// the X-Chat-Next-Cursor response header instead (empty when history is
+// exhausted, which is also the signal for app.js to stop asking).
+//
+// "before" is required and is service.ChatListInput's own cursor encoding
+// (domain.ChatCursor.String()); the caller (app.js) always has one because
+// the initial board render seeds it from ChatPanel.NextCursor, and this
+// handler's own response reseeds it for the next call.
+func (w *Web) handleChatOlder(rw http.ResponseWriter, r *http.Request) {
+	tok, ok := w.requireAPIAuth(rw, r, domain.ScopeRead)
+	if !ok {
+		return
+	}
+	key, err := domain.ValidateProjectKey(r.PathValue("key"))
+	if err != nil {
+		apiError(rw, err)
+		return
+	}
+	before := strings.TrimSpace(r.URL.Query().Get("before"))
+	if before == "" {
+		apiError(rw, domain.Invalid("before", "before is required", "Pass the panel's next-cursor value."))
+		return
+	}
+
+	result, err := w.d.Service.ChatList(r.Context(), actorFor(tok), service.ChatListInput{
+		ProjectKey: key,
+		Cursor:     before,
+	})
+	if err != nil {
+		apiError(rw, err)
+		return
+	}
+	entries := view.ChatEntriesOldestFirst(result.Messages, w.d.Now())
+	rw.Header().Set("X-Chat-Next-Cursor", result.Cursor)
+	w.renderFragment(rw, r, http.StatusOK, "chat-entries", entries)
 }
 
 // handleDrawer is "/t/{key}": the full task detail view.

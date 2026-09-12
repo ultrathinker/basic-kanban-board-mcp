@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/domain"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/events"
@@ -24,6 +25,8 @@ type progressCountingService struct {
 	taskProgressCalls    int
 	projectProgressCalls int
 	taskGetCalls         int
+	chatListCalls        int
+	chatAddCalls         int
 	taskProgressKeys     []string
 }
 
@@ -67,6 +70,25 @@ func (s *progressCountingService) TaskProgress(_ context.Context, _ service.Acto
 func (s *progressCountingService) TaskGet(_ context.Context, _ service.Actor, _ service.TaskGetInput) (*service.TaskGetResult, error) {
 	s.taskGetCalls++
 	return &service.TaskGetResult{}, nil
+}
+
+func (s *progressCountingService) ChatList(_ context.Context, _ service.Actor, in service.ChatListInput) (*service.ChatListResult, error) {
+	s.chatListCalls++
+	// A full page of messages: the panel must be fed by THIS one call, never
+	// by a request per message.
+	msgs := make([]domain.ChatMessage, 0, 60)
+	for i := 0; i < 60; i++ {
+		msgs = append(msgs, domain.ChatMessage{
+			ID: strconv.Itoa(i), Author: "agent-alpha",
+			Body: "thought " + strconv.Itoa(i), CreatedAt: time.Now().UTC(),
+		})
+	}
+	return &service.ChatListResult{Messages: msgs}, nil
+}
+
+func (s *progressCountingService) ChatAdd(_ context.Context, _ service.Actor, _ service.ChatAddInput) (*domain.ChatMessage, error) {
+	s.chatAddCalls++
+	return &domain.ChatMessage{}, nil
 }
 
 // TestBoardPage_ProgressReadsDoNotScale proves the board page never pays a
@@ -129,6 +151,13 @@ func TestBoardPage_ProgressReadsDoNotScale(t *testing.T) {
 	if svc.taskGetCalls != 0 {
 		t.Fatalf("TaskGet called %d times, want 0: the board must not query per card", svc.taskGetCalls)
 	}
+	// The thoughts panel: one ChatList read for the whole feed, no writes.
+	if svc.chatListCalls != 1 {
+		t.Fatalf("ChatList called %d times, want 1: the feed must arrive in a single read", svc.chatListCalls)
+	}
+	if svc.chatAddCalls != 0 {
+		t.Fatalf("ChatAdd called %d times, want 0: a board read never writes", svc.chatAddCalls)
+	}
 
 	body := rw.Body.String()
 	// Cards actually carry their bars, painted from the batch data.
@@ -148,5 +177,13 @@ func TestBoardPage_ProgressReadsDoNotScale(t *testing.T) {
 	// CSP: no inline width styles anywhere on the page.
 	if strings.Contains(body, `style="width`) {
 		t.Fatal("page carries an inline width style; the fill must be painted by CSS from the class")
+	}
+	// The thoughts panel is served with its messages: authors and bodies of
+	// the one ChatList page reached the page.
+	if !strings.Contains(body, `id="chat-panel"`) || !strings.Contains(body, "agent-alpha") {
+		t.Fatal("board page does not carry the thoughts panel with its messages")
+	}
+	if !strings.Contains(body, "thought 59") {
+		t.Fatal("the newest chat message is missing from the served panel")
 	}
 }

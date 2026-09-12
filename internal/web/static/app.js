@@ -734,6 +734,170 @@
     });
   }
 
+  // -- 7. ai thoughts panel -----------------------------------------------
+  //
+  // The panel is a chat window, not a feed: newest message at the bottom
+  // (the server now renders it that way — see view.ChatEntriesOldestFirst),
+  // autoscroll follows the bottom only while the owner is already there,
+  // and scrolling to the top loads older history from the server.
+
+  var CHAT_STORAGE_KEY = 'kanban.chatPanel';
+  // A few pixels of slack: browsers rarely land scrollTop at the exact
+  // mathematical bottom (sub-pixel zoom, momentum scrolling), so an exact
+  // equality check would flash the "new thoughts" marker on messages the
+  // owner is already looking at.
+  var CHAT_BOTTOM_TOLERANCE_PX = 6;
+  // Loading older messages starts a little before the physical top so the
+  // request is in flight before the owner's eye reaches the edge.
+  var CHAT_LOAD_MORE_THRESHOLD_PX = 48;
+
+  function chatFeedEl() {
+    return document.querySelector('[data-chat-feed]');
+  }
+
+  function chatMarkerEl() {
+    return document.querySelector('[data-chat-new-marker]');
+  }
+
+  // isChatPinnedToBottom reports whether the feed's scroll position is
+  // (within tolerance) at its bottom edge. A feed with no overflow at all
+  // (a short list, or not measurable while the panel is hidden) counts as
+  // pinned — there is nothing to scroll past.
+  function isChatPinnedToBottom(feed) {
+    if (!feed) return true;
+    var distance = feed.scrollHeight - feed.scrollTop - feed.clientHeight;
+    return distance <= CHAT_BOTTOM_TOLERANCE_PX;
+  }
+
+  function scrollChatToBottom(feed) {
+    if (feed) feed.scrollTop = feed.scrollHeight;
+  }
+
+  function showChatNewMarker() {
+    var marker = chatMarkerEl();
+    if (marker) marker.hidden = false;
+  }
+
+  function hideChatNewMarker() {
+    var marker = chatMarkerEl();
+    if (marker) marker.hidden = true;
+  }
+
+  // appendChatEntry is the single path anything that adds a message to the
+  // live end of the feed must go through — today that is nothing (live
+  // arrival over SSE is KANB-12's job, not this one), but the mechanism has
+  // to exist and behave correctly before that task can wire an incoming
+  // message to it: append the node, then either follow it to the bottom —
+  // if the owner was already there — or leave their scroll position alone
+  // and raise the unobtrusive marker instead.
+  function appendChatEntry(li) {
+    var feed = chatFeedEl();
+    if (!feed || !li) return;
+    var pinned = isChatPinnedToBottom(feed);
+    feed.appendChild(li);
+    if (pinned) {
+      scrollChatToBottom(feed);
+    } else {
+      showChatNewMarker();
+    }
+  }
+
+  var chatOlderCursor = '';
+  var chatOlderInFlight = false;
+
+  function chatProjectKey() {
+    var split = document.querySelector('[data-chat-split]');
+    return split ? split.getAttribute('data-chat-project') || '' : '';
+  }
+
+  // loadOlderChatMessages fetches one older page from GET
+  // /p/{key}/chat/older?before=<cursor> and prepends it above the feed's
+  // current first entry. The cursor is keyset pagination (see
+  // domain.ChatCursor / service.ChatListInput.Before): the server's query is
+  // a strict "older than this exact point", so re-requesting it can neither
+  // duplicate nor skip a message at the page boundary.
+  //
+  // Scroll position must not jump: the container's scrollTop is nudged by
+  // exactly the height the new content added, the same technique any
+  // prepend-above-the-viewport list uses. The response's
+  // X-Chat-Next-Cursor header becomes the next call's cursor; an empty
+  // header (or an empty body — belt and braces, both mean the same thing)
+  // clears the stored cursor, and the guard at the top of this function
+  // then refuses to ask again.
+  function loadOlderChatMessages() {
+    var feed = chatFeedEl();
+    if (!feed || chatOlderInFlight || !chatOlderCursor) return;
+    var key = chatProjectKey();
+    if (!key) return;
+    chatOlderInFlight = true;
+    var url = '/p/' + encodeURIComponent(key) + '/chat/older?before=' + encodeURIComponent(chatOlderCursor);
+    fetch(url, { credentials: 'same-origin', headers: { 'Accept': 'text/html' } })
+      .then(function (r) {
+        if (!r.ok) throw new Error('status ' + r.status);
+        chatOlderCursor = r.headers.get('X-Chat-Next-Cursor') || '';
+        return r.text();
+      })
+      .then(function (html) {
+        if (!html) return;
+        var beforeHeight = feed.scrollHeight;
+        var beforeTop = feed.scrollTop;
+        feed.insertAdjacentHTML('afterbegin', html);
+        feed.scrollTop = beforeTop + (feed.scrollHeight - beforeHeight);
+      })
+      .catch(function () { /* a failed page is not worth a toast; the next scroll retries with the same cursor */ })
+      .then(function () { chatOlderInFlight = false; });
+  }
+
+  function onChatFeedScroll(e) {
+    if (e.currentTarget.scrollTop <= CHAT_LOAD_MORE_THRESHOLD_PX) loadOlderChatMessages();
+  }
+
+  function setChatOpen(open) {
+    var split = document.querySelector('[data-chat-split]');
+    var panel = document.getElementById('chat-panel');
+    var btn = document.querySelector('[data-chat-toggle]');
+    if (!split || !panel || !btn) return;
+    split.classList.toggle('is-open', open);
+    panel.hidden = !open;
+    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    // Persistence is best effort: private mode or a blocked quota must not
+    // break the toggle, it only means the state is not remembered.
+    try { localStorage.setItem(CHAT_STORAGE_KEY, open ? 'open' : 'closed'); } catch (e) { /* ignore */ }
+    // A hidden panel (display: none) cannot report a real scrollHeight, so
+    // "first render" of the feed is really "the first time it becomes
+    // visible" — whether that is right now (persisted open) or later, the
+    // moment the owner clicks the toggle. Either way the newest message
+    // must be there waiting, with no scrolling required.
+    if (open) scrollChatToBottom(chatFeedEl());
+  }
+
+  function initChatPanel() {
+    var btn = document.querySelector('[data-chat-toggle]');
+    if (!btn) return;
+    var cursorEl = document.querySelector('[data-chat-next-cursor]');
+    chatOlderCursor = cursorEl ? cursorEl.getAttribute('data-chat-next-cursor') || '' : '';
+    var feed = chatFeedEl();
+    if (feed) feed.addEventListener('scroll', onChatFeedScroll);
+    var marker = chatMarkerEl();
+    if (marker) {
+      marker.addEventListener('click', function () {
+        scrollChatToBottom(feed);
+        hideChatNewMarker();
+      });
+    }
+    var saved = null;
+    try { saved = localStorage.getItem(CHAT_STORAGE_KEY); } catch (e) { /* ignore */ }
+    setChatOpen(saved === 'open');
+  }
+
+  document.addEventListener('click', function (e) {
+    var btn = e.target.closest && e.target.closest('[data-chat-toggle]');
+    if (!btn) return;
+    var split = document.querySelector('[data-chat-split]');
+    if (!split) return;
+    setChatOpen(!split.classList.contains('is-open'));
+  });
+
   // -- boot ---------------------------------------------------------------
 
   function boot() {
@@ -744,6 +908,7 @@
     initDialog();
     initAutoSubmit();
     initProjectCombobox();
+    initChatPanel();
     startLive();
   }
 

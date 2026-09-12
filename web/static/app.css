@@ -727,3 +727,100 @@ select, .field input, .field textarea {
 .proj-progress .caps {
   font-size: var(--fs-1);
 }
+
+/* --- ai thoughts panel: split layout -------------------------------------- */
+/* Opening the panel narrows the board's container; the board is a
+   proportional grid (auto-fit + 1fr), so EVERY column compresses by the
+   same share — the whole board shrinks, no column is favoured, nothing
+   scrolls horizontally and nothing is pushed off-screen. A column that
+   would drop below its floor width wraps to the next row instead, which
+   keeps every column visible; see the numbers in the feature notes. The
+   panel itself is the fixed-ish left column. */
+.board-split.is-open {
+  display: grid;
+  grid-template-columns: minmax(15rem, 20rem) minmax(0, 1fr);
+  gap: 1.25rem;
+  align-items: start;
+}
+.chat-panel {
+  border: 1px solid var(--rule);
+  background: var(--paper);
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 9rem);
+  /* Anchors the "new thoughts" marker, which is positioned relative to the
+     whole panel rather than the scrolling feed so it stays put regardless
+     of where content is being prepended or appended inside .chat-feed. */
+  position: relative;
+}
+.chat-panel-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--rule);
+}
+.chat-feed {
+  list-style: none;
+  margin: 0;
+  padding: 0 0.75rem;
+  overflow-y: auto;
+  /* app.js prepends older pages and adjusts scrollTop itself by exactly the
+     height gained, so the browser's own scroll-anchoring must stay out of
+     the way — the two corrections stacking is what produces a visible
+     jump instead of a stable read position. */
+  overflow-anchor: none;
+}
+.chat-entry {
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--rule);
+}
+.chat-entry:last-child { border-bottom: 0; }
+.chat-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+.chat-author {
+  font-weight: 600;
+  font-size: var(--fs-2);
+  overflow-wrap: anywhere;
+}
+.chat-text {
+  margin-top: 0.125rem;
+  font-size: var(--fs-3);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.chat-empty { padding: 0.75rem; }
+/* The "new thoughts" marker: unobtrusive (a small tab, not a banner), the
+   same inverted-block treatment ".mark"/".wip.full" already use elsewhere
+   for "do not miss this" — paper on ink, square corners like the rest of
+   the portal, no colour. Hidden by default; app.js reveals it only when a
+   message arrives while the owner has scrolled away from the bottom. */
+.chat-new-marker {
+  position: absolute;
+  left: 50%;
+  bottom: 0.6rem;
+  transform: translateX(-50%);
+  border: 1px solid var(--rule-strong);
+  background: var(--invert-bg);
+  color: var(--invert-fg);
+  font-size: var(--fs-2);
+  font-weight: 600;
+  padding: 0.3rem 0.85rem;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.chat-new-marker:hover { opacity: 0.85; }
+/* With the panel eating width, a 15rem column floor would push late
+   columns onto a second row on common screens; an 11rem floor keeps a
+   four-column board on one row down to ~1100px of remaining board width
+   while staying legible (titles wrap, meta rows are short). */
+.board-split.is-open .board {
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+}
+@media (max-width: 40rem) {
+  .board-split.is-open { grid-template-columns: 1fr; }
+  .chat-panel { max-height: 40vh; }
+}
