@@ -268,10 +268,35 @@ const projectSwitcherMaxProjects = 20
 // and the shared layout (project switcher). ctx is used to fetch the
 // project list; a service error there is logged and degrades to an empty
 // switcher rather than failing the whole page.
+//
+// CSRF token issuance (KANB-16): the board page re-reads itself over
+// GET after every SSE "something changed" signal — that is how live
+// updates without a full reload work. If every render minted a brand new
+// token/cookie pair, that re-read would rotate the cookie out from under
+// the page's already-rendered <meta name="csrf-token">, which the live
+// update never touches (it only swaps specific DOM regions). The next
+// state-changing POST would then carry the old meta value against the new
+// cookie and be rejected — not an occasional glitch, a guaranteed 403 on
+// the second render of any session.
+//
+// The double-submit scheme (auth.Manager.VerifyCSRF) only requires that the
+// value handed to the page and the value in the cookie agree; it does not
+// require a fresh value per response. So newPage now reuses the token
+// already sitting in the request's CSRF cookie when there is one and it is
+// well-formed (auth.ValidCSRFToken), and mints a new one only when the
+// cookie is absent or malformed (first visit, or an old/cleared cookie).
+// Re-reading the same page therefore keeps handing out the same token, so
+// the DOM's stale <meta> keeps matching the cookie structurally, not by
+// coincidence. The cookie is re-set on every render regardless (existing
+// behaviour), which keeps refreshing its expiry alongside the session.
 func (w *Web) newPage(ctx context.Context, rw http.ResponseWriter, r *http.Request, tok *domain.Token, nav string) view.Page {
-	csrfTok, err := w.d.Auth.IssueCSRF()
-	if err != nil {
-		log.Printf("web: issue csrf token: %v", err)
+	csrfTok := existingCSRFToken(r)
+	if csrfTok == "" {
+		var err error
+		csrfTok, err = w.d.Auth.IssueCSRF()
+		if err != nil {
+			log.Printf("web: issue csrf token: %v", err)
+		}
 	}
 	w.d.Auth.SetCSRFCookie(rw, r, csrfTok)
 
@@ -307,6 +332,22 @@ func (w *Web) newPage(ctx context.Context, rw http.ResponseWriter, r *http.Reque
 		}
 	}
 	return p
+}
+
+// existingCSRFToken returns the CSRF token already carried by the request's
+// own cookie, if there is one and it is well-formed, so newPage can reuse it
+// instead of rotating it (KANB-16). Returns "" when there is no cookie, it
+// is empty, or it does not look like a token this server issues — the
+// caller must then mint a fresh one via IssueCSRF.
+func existingCSRFToken(r *http.Request) string {
+	c, err := r.Cookie(auth.CSRFCookieName)
+	if err != nil {
+		return ""
+	}
+	if !auth.ValidCSRFToken(c.Value) {
+		return ""
+	}
+	return c.Value
 }
 
 // projectSummaries lists the projects the token can see, for the topbar

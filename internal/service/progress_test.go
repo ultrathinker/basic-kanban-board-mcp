@@ -513,3 +513,47 @@ func TestProgressTrackDelete_ProxiesToStore(t *testing.T) {
 		t.Fatalf("unknown assessor removed %d marks, want 0", got.Removed)
 	}
 }
+
+// TestProgressTrackDelete_EmptyAssessorRejectedByService covers the one
+// input rule ProgressTrackDelete has of its own (assessor must be
+// non-blank), calling the real service directly. The only existing coverage
+// of this branch is in internal/web (handleProgressTrackDelete), which
+// duplicates the same "assessor is empty" check itself before ever calling
+// the service — so, like the assessor-length gap this task exists to close,
+// a service-level test was missing and this rule's service-level backstop
+// was unguarded.
+func TestProgressTrackDelete_EmptyAssessorRejectedByService(t *testing.T) {
+	env := openTestEnv(t)
+	ctx := context.Background()
+
+	task := makeBacklogTask(t, env, "delete assessor required check")
+	addProgressMark(t, env, "keep-1", &task.ID, "alpha", 40, progressTestBase)
+
+	_, err := env.svc.ProgressTrackDelete(ctx, env.actor, ProgressTrackDeleteInput{
+		ProjectKey: env.proj.Key, TaskKey: task.Key, Assessor: "   ",
+	})
+	if err == nil {
+		t.Fatal("ProgressTrackDelete accepted a blank assessor; want a validation error")
+	}
+	de := domain.AsError(err)
+	if de == nil || de.Code != domain.CodeValidation {
+		t.Fatalf("error = %v, want a domain.CodeValidation error", err)
+	}
+	if de.Field != "assessor" {
+		t.Errorf("error field = %q, want %q", de.Field, "assessor")
+	}
+
+	// Nothing was removed by the refused call.
+	if err := env.Read(ctx, func(tx store.Tx) error {
+		hist, err := env.Progress().History(tx, env.proj.ID, &task.ID)
+		if err != nil {
+			return err
+		}
+		if len(hist) != 1 {
+			t.Fatalf("history len = %d after refused delete, want 1 (untouched)", len(hist))
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("read history: %v", err)
+	}
+}

@@ -2,6 +2,7 @@ package auth
 
 import (
 	"crypto/subtle"
+	"encoding/base64"
 	"net/http"
 
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/domain"
@@ -73,6 +74,33 @@ func (m *Manager) VerifyCSRF(r *http.Request) error {
 		return ErrForbidden
 	}
 	return nil
+}
+
+// csrfTokenByteLen is the raw entropy length CSRFToken encodes. It backs
+// ValidCSRFToken below, which lets a caller sanity-check a token pulled out
+// of an incoming request before deciding to reuse it (see web.newPage /
+// KANB-16) instead of minting a fresh one on every render.
+const csrfTokenByteLen = 24
+
+// ValidCSRFToken reports whether token has the shape CSRFToken produces:
+// base64 RawURLEncoding of csrfTokenByteLen cryptographically random bytes.
+//
+// This is a format check, not an authenticity check — CSRF tokens are
+// deliberately not stored server-side (that is what makes the double-submit
+// pattern in VerifyCSRF stateless), so there is nothing to look up here. Any
+// opaque value of the right shape satisfies the double-submit contract
+// exactly as well as one minted by CSRFToken; this only keeps a caller that
+// wants to reuse a cookie value from perpetuating the empty string or some
+// unrelated garbage that ended up in that cookie slot.
+func ValidCSRFToken(token string) bool {
+	if token == "" {
+		return false
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil {
+		return false
+	}
+	return len(raw) == csrfTokenByteLen
 }
 
 // readCSRFToken picks the candidate from either the form value or the
