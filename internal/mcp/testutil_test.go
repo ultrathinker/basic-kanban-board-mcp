@@ -120,6 +120,13 @@ type fakeService struct {
 	DefaultProgressTrackDeleteEr error
 	LastProgressTrackDelete      service.ProgressTrackDeleteInput
 	LastProgressTrackDeleteActor service.Actor
+
+	// ProgressSet.
+	NextProgressSet      func(ctx context.Context, a service.Actor, in service.ProgressSetInput) (*service.ProgressSetResult, error)
+	DefaultProgressSet   *service.ProgressSetResult
+	DefaultProgressSetEr error
+	LastProgressSet      service.ProgressSetInput
+	LastProgressSetActor service.Actor
 }
 
 func (f *fakeService) BoardGet(ctx context.Context, a service.Actor, in service.BoardGetInput) (*service.Board, error) {
@@ -359,4 +366,18 @@ func (f *fakeService) ProgressTrackDelete(ctx context.Context, a service.Actor, 
 		return h(ctx, a, in)
 	}
 	return f.DefaultProgressTrackDelete, f.DefaultProgressTrackDeleteEr
+}
+func (f *fakeService) ProgressSet(ctx context.Context, a service.Actor, in service.ProgressSetInput) (*service.ProgressSetResult, error) {
+	f.mu.Lock()
+	h := f.NextProgressSet
+	if h != nil {
+		f.NextProgressSet = nil
+	}
+	f.LastProgressSet = in
+	f.LastProgressSetActor = a
+	f.mu.Unlock()
+	if h != nil {
+		return h(ctx, a, in)
+	}
+	return f.DefaultProgressSet, f.DefaultProgressSetEr
 }

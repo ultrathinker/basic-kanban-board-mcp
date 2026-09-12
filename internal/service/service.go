@@ -41,6 +41,7 @@ type Service interface {
 	TaskProgress(ctx context.Context, a Actor, in TaskProgressInput) (*TaskProgressResult, error)
 	ProjectProgress(ctx context.Context, a Actor, in ProjectProgressInput) (*ProjectProgressResult, error)
 	ProgressTrackDelete(ctx context.Context, a Actor, in ProgressTrackDeleteInput) (*ProgressTrackDeleteResult, error)
+	ProgressSet(ctx context.Context, a Actor, in ProgressSetInput) (*ProgressSetResult, error)
 	ChatAdd(ctx context.Context, a Actor, in ChatAddInput) (*domain.ChatMessage, error)
 	ChatList(ctx context.Context, a Actor, in ChatListInput) (*ChatListResult, error)
 }

@@ -797,3 +797,6 @@ func (stubService) ProjectProgress(context.Context, service.Actor, service.Proje
 func (stubService) ProgressTrackDelete(context.Context, service.Actor, service.ProgressTrackDeleteInput) (*service.ProgressTrackDeleteResult, error) {
 	return nil, ErrServiceUnavailable
 }
+func (stubService) ProgressSet(context.Context, service.Actor, service.ProgressSetInput) (*service.ProgressSetResult, error) {
+	return nil, ErrServiceUnavailable
+}

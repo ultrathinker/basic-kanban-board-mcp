@@ -186,6 +186,7 @@ func TestSchemaRemediation_ListsWhatEachToolRequires(t *testing.T) {
 		{"task_update", []string{"patches"}},
 		{"task_claim", []string{"key", "action"}},
 		{"project_post", []string{"project", "author", "body"}},
+		{"progress_set", []string{"assessor", "percent"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.tool, func(t *testing.T) {
@@ -213,8 +214,8 @@ func TestToolInputSchemas_CoverEveryPublishedTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
-	if len(res.Tools) != 10 {
-		t.Errorf("published %d tools, want 10", len(res.Tools))
+	if len(res.Tools) != 11 {
+		t.Errorf("published %d tools, want 11", len(res.Tools))
 	}
 	for _, tool := range res.Tools {
 		if toolInputSchemas[tool.Name] == nil {

@@ -327,3 +327,6 @@ func (searchSvc) ProjectProgress(context.Context, service.Actor, service.Project
 func (searchSvc) ProgressTrackDelete(context.Context, service.Actor, service.ProgressTrackDeleteInput) (*service.ProgressTrackDeleteResult, error) {
 	return nil, ErrServiceUnavailable
 }
+func (searchSvc) ProgressSet(context.Context, service.Actor, service.ProgressSetInput) (*service.ProgressSetResult, error) {
+	return nil, ErrServiceUnavailable
+}

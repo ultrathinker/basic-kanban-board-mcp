@@ -38,6 +38,7 @@ func NewServer(svc service.Service, version string) *gomcp.Server {
 	registerTaskRemove(s, svc)
 	registerProjectUpsert(s, svc)
 	registerProjectPost(s, svc)
+	registerProgressSet(s, svc)
 	s.AddReceivingMiddleware(schemaErrorEnvelope)
 	return s
 }

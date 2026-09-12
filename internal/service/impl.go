@@ -26,6 +26,8 @@ type svc struct {
 	pub   EventPublisher
 }
 
+var _ Service = (*svc)(nil)
+
 // New builds the Service. pub may be nil (tests, or a CLI path that has no
 // live subscribers); a nil publisher just means events are appended to the
 // database and never fanned out.
