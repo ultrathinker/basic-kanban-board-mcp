@@ -52,7 +52,7 @@ func TestProgressBar_PaintsFloorTensPercents(t *testing.T) {
 	}
 	for _, tc := range cases {
 		html := renderProgress(t, "progress-bar", map[string]any{
-			"Progress": view.NewAssessedProgress(percentPtr(tc.percent), 3),
+			"Progress": view.NewAssessedProgress(percentPtr(tc.percent), 3, nil, ""),
 		})
 		if total := countOccurrences(html, "<i"); total != 10 {
 			t.Fatalf("percent %d: %d squares rendered, want exactly 10", tc.percent, total)
@@ -71,13 +71,13 @@ func TestProgressBar_PaintsFloorTensPercents(t *testing.T) {
 	// The label names the percent AND how many tracks were folded in, so one
 	// agent's opinion cannot masquerade as a consensus.
 	html := renderProgress(t, "progress-bar", map[string]any{
-		"Progress": view.NewAssessedProgress(percentPtr(45), 3),
+		"Progress": view.NewAssessedProgress(percentPtr(45), 3, nil, ""),
 	})
 	if !strings.Contains(html, "45% · 3 assessments") {
 		t.Fatalf("label should read percent and track count, got: %s", html)
 	}
 	single := renderProgress(t, "progress-bar", map[string]any{
-		"Progress": view.NewAssessedProgress(percentPtr(70), 1),
+		"Progress": view.NewAssessedProgress(percentPtr(70), 1, nil, ""),
 	})
 	if !strings.Contains(single, "70% · 1 assessment") {
 		t.Fatalf("singular label wrong: %s", single)
@@ -91,7 +91,7 @@ func TestProgressBar_PaintsFloorTensPercents(t *testing.T) {
 func TestProgressBar_AbsentWithoutAssessment(t *testing.T) {
 	// The constructors must refuse to invent a bar for missing data: nil in,
 	// nil out. A zero-percent bar here would claim "not started".
-	if got := view.NewAssessedProgress(nil, 2); got != nil {
+	if got := view.NewAssessedProgress(nil, 2, nil, ""); got != nil {
 		t.Fatalf("NewAssessedProgress(nil) = %+v, want nil (no assessment, no bar)", got)
 	}
 	if got := view.NewDoneShareProgress(nil, 0, 0); got != nil {
@@ -120,7 +120,7 @@ func TestProjectHeader_ShowsBothLabelledMetrics(t *testing.T) {
 	m := view.BoardModel{
 		Project:        view.ProjectSummary{Key: "BMB", Name: "Test"},
 		Columns:        []view.ColumnView{{Name: "Backlog", Kind: domain.KindBacklog}},
-		ManualProgress: view.NewAssessedProgress(percentPtr(30), 2),
+		ManualProgress: view.NewAssessedProgress(percentPtr(30), 2, nil, ""),
 		AutoProgress:   view.NewDoneShareProgress(percentPtr(50), 2, 4),
 	}
 	page := view.SamplePage("Test", "board", m)
@@ -161,12 +161,12 @@ func TestProjectHeader_ShowsBothLabelledMetrics(t *testing.T) {
 // painted in app.css — never a style="width:…", never an inline event
 // handler, both dead or forbidden under `script-src 'self'`.
 func TestProgressMarkup_NoInlineStylesNoHandlers(t *testing.T) {
-	withBar := view.TaskCard{Key: "BMB-2", Title: "assessed", Progress: view.NewAssessedProgress(percentPtr(45), 3)}
+	withBar := view.TaskCard{Key: "BMB-2", Title: "assessed", Progress: view.NewAssessedProgress(percentPtr(45), 3, nil, "")}
 	for _, tc := range []struct {
 		name string
 		html string
 	}{
-		{"progress-bar", renderProgress(t, "progress-bar", map[string]any{"Progress": view.NewAssessedProgress(percentPtr(45), 3)})},
+		{"progress-bar", renderProgress(t, "progress-bar", map[string]any{"Progress": view.NewAssessedProgress(percentPtr(45), 3, nil, "")})},
 		{"card-with-bar", renderProgress(t, "card", map[string]any{
 			"Card":    withBar,
 			"CSRF":    "",

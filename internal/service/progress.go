@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/domain"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/store"
@@ -85,6 +86,39 @@ func taskPercent(latest []domain.ProgressMark) (*int, int) {
 	return nil, 0
 }
 
+// latestForecast picks the current, most pessimistic standing forecast out
+// of a set of "latest mark per assessor" rows — exactly what
+// store.Progress().LatestByTask / LatestByAssessor already return, and what
+// taskPercent/meanPercent above are built from. An assessor's own most
+// recent mark is their current standing answer for both percent AND
+// forecast, since ETA rides along on the same append-only mark; a latest
+// mark with no ETA means that assessor is not currently offering one — the
+// append-only, no-second-opinion model has no honest way to say "my old
+// promise still holds" instead, so this does not go looking further back in
+// that assessor's history for one.
+//
+// Among the assessors who ARE currently offering a forecast, this returns
+// the LATEST (most pessimistic) date, never an average: averaging promised
+// dates is meaningless, and the later one is the honest one. Ties (two
+// assessors naming the exact same instant) fall to the alphabetically first
+// assessor, so the result is deterministic. Returns (nil, "") when nobody in
+// marks currently has a forecast.
+func latestForecast(marks []domain.ProgressMark) (*time.Time, string) {
+	var bestETA *time.Time
+	var bestBy string
+	for _, m := range marks {
+		if m.ETA == nil {
+			continue
+		}
+		if bestETA == nil || m.ETA.After(*bestETA) || (m.ETA.Equal(*bestETA) && m.Assessor < bestBy) {
+			eta := *m.ETA
+			bestETA = &eta
+			bestBy = m.Assessor
+		}
+	}
+	return bestETA, bestBy
+}
+
 // autoPercent is done/total as a 0..100 share, rounded halves up like every
 // other percent here. ok is false when the project has no tasks: there is
 // nothing measured, and 0% would claim work not started (and 100% would
@@ -155,11 +189,14 @@ func (s *svc) TaskProgress(ctx context.Context, a Actor, in TaskProgressInput) (
 				continue
 			}
 			percent, assessors := taskPercent(latest[t.ID])
+			forecastETA, forecastBy := latestForecast(latest[t.ID])
 			result.Items = append(result.Items, TaskProgressItem{
-				Key:       t.Key,
-				TaskID:    t.ID,
-				Percent:   percent,
-				Assessors: assessors,
+				Key:         t.Key,
+				TaskID:      t.ID,
+				Percent:     percent,
+				Assessors:   assessors,
+				ForecastETA: forecastETA,
+				ForecastBy:  forecastBy,
 			})
 		}
 		return nil
@@ -202,6 +239,7 @@ func (s *svc) ProjectProgress(ctx context.Context, a Actor, in ProjectProgressIn
 			result.Manual = &mean
 		}
 		result.ManualAssessors = len(latest)
+		result.ManualForecastETA, result.ManualForecastBy = latestForecast(latest)
 
 		// Auto: the board's own verdict, from column membership. IncludeDone
 		// is required — the filter's default hides done columns, which is a

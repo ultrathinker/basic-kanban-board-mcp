@@ -824,3 +824,17 @@ select, .field input, .field textarea {
   .board-split.is-open { grid-template-columns: 1fr; }
   .chat-panel { max-height: 40vh; }
 }
+/* --- progress forecast badge ----------------------------------------------
+   Rides next to a summary progress metric (project header "assessed" and
+   task cards): the freshest, most pessimistic standing finish-date promise
+   and who gave it. Nil renders nothing at all — same rule as the bar. An
+   expired forecast reuses .mark, the board's one existing "cannot miss
+   this" alarm (already the overdue-due-date and critical-priority signal),
+   rather than inventing a second alarm language; the rest is quiet, muted
+   text so a holding forecast never competes with the bar it sits beside. */
+.forecast {
+  font-size: var(--fs-1);
+  white-space: nowrap;
+}
+.forecast .mark { margin-right: 0.35em; }
+.card .forecast { display: block; margin-top: 0.2rem; }

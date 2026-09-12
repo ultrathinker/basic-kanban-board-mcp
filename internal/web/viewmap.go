@@ -126,7 +126,7 @@ func buildBoardModel(proj service.BoardProject, hideDone bool) view.BoardModel {
 // as "no data" instead of lying about a percentage.
 func attachProgress(ctx context.Context, svc service.Service, a service.Actor, projectKey string, m *view.BoardModel) {
 	if pp, err := svc.ProjectProgress(ctx, a, service.ProjectProgressInput{ProjectKey: projectKey}); err == nil && pp != nil {
-		m.ManualProgress = view.NewAssessedProgress(pp.Manual, pp.ManualAssessors)
+		m.ManualProgress = view.NewAssessedProgress(pp.Manual, pp.ManualAssessors, pp.ManualForecastETA, pp.ManualForecastBy)
 		m.AutoProgress = view.NewDoneShareProgress(pp.Auto, pp.DoneTasks, pp.TotalTasks)
 	}
 
@@ -163,7 +163,7 @@ func attachProgress(ctx context.Context, svc service.Service, a service.Actor, p
 		for ti := range m.Columns[ci].Tasks {
 			card := &m.Columns[ci].Tasks[ti]
 			if item, ok := byKey[strings.ToUpper(card.Key)]; ok {
-				card.Progress = view.NewAssessedProgress(item.Percent, item.Assessors)
+				card.Progress = view.NewAssessedProgress(item.Percent, item.Assessors, item.ForecastETA, item.ForecastBy)
 			}
 		}
 	}

@@ -192,7 +192,7 @@ func renderCases() []renderCase {
 		{
 			name:     "progress-bar/45-percent",
 			template: "progress-bar",
-			data:     map[string]any{"Progress": view.NewAssessedProgress(percentPtr(45), 3)},
+			data:     map[string]any{"Progress": view.NewAssessedProgress(percentPtr(45), 3, nil, "")},
 			wants: []string{
 				// Exactly ten cells, four painted, the label carrying both the
 				// percent and how many tracks produced it.

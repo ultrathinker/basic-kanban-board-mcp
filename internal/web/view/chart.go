@@ -49,10 +49,21 @@ type chartPoint struct {
 type chartSeries struct {
 	Name        string
 	IsComposite bool
+	// IsForecast marks the one track (see buildForecastSeries) that plots
+	// how the promised finish date moved over time, rather than a percent.
+	// It gets its own data-series attribute and title text, distinct from
+	// both the per-assessor percent tracks and the composite.
+	IsForecast  bool
 	Points      []chartPoint
 	DashArray   string
 	StrokeWidth float64
 }
+
+// forecastDashArray is the dash pattern for the forecast track: deliberately
+// not one of chartDashPatterns, so it never reads as "one more assessor" —
+// it is a different kind of line (a date, not a percent) and must look like
+// one at a glance, greyscale rules or not.
+const forecastDashArray = "1 4"
 
 // ProgressChartView holds the rendered SVG chart for template inclusion.
 // A nil *ProgressChartView means no assessment history exists.
@@ -77,7 +88,10 @@ func ProgressChartSVG(history []domain.ProgressMark, width, height int) template
 }
 
 // RenderProgressChart builds an inline SVG line chart showing progress assessment
-// history over time for each assessor and the composite progress metric.
+// history over time for each assessor and the composite progress metric, plus
+// (when the history contains any) a forecast track showing how the promised
+// finish date moved over time — see buildForecastSeries for its mapping onto
+// the shared 0..100 vertical axis.
 // If history is empty, it returns empty HTML ("").
 func RenderProgressChart(history []domain.ProgressMark, width, height int) template.HTML {
 	if len(history) == 0 {
@@ -154,6 +168,17 @@ func RenderProgressChart(history []domain.ProgressMark, width, height int) templ
 	}
 	compositePoints = decimatePoints(compositePoints, MaxChartPoints)
 
+	// Forecast track: how the promised finish date moved over time. Built
+	// from the same sorted marks, independent of the percent tracks above —
+	// see buildForecastSeries for the mapping. Empty when nobody in this
+	// history ever gave a forecast; that is not an error, just nothing to
+	// draw.
+	forecastPoints := buildForecastSeries(marks)
+	if len(forecastPoints) > 0 {
+		forecastPoints = deduplicateSameTimestamp(forecastPoints)
+		forecastPoints = decimatePoints(forecastPoints, MaxChartPoints)
+	}
+
 	// Deterministically order assessor names.
 	var assessorNames []string
 	for name := range assessorMarks {
@@ -172,6 +197,19 @@ func RenderProgressChart(history []domain.ProgressMark, width, height int) templ
 		})
 	}
 
+	// Forecast track is inserted after the assessors but before the
+	// composite, so the composite keeps its contract of being rendered last
+	// (on top) — this only adds a layer underneath it, never above.
+	if len(forecastPoints) > 0 {
+		seriesList = append(seriesList, chartSeries{
+			Name:        "forecast",
+			IsForecast:  true,
+			Points:      forecastPoints,
+			DashArray:   forecastDashArray,
+			StrokeWidth: 1.6,
+		})
+	}
+
 	// Composite line is rendered last with a heavier, solid stroke to stand out prominently.
 	seriesList = append(seriesList, chartSeries{
 		Name:        "composite",
@@ -182,6 +220,78 @@ func RenderProgressChart(history []domain.ProgressMark, width, height int) templ
 	})
 
 	return renderFullChart(bounds, seriesList, tStart, tEnd)
+}
+
+// buildForecastSeries derives the forecast track from the same history the
+// percent tracks are drawn from. Not every mark carries an ETA (it is
+// optional on progress_set), so this collects exactly the marks that do, in
+// chronological order, across every assessor — the brief asks for ONE shape
+// that answers "is the promise sliding or holding", not a track per
+// assessor.
+//
+// Design decision (see REPORT.md for the full reasoning): the vertical axis
+// stays 0..100 like every other track, so the forecast reuses the exact
+// same projection, decimation and single-point handling the percent lines
+// already have. Each ETA is normalized against the min/max ETA actually
+// seen in this history: the EARLIEST promised date maps to 100 (top — the
+// same place a good percent lives) and the LATEST promised date maps to 0
+// (bottom — the same place a bad percent lives). A promise that holds
+// steady draws a flat line; a promise that slides later and later trends
+// toward the bottom, exactly the way a percent drop already reads on this
+// chart — so "the promise is failing" looks like the same kind of bad news
+// whether the number behind it is a percent or a date. This also means
+// decimatePoints' existing "never smooth away a drop" contract protects a
+// sudden, large slip in the forecast for free, with no changes to that
+// function.
+//
+// Absolute ETA (not "days remaining from the report") is normalized on
+// purpose: a promise that never moves at all would still show shrinking
+// "days remaining" as the date approaches, which would misread as sliding
+// even though nothing changed. Plotting the raw promised date is the only
+// mapping that renders a genuinely held promise as flat.
+//
+// When every forecast in the history names the same instant (min == max,
+// which includes the single-forecast case), there is nothing to normalize
+// against, so every point is placed at the neutral midline (50): one data
+// point, or perfect agreement, cannot look like sliding OR holding, so it
+// commits to neither.
+func buildForecastSeries(marks []domain.ProgressMark) []chartPoint {
+	var etaMin, etaMax time.Time
+	haveETA := false
+	for _, m := range marks {
+		if m.ETA == nil {
+			continue
+		}
+		if !haveETA {
+			etaMin, etaMax = *m.ETA, *m.ETA
+			haveETA = true
+			continue
+		}
+		if m.ETA.Before(etaMin) {
+			etaMin = *m.ETA
+		}
+		if m.ETA.After(etaMax) {
+			etaMax = *m.ETA
+		}
+	}
+	if !haveETA {
+		return nil
+	}
+
+	span := etaMax.Sub(etaMin)
+	points := make([]chartPoint, 0, len(marks))
+	for _, m := range marks {
+		if m.ETA == nil {
+			continue
+		}
+		v := 50
+		if span > 0 {
+			frac := float64(m.ETA.Sub(etaMin)) / float64(span)
+			v = int(100 - frac*100 + 0.5)
+		}
+		points = append(points, chartPoint{Time: m.CreatedAt, Percent: clampPercent(v)})
+	}
+	return points
 }
 
 // chartBounds encapsulates SVG viewport dimensions and coordinate projections.
@@ -301,9 +411,15 @@ func renderFullChart(b chartBounds, seriesList []chartSeries, tStart, tEnd time.
 			pt := s.Points[0]
 			cx := b.x(pt.Time)
 			cy := b.y(pt.Percent)
-			if s.IsComposite {
+			switch {
+			case s.IsComposite:
 				fmt.Fprintf(&buf, `<circle cx="%.1f" cy="%.1f" r="4" fill="currentColor" data-series="composite"><title>Composite: %d%%</title></circle>`, cx, cy, pt.Percent)
-			} else {
+			case s.IsForecast:
+				// No percent printed here: the forecast's numeric axis is a
+				// normalized placement, not a percent, and the brief asks for a
+				// shape the reader reads at a glance — not a number to decode.
+				fmt.Fprintf(&buf, `<circle cx="%.1f" cy="%.1f" r="3" fill="currentColor" data-series="forecast"><title>Forecast</title></circle>`, cx, cy)
+			default:
 				fmt.Fprintf(&buf, `<circle cx="%.1f" cy="%.1f" r="3" fill="currentColor" data-assessor="%s"><title>%s: %d%%</title></circle>`, cx, cy, escapedName, escapedName, pt.Percent)
 			}
 			continue
@@ -317,9 +433,16 @@ func renderFullChart(b chartBounds, seriesList []chartSeries, tStart, tEnd time.
 			fmt.Fprintf(&pointsBuf, "%.1f,%.1f", b.x(pt.Time), b.y(pt.Percent))
 		}
 
-		if s.IsComposite {
+		switch {
+		case s.IsComposite:
 			fmt.Fprintf(&buf, `<polyline fill="none" stroke="currentColor" stroke-width="%.1f" points="%s" data-series="composite"><title>Composite Progress</title></polyline>`, s.StrokeWidth, pointsBuf.String())
-		} else {
+		case s.IsForecast:
+			dashAttr := ""
+			if s.DashArray != "" && s.DashArray != "none" {
+				dashAttr = fmt.Sprintf(` stroke-dasharray="%s"`, s.DashArray)
+			}
+			fmt.Fprintf(&buf, `<polyline fill="none" stroke="currentColor" stroke-width="%.1f"%s points="%s" data-series="forecast"><title>Forecast history</title></polyline>`, s.StrokeWidth, dashAttr, pointsBuf.String())
+		default:
 			dashAttr := ""
 			if s.DashArray != "" && s.DashArray != "none" {
 				dashAttr = fmt.Sprintf(` stroke-dasharray="%s"`, s.DashArray)

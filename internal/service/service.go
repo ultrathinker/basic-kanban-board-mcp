@@ -676,6 +676,21 @@ type TaskProgressItem struct {
 	// Assessors is how many latest marks the mean used. A track with fifty
 	// revisions still counts once: one mark per assessor.
 	Assessors int
+	// ForecastETA is the freshest standing finish-date promise among this
+	// task's assessors. For each assessor, their own most recent mark is
+	// their current standing answer for both percent AND forecast, since
+	// ETA rides along on the same append-only mark; an assessor whose
+	// latest mark carries no ETA is not currently offering one (the
+	// append-only, no-second-opinion model has no honest way to say "my
+	// old promise still holds" instead). Among the assessors who ARE
+	// currently offering one, this is the LATEST (most pessimistic) date —
+	// never an average, which would be meaningless for dates. Nil when
+	// nobody currently has a standing forecast.
+	ForecastETA *time.Time
+	// ForecastBy is the assessor whose forecast ForecastETA actually is —
+	// guaranteed to name the mark that produced it, never a different
+	// assessor's name.
+	ForecastBy string
 }
 
 // ProjectProgressInput asks for both project-level progress views.
@@ -692,6 +707,13 @@ type ProjectProgressResult struct {
 	// Manual is nil when nobody assessed the project as a whole.
 	Manual          *int
 	ManualAssessors int
+	// ManualForecastETA / ManualForecastBy mirror TaskProgressItem's
+	// ForecastETA/ForecastBy pair, but computed over the project-level
+	// ("Manual") track only — the same track Manual itself is computed
+	// from. Nil/"" when nobody currently has a standing forecast for the
+	// project as a whole.
+	ManualForecastETA *time.Time
+	ManualForecastBy  string
 	// Auto is nil when the project has no unarchived tasks: an empty board
 	// has no measured progress, and 0% would claim work not started.
 	Auto       *int

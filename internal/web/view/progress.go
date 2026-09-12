@@ -3,6 +3,7 @@ package view
 import (
 	"fmt"
 	"strconv"
+	"time"
 )
 
 // ProgressSquares is the bar's only size: ten cells, painted left to right.
@@ -37,12 +38,52 @@ type ProgressView struct {
 	// percent plus how many tracks it took to produce it, so one agent's
 	// opinion never masquerades as a consensus.
 	Label string
+	// Forecast is the freshest, most pessimistic standing finish-date
+	// promise among this metric's assessors, and who gave it. Nil means
+	// nobody currently has one: the template renders nothing at all for it —
+	// no empty slot, no "not set" placeholder, the same rule the bar itself
+	// follows for a missing assessment.
+	Forecast *ForecastView
+}
+
+// ForecastView is the "who promised what, when" badge shown next to a
+// summary progress metric (a task card, the project header's "assessed"
+// figure). It is built from the service's own pick-the-latest aggregation
+// (service.TaskProgressItem.ForecastETA/ForecastBy,
+// service.ProjectProgressResult.ManualForecastETA/ManualForecastBy) — this
+// package only formats and decides "overdue", it never re-derives which
+// forecast is the current one.
+type ForecastView struct {
+	// Text is the absolute finish date-time, formatted with the same
+	// vocabulary chart.go's own timestamps already use (formatChartTime),
+	// rather than inventing a second one. Always the long form
+	// ("2006-01-02 15:04"): a forecast can name any day, not just "today
+	// relative to the other end of this chart", so there is no safe
+	// same-day compression to borrow. The owner decided the value shown is
+	// an absolute date-time, never a relative "N hours left".
+	Text string
+	// By is the assessor whose forecast this is — guaranteed to be the one
+	// that produced ETA, never a different assessor's name.
+	By string
+	// Overdue is true when the forecast date has already passed at render
+	// time. The template renders this as an expired promise using weight
+	// and a marker glyph (reusing .mark, the board's one existing "cannot
+	// miss this" signal) — never colour, since the portal is black and
+	// white outside the chat feed.
+	Overdue bool
 }
 
 // NewAssessedProgress builds the bar for a marks-derived metric (a task's
 // summary progress, the project's manual progress). A nil percent means no
 // assessment exists and yields a nil view: nothing is rendered.
-func NewAssessedProgress(percent *int, assessors int) *ProgressView {
+//
+// forecastETA/forecastBy are the scope's already-picked "freshest, most
+// pessimistic" forecast (see service.TaskProgressItem / ProjectProgressResult):
+// this constructor only formats it and decides "overdue" against the wall
+// clock, it does not re-derive which forecast wins among several. A nil
+// forecastETA renders no Forecast at all, matching the "no forecasts, no
+// placeholder" rule.
+func NewAssessedProgress(percent *int, assessors int, forecastETA *time.Time, forecastBy string) *ProgressView {
 	if percent == nil {
 		return nil
 	}
@@ -53,6 +94,13 @@ func NewAssessedProgress(percent *int, assessors int) *ProgressView {
 	v.Filled = squaresFilled(v.Percent)
 	v.Cells = progressCells(v.Filled)
 	v.Label = fmt.Sprintf("%d%% · %s", v.Percent, plural(assessors, "assessment"))
+	if forecastETA != nil {
+		v.Forecast = &ForecastView{
+			Text:    formatChartTime(*forecastETA, false),
+			By:      forecastBy,
+			Overdue: forecastETA.Before(time.Now().UTC()),
+		}
+	}
 	return v
 }
 
