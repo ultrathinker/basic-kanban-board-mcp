@@ -54,6 +54,12 @@ func (searchSvc) TaskRemove(context.Context, service.Actor, service.TaskRemoveIn
 func (searchSvc) ProjectUpsert(context.Context, service.Actor, service.ProjectUpsertInput) (*service.ProjectUpsertResult, error) {
 	return nil, ErrServiceUnavailable
 }
+func (searchSvc) ChatAdd(context.Context, service.Actor, service.ChatAddInput) (*domain.ChatMessage, error) {
+	return nil, ErrServiceUnavailable
+}
+func (searchSvc) ChatList(context.Context, service.Actor, service.ChatListInput) (*service.ChatListResult, error) {
+	return nil, ErrServiceUnavailable
+}
 
 // newSearchWeb wires an auth.Manager + minimal Web so the handler can be
 // driven without spinning up SQLite. Returns the freshly minted bootstrap

@@ -37,6 +37,8 @@ type Service interface {
 	TaskClaim(ctx context.Context, a Actor, in TaskClaimInput) (*TaskClaimResult, error)
 	TaskRemove(ctx context.Context, a Actor, in TaskRemoveInput) (*TaskRemoveResult, error)
 	ProjectUpsert(ctx context.Context, a Actor, in ProjectUpsertInput) (*ProjectUpsertResult, error)
+	ChatAdd(ctx context.Context, a Actor, in ChatAddInput) (*domain.ChatMessage, error)
+	ChatList(ctx context.Context, a Actor, in ChatListInput) (*ChatListResult, error)
 }
 
 // Include names an optional expansion on a read. One parameter name across all
@@ -602,3 +604,32 @@ type ProjectUpsertResult struct {
 	Project domain.Project
 	Columns []domain.Column
 }
+
+// ---------------------------------------------------------------------------
+// chat
+// ---------------------------------------------------------------------------
+
+type ChatAddInput struct {
+	ProjectKey string
+	Author     string // optional: defaults to Actor.Name
+	Body       string
+}
+
+type ChatMessageAddInput = ChatAddInput
+
+type ChatListInput struct {
+	ProjectKey string // optional: empty = all accessible projects
+	Limit      int    // optional: <= 0 defaults to 50
+	Before     *domain.ChatCursor
+	Cursor     string // optional string-encoded cursor; used if Before is nil
+}
+
+type ChatMessageListInput = ChatListInput
+
+type ChatListResult struct {
+	Messages   []domain.ChatMessage
+	NextCursor *domain.ChatCursor
+	Cursor     string // string-encoded NextCursor, or empty if nil
+}
+
+type ChatMessageListResult = ChatListResult

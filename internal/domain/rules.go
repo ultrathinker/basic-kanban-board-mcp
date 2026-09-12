@@ -158,6 +158,21 @@ func ValidateBody(s string) error {
 	return nil
 }
 
+// ValidateChatMessageBody validates that a chat message body is non-empty and
+// does not exceed MaxChatMessageLen characters. No formatting or escaping is
+// performed here — the body is stored unaltered.
+func ValidateChatMessageBody(s string) error {
+	if strings.TrimSpace(s) == "" {
+		return Invalid("body", "chat message body must not be empty", "Provide a non-empty message body.")
+	}
+	if len([]rune(s)) > MaxChatMessageLen {
+		return Invalid("body",
+			fmt.Sprintf("chat message body is %d characters, the limit is %d", len([]rune(s)), MaxChatMessageLen),
+			"Shorten the message.")
+	}
+	return nil
+}
+
 // ValidateActorName bounds a free-text actor name (assignee, reviewer). The
 // field argument names the offending field so the caller sees which one. The
 // MCP schema also caps these, but the service is the backstop for the web and

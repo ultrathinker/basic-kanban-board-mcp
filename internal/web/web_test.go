@@ -54,6 +54,12 @@ func (stubService) TaskRemove(context.Context, service.Actor, service.TaskRemove
 func (stubService) ProjectUpsert(context.Context, service.Actor, service.ProjectUpsertInput) (*service.ProjectUpsertResult, error) {
 	return nil, ErrServiceUnavailable
 }
+func (stubService) ChatAdd(context.Context, service.Actor, service.ChatAddInput) (*domain.ChatMessage, error) {
+	return nil, ErrServiceUnavailable
+}
+func (stubService) ChatList(context.Context, service.Actor, service.ChatListInput) (*service.ChatListResult, error) {
+	return nil, ErrServiceUnavailable
+}
 
 // newTestWeb builds a minimal Web wired against a stub service so the
 // handler tree can be exercised without spinning up SQLite. The shutdown

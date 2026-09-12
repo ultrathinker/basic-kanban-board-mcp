@@ -18,6 +18,7 @@ const (
 	MaxAcceptance      = 50
 	MaxAcceptanceText  = 500
 	MaxAssigneeLen     = 80
+	MaxChatMessageLen  = 4000
 
 	MaxBatchTasks   = 100 // task_create / task_update / task_remove
 	MaxGetKeys      = 50  // task_get

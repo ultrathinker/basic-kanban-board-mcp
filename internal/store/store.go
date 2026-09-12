@@ -67,6 +67,7 @@ type Store interface {
 	Links() LinkRepo
 	Notes() NoteRepo
 	Progress() ProgressRepo
+	Chat() ChatRepo
 	Events() EventRepo
 	Tokens() TokenRepo
 	Sessions() SessionRepo
@@ -231,6 +232,29 @@ type ProgressRepo interface {
 	// a real DELETE, no hidden flag. Returns the number of rows removed so the
 	// caller can report what it discarded.
 	DeleteTrack(tx Tx, projectID string, taskID *string, assessor string) (int64, error)
+}
+
+// ChatCursor identifies a point in chat history for backward pagination.
+type ChatCursor = domain.ChatCursor
+
+// ChatFilter specifies query parameters for reading chat messages.
+type ChatFilter struct {
+	// ProjectID restricts messages to one project. When nil or empty,
+	// messages are read across all projects.
+	ProjectID  *string
+	ProjectIDs []string
+	Limit      int
+	Before     *domain.ChatCursor
+}
+
+// ChatRepo persists project AI chat messages. Rows are append-only
+// and never pruned.
+type ChatRepo interface {
+	// Add appends one message to the project chat.
+	Add(tx Tx, m *domain.ChatMessage) error
+	// List returns a page of chat messages, newest first, with optional
+	// project filtering and tie-breaking cursor pagination.
+	List(tx Tx, f ChatFilter) ([]domain.ChatMessage, error)
 }
 
 // EventRepo is append-only and backs SSE replay.

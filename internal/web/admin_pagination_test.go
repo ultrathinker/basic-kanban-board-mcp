@@ -56,6 +56,12 @@ func (adminPagerSvc) TaskRemove(context.Context, service.Actor, service.TaskRemo
 func (adminPagerSvc) ProjectUpsert(context.Context, service.Actor, service.ProjectUpsertInput) (*service.ProjectUpsertResult, error) {
 	return nil, ErrServiceUnavailable
 }
+func (adminPagerSvc) ChatAdd(context.Context, service.Actor, service.ChatAddInput) (*domain.ChatMessage, error) {
+	return nil, ErrServiceUnavailable
+}
+func (adminPagerSvc) ChatList(context.Context, service.Actor, service.ChatListInput) (*service.ChatListResult, error) {
+	return nil, ErrServiceUnavailable
+}
 
 // adminPagerHarness bundles the wired Web together with the freshly
 // minted admin secret. Tests need both: the Web to issue requests, the

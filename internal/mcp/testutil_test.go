@@ -85,6 +85,20 @@ type fakeService struct {
 	DefaultProjectUpsertEr error
 	LastProjectUpsert      service.ProjectUpsertInput
 	LastProjectUpsertActor service.Actor
+
+	// ChatAdd.
+	NextChatAdd      func(ctx context.Context, a service.Actor, in service.ChatAddInput) (*domain.ChatMessage, error)
+	DefaultChatAdd   *domain.ChatMessage
+	DefaultChatAddEr error
+	LastChatAdd      service.ChatAddInput
+	LastChatAddActor service.Actor
+
+	// ChatList.
+	NextChatList      func(ctx context.Context, a service.Actor, in service.ChatListInput) (*service.ChatListResult, error)
+	DefaultChatList   *service.ChatListResult
+	DefaultChatListEr error
+	LastChatList      service.ChatListInput
+	LastChatListActor service.Actor
 }
 
 func (f *fakeService) BoardGet(ctx context.Context, a service.Actor, in service.BoardGetInput) (*service.Board, error) {
@@ -220,6 +234,36 @@ func (f *fakeService) ProjectUpsert(ctx context.Context, a service.Actor, in ser
 		return h(ctx, a, in)
 	}
 	return f.DefaultProjectUpsert, f.DefaultProjectUpsertEr
+}
+
+func (f *fakeService) ChatAdd(ctx context.Context, a service.Actor, in service.ChatAddInput) (*domain.ChatMessage, error) {
+	f.mu.Lock()
+	h := f.NextChatAdd
+	if h != nil {
+		f.NextChatAdd = nil
+	}
+	f.LastChatAdd = in
+	f.LastChatAddActor = a
+	f.mu.Unlock()
+	if h != nil {
+		return h(ctx, a, in)
+	}
+	return f.DefaultChatAdd, f.DefaultChatAddEr
+}
+
+func (f *fakeService) ChatList(ctx context.Context, a service.Actor, in service.ChatListInput) (*service.ChatListResult, error) {
+	f.mu.Lock()
+	h := f.NextChatList
+	if h != nil {
+		f.NextChatList = nil
+	}
+	f.LastChatList = in
+	f.LastChatListActor = a
+	f.mu.Unlock()
+	if h != nil {
+		return h(ctx, a, in)
+	}
+	return f.DefaultChatList, f.DefaultChatListEr
 }
 
 // fakeActor returns a non-zero Actor for tests that need an identity

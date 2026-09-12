@@ -422,6 +422,9 @@ func (s *sqlStore) Notes() NoteRepo {
 func (s *sqlStore) Progress() ProgressRepo {
 	return s.repo("progress", func() any { return &progressRepo{s: s} }).(ProgressRepo)
 }
+func (s *sqlStore) Chat() ChatRepo {
+	return s.repo("chat", func() any { return &chatRepo{s: s} }).(ChatRepo)
+}
 func (s *sqlStore) Events() EventRepo {
 	return s.repo("events", func() any { return &eventRepo{s: s} }).(EventRepo)
 }

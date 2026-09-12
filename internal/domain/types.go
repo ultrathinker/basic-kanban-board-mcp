@@ -3,7 +3,11 @@
 // with plain Go values so the rules that define the product can be verified fast.
 package domain
 
-import "time"
+import (
+	"fmt"
+	"strings"
+	"time"
+)
 
 // Kind classifies a column and drives WIP checks, "done" semantics and the
 // hide-done toggle in the UI.
@@ -308,6 +312,52 @@ type ProgressMark struct {
 	// ETA is the optional forecast of when the assessed work will finish.
 	ETA       *time.Time
 	CreatedAt time.Time
+}
+
+// ChatMessage represents a project-scoped AI conversation entry.
+// Messages are append-only and never pruned.
+type ChatMessage struct {
+	ID        string
+	ProjectID string
+	Author    string
+	Body      string
+	CreatedAt time.Time
+}
+
+// ChatCursor identifies a point in chat history for backward pagination
+// (fetching older messages). It carries both CreatedAt and ID so that
+// pagination across identical timestamps breaks ties deterministically
+// without gaps or duplicates.
+type ChatCursor struct {
+	CreatedAt time.Time
+	ID        string
+}
+
+// String encodes the cursor into a string of the form "<timestamp>/<id>".
+func (c ChatCursor) String() string {
+	if c.CreatedAt.IsZero() && c.ID == "" {
+		return ""
+	}
+	return c.CreatedAt.UTC().Format(time.RFC3339Nano) + "/" + c.ID
+}
+
+// ParseChatCursor parses a cursor string formatted as "<timestamp>/<id>".
+func ParseChatCursor(s string) (*ChatCursor, error) {
+	if s == "" {
+		return nil, nil
+	}
+	tsStr, id, ok := strings.Cut(s, "/")
+	if !ok || id == "" {
+		return nil, Invalid("cursor", "malformed chat cursor", "Cursor format is <timestamp>/<id>.")
+	}
+	t, err := time.Parse(time.RFC3339Nano, tsStr)
+	if err != nil {
+		t, err = time.Parse(time.RFC3339, tsStr)
+	}
+	if err != nil {
+		return nil, Invalid("cursor", fmt.Sprintf("invalid cursor timestamp %q", tsStr), "Cursor format is <timestamp>/<id>.")
+	}
+	return &ChatCursor{CreatedAt: t.UTC(), ID: id}, nil
 }
 
 // EventType enumerates everything that can appear in the activity feed.
