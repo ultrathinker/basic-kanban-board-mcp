@@ -8,6 +8,20 @@
        limit) is an inverted block — paper on ink.
    See the header comment in web/static/app.css for the full argument. */}}
 
+{{define "progress-bar"}}
+{{- /* expects .Progress (*view.ProgressView); optional .Class for the
+       wrapping element.
+
+       NIL RENDERS NOTHING — not an empty bar. A row of unfilled squares
+       claims "the work has not started"; the truth may be "nobody has
+       assessed it". The service already computed the percent; the painted
+       count was derived once in the view package. This template does no
+       arithmetic and carries no inline style: the CSP is
+       `script-src 'self'`, and the squares are painted by app.css from the
+       .f class, so the markup works with JavaScript off. */ -}}
+{{- if .Progress}}<span class="pbar{{with .Class}} {{.}}{{end}}" data-filled="{{.Progress.Filled}}" title="{{.Progress.Label}}" aria-label="{{.Progress.Label}}">{{range .Progress.Cells}}{{if .}}<i class="f"></i>{{else}}<i></i>{{end}}{{end}}<span class="pbar-label mono">{{.Progress.Label}}</span></span>{{- end}}
+{{end}}
+
 {{define "card"}}
 {{- /* expects .Card (TaskCard); optional .CSRF and .Columns ([]ColumnView)
        for the keyboard move menu */ -}}
@@ -33,6 +47,7 @@
     <span class="mono text-subtle" title="version">v{{.Card.Version}}</span>
   </div>
   <div class="title"><a href="{{.Card.URL}}">{{.Card.Title}}</a></div>
+  {{template "progress-bar" (dict "Progress" .Card.Progress)}}
   <div class="meta">
     {{if .Card.Estimate}}<span class="estimate">{{.Card.Estimate.Label}}</span>{{end}}
     {{if .Card.Assignee}}<span class="assignee">@{{.Card.Assignee}}</span>{{end}}

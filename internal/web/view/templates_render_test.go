@@ -190,6 +190,18 @@ func renderCases() []renderCase {
 			notWants: []string{"<no value>"},
 		},
 		{
+			name:     "progress-bar/45-percent",
+			template: "progress-bar",
+			data:     map[string]any{"Progress": view.NewAssessedProgress(percentPtr(45), 3)},
+			wants: []string{
+				// Exactly ten cells, four painted, the label carrying both the
+				// percent and how many tracks produced it.
+				`data-filled="4"`,
+				"45% · 3 assessments",
+			},
+			notWants: []string{"<no value>"},
+		},
+		{
 			name:     "login/anonymous",
 			template: "page-login",
 			data:     view.SampleAnonymousPage("Sign in", "login", view.SampleLoginModel("", "/p/BMB")),

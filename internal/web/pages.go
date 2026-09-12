@@ -105,6 +105,9 @@ func (w *Web) handleBoard(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	model := buildBoardModel(board.Projects[0], hideDone)
+	// Progress bars come from two batch reads (one for the project header,
+	// chunked ones for the cards) — never a query per card.
+	attachProgress(r.Context(), w.d.Service, actorFor(tok), key, &model)
 
 	page := w.newPage(r.Context(), rw, r, tok, "board")
 	page.Title = board.Projects[0].Name + " · basic-kanban-board-mcp"

@@ -164,6 +164,14 @@ type BoardModel struct {
 	DoneTotal int
 	DoneShown int
 	HideDone  bool
+	// ManualProgress is the project's manual progress: the mean of the latest
+	// AI assessments of the project as a whole. Nil when nobody assessed it —
+	// the header then shows nothing, not an empty bar.
+	ManualProgress *ProgressView
+	// AutoProgress is the board's own verdict: the share of tasks in done
+	// columns. Nil for a project without tasks. The two never overwrite each
+	// other; they stand side by side, labelled, so their gap is readable.
+	AutoProgress *ProgressView
 }
 
 // FocusCard is the "Now: KEY — title" banner.
@@ -222,6 +230,10 @@ type TaskCard struct {
 	// Outcome is the task's epistemic verdict, displayed only when not the
 	// default ("open"). Empty string == open == render nothing on the card.
 	Outcome domain.Outcome
+	// Progress is the task's summary progress bar (the mean of the assessors'
+	// latest marks, computed once by the service). Nil when nobody assessed
+	// the task: the card then shows no bar at all, never an empty one.
+	Progress *ProgressView
 }
 
 // EstimateView is the pill: "2h", "30m".

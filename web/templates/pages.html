@@ -15,6 +15,13 @@
   <h1>{{.Project.Name}}</h1>
   <span class="key mono">{{.Project.Key}}</span>
   <span class="spacer"></span>
+  {{- /* Two project-level progress metrics, side by side and labelled so
+       they can never be mistaken for each other: "assessed" is what the
+       AIs said about the project as a whole, "tasks done" is what the
+       board itself says. Their gap is the interesting number. A nil
+       metric renders nothing — see the progress-bar partial. */ -}}
+  {{- if .ManualProgress}}<span class="proj-progress" title="Manual progress: the mean of the latest AI assessments of this project. Task-level marks are not included."><span class="caps text-subtle">assessed</span>{{template "progress-bar" (dict "Progress" .ManualProgress)}}</span>{{end}}
+  {{- if .AutoProgress}}<span class="proj-progress" title="Automatic progress: the share of this project's tasks sitting in done columns. Computed from the board, not from any assessment."><span class="caps text-subtle">tasks done</span>{{template "progress-bar" (dict "Progress" .AutoProgress)}}</span>{{end}}
   {{template "live-status" .}}
   {{if .HideDone}}<a class="btn btn-sm" href="?hide_done=0">Show done</a>
   {{else}}<a class="btn btn-sm" href="?hide_done=1">Hide done</a>{{end}}

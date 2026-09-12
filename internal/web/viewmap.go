@@ -2,6 +2,7 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -114,6 +115,58 @@ func buildBoardModel(proj service.BoardProject, hideDone bool) view.BoardModel {
 		m.Columns = append(m.Columns, cv)
 	}
 	return m
+}
+
+// attachProgress fills the board model's progress bars from the service's
+// batch reads: ONE ProjectProgress call plus ceil(cards/MaxGetKeys)
+// TaskProgress calls — never a query per card, or a board of sixty cards
+// would pay sixty reads to draw sixty badges. A failed progress read is
+// best-effort, like the drawer's blocker enrichment: the page renders
+// without bars rather than not at all, and a missing bar reads truthfully
+// as "no data" instead of lying about a percentage.
+func attachProgress(ctx context.Context, svc service.Service, a service.Actor, projectKey string, m *view.BoardModel) {
+	if pp, err := svc.ProjectProgress(ctx, a, service.ProjectProgressInput{ProjectKey: projectKey}); err == nil && pp != nil {
+		m.ManualProgress = view.NewAssessedProgress(pp.Manual, pp.ManualAssessors)
+		m.AutoProgress = view.NewDoneShareProgress(pp.Auto, pp.DoneTasks, pp.TotalTasks)
+	}
+
+	// Progress is fetched only for cards that are actually rendered: hidden
+	// done columns draw no card, so their keys buy nothing.
+	var keys []string
+	for _, c := range m.Columns {
+		if c.Hidden {
+			continue
+		}
+		for _, t := range c.Tasks {
+			keys = append(keys, t.Key)
+		}
+	}
+	byKey := make(map[string]service.TaskProgressItem, len(keys))
+	for len(keys) > 0 {
+		chunk := keys
+		if len(chunk) > domain.MaxGetKeys {
+			chunk = chunk[:domain.MaxGetKeys]
+		}
+		keys = keys[len(chunk):]
+		tp, err := svc.TaskProgress(ctx, a, service.TaskProgressInput{ProjectKey: projectKey, Keys: chunk})
+		if err != nil {
+			return
+		}
+		for _, item := range tp.Items {
+			byKey[strings.ToUpper(item.Key)] = item
+		}
+	}
+	for ci := range m.Columns {
+		if m.Columns[ci].Hidden {
+			continue
+		}
+		for ti := range m.Columns[ci].Tasks {
+			card := &m.Columns[ci].Tasks[ti]
+			if item, ok := byKey[strings.ToUpper(card.Key)]; ok {
+				card.Progress = view.NewAssessedProgress(item.Percent, item.Assessors)
+			}
+		}
+	}
 }
 
 // taskRefsFor turns a batch TaskGet result into TaskRef values, preserving
