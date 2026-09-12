@@ -87,7 +87,9 @@ func (w *Web) handleBoard(rw http.ResponseWriter, r *http.Request) {
 		w.pageError(rw, r, err)
 		return
 	}
-	hideDone := r.URL.Query().Get("hide_done") != "0"
+	// KANB-14: query > cookie > default. See donecookie.go for the
+	// precedence rule and the per-project cookie encoding.
+	hideDone := w.resolveHideDone(rw, r, key)
 	doneLimit := 0
 	if !hideDone {
 		doneLimit = domain.MaxDoneLimit
