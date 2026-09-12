@@ -99,6 +99,27 @@ type fakeService struct {
 	DefaultChatListEr error
 	LastChatList      service.ChatListInput
 	LastChatListActor service.Actor
+
+	// TaskProgress.
+	NextTaskProgress      func(ctx context.Context, a service.Actor, in service.TaskProgressInput) (*service.TaskProgressResult, error)
+	DefaultTaskProgress   *service.TaskProgressResult
+	DefaultTaskProgressEr error
+	LastTaskProgress      service.TaskProgressInput
+	LastTaskProgressActor service.Actor
+
+	// ProjectProgress.
+	NextProjectProgress      func(ctx context.Context, a service.Actor, in service.ProjectProgressInput) (*service.ProjectProgressResult, error)
+	DefaultProjectProgress   *service.ProjectProgressResult
+	DefaultProjectProgressEr error
+	LastProjectProgress      service.ProjectProgressInput
+	LastProjectProgressActor service.Actor
+
+	// ProgressTrackDelete.
+	NextProgressTrackDelete      func(ctx context.Context, a service.Actor, in service.ProgressTrackDeleteInput) (*service.ProgressTrackDeleteResult, error)
+	DefaultProgressTrackDelete   *service.ProgressTrackDeleteResult
+	DefaultProgressTrackDeleteEr error
+	LastProgressTrackDelete      service.ProgressTrackDeleteInput
+	LastProgressTrackDeleteActor service.Actor
 }
 
 func (f *fakeService) BoardGet(ctx context.Context, a service.Actor, in service.BoardGetInput) (*service.Board, error) {
@@ -296,3 +317,46 @@ func authContextFor(ctx context.Context) context.Context {
 // branch. The MCP layer wraps it as a validation error per AGENTS.md "fail
 // loud".
 var errService = errors.New("service kaboom")
+
+func (f *fakeService) TaskProgress(ctx context.Context, a service.Actor, in service.TaskProgressInput) (*service.TaskProgressResult, error) {
+	f.mu.Lock()
+	h := f.NextTaskProgress
+	if h != nil {
+		f.NextTaskProgress = nil
+	}
+	f.LastTaskProgress = in
+	f.LastTaskProgressActor = a
+	f.mu.Unlock()
+	if h != nil {
+		return h(ctx, a, in)
+	}
+	return f.DefaultTaskProgress, f.DefaultTaskProgressEr
+}
+func (f *fakeService) ProjectProgress(ctx context.Context, a service.Actor, in service.ProjectProgressInput) (*service.ProjectProgressResult, error) {
+	f.mu.Lock()
+	h := f.NextProjectProgress
+	if h != nil {
+		f.NextProjectProgress = nil
+	}
+	f.LastProjectProgress = in
+	f.LastProjectProgressActor = a
+	f.mu.Unlock()
+	if h != nil {
+		return h(ctx, a, in)
+	}
+	return f.DefaultProjectProgress, f.DefaultProjectProgressEr
+}
+func (f *fakeService) ProgressTrackDelete(ctx context.Context, a service.Actor, in service.ProgressTrackDeleteInput) (*service.ProgressTrackDeleteResult, error) {
+	f.mu.Lock()
+	h := f.NextProgressTrackDelete
+	if h != nil {
+		f.NextProgressTrackDelete = nil
+	}
+	f.LastProgressTrackDelete = in
+	f.LastProgressTrackDeleteActor = a
+	f.mu.Unlock()
+	if h != nil {
+		return h(ctx, a, in)
+	}
+	return f.DefaultProgressTrackDelete, f.DefaultProgressTrackDeleteEr
+}

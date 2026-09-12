@@ -788,3 +788,12 @@ func trim(s string, n int) string {
 	}
 	return s[:n] + "…"
 }
+func (stubService) TaskProgress(context.Context, service.Actor, service.TaskProgressInput) (*service.TaskProgressResult, error) {
+	return nil, ErrServiceUnavailable
+}
+func (stubService) ProjectProgress(context.Context, service.Actor, service.ProjectProgressInput) (*service.ProjectProgressResult, error) {
+	return nil, ErrServiceUnavailable
+}
+func (stubService) ProgressTrackDelete(context.Context, service.Actor, service.ProgressTrackDeleteInput) (*service.ProgressTrackDeleteResult, error) {
+	return nil, ErrServiceUnavailable
+}

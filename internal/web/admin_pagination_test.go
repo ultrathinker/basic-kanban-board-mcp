@@ -600,3 +600,12 @@ func TestAdminPagination_AnonymousRedirectsToLogin(t *testing.T) {
 // ---------------------------------------------------------------------------
 // httptest plumbing kept local so the tests read top-down.
 // ---------------------------------------------------------------------------
+func (adminPagerSvc) TaskProgress(context.Context, service.Actor, service.TaskProgressInput) (*service.TaskProgressResult, error) {
+	return nil, ErrServiceUnavailable
+}
+func (adminPagerSvc) ProjectProgress(context.Context, service.Actor, service.ProjectProgressInput) (*service.ProjectProgressResult, error) {
+	return nil, ErrServiceUnavailable
+}
+func (adminPagerSvc) ProgressTrackDelete(context.Context, service.Actor, service.ProgressTrackDeleteInput) (*service.ProgressTrackDeleteResult, error) {
+	return nil, ErrServiceUnavailable
+}

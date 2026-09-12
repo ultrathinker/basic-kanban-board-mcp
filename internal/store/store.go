@@ -226,6 +226,11 @@ type ProgressRepo interface {
 	// the scope — exactly one row per assessor. A nil taskID reads the
 	// project-level scope (task_id IS NULL); a taskID reads that task.
 	LatestByAssessor(tx Tx, projectID string, taskID *string) ([]domain.ProgressMark, error)
+	// LatestByTask returns the most recent mark of every assessor for every
+	// task track of the project in one read, keyed by task id - the batch
+	// read the board progress rendering needs. Tasks without marks are
+	// absent; project-level marks are not included.
+	LatestByTask(tx Tx, projectID string) (map[string][]domain.ProgressMark, error)
 	// History returns every mark in the scope, oldest first.
 	History(tx Tx, projectID string, taskID *string) ([]domain.ProgressMark, error)
 	// DeleteTrack removes every mark for one (project, task, assessor) track —

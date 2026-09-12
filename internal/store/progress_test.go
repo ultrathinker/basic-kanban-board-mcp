@@ -460,7 +460,6 @@ func TestProgressMarks_LatestByAssessorAndDeleteTrack(t *testing.T) {
 // 7. Add validates its inputs, maps constraint failures to domain errors,
 // defaults CreatedAt to the database clock and round-trips ETA.
 // ---------------------------------------------------------------------------
-
 func TestProgressAdd_Validation(t *testing.T) {
 	ts := openTestStore(t)
 	p, cols := seedProject(t, ts)
@@ -518,5 +517,69 @@ func TestProgressAdd_Validation(t *testing.T) {
 	}
 	if got == nil || got.ETA == nil || !got.ETA.Equal(eta) {
 		t.Fatalf("ETA did not round-trip: %+v", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 8. LatestByTask returns the newest mark per (task, assessor) for every task
+// track of the project in one read, and nothing else.
+// ---------------------------------------------------------------------------
+
+func TestProgressMarks_LatestByTask_BatchesAllTaskTracks(t *testing.T) {
+	ts := openTestStore(t)
+	p, cols := seedProject(t, ts)
+	taskA := seedTask(t, ts, p, cols["Backlog"], "A", "tester")
+	taskB := seedTask(t, ts, p, cols["Backlog"], "B", "tester")
+	taskC := seedTask(t, ts, p, cols["Backlog"], "C", "tester") // no marks on purpose
+
+	addMark(t, ts, &domain.ProgressMark{ID: "pm-a1", ProjectID: p.ID, TaskID: &taskA.ID, Assessor: "alpha", Percent: 10, CreatedAt: progressBase})
+	addMark(t, ts, &domain.ProgressMark{ID: "pm-a2", ProjectID: p.ID, TaskID: &taskA.ID, Assessor: "alpha", Percent: 50, CreatedAt: progressBase.Add(time.Second)})
+	addMark(t, ts, &domain.ProgressMark{ID: "pm-a3", ProjectID: p.ID, TaskID: &taskA.ID, Assessor: "beta", Percent: 60, CreatedAt: progressBase.Add(2 * time.Second)})
+	addMark(t, ts, &domain.ProgressMark{ID: "pm-b1", ProjectID: p.ID, TaskID: &taskB.ID, Assessor: "alpha", Percent: 80, CreatedAt: progressBase.Add(3 * time.Second)})
+	// Project-level marks belong to LatestByAssessor's scope, not here.
+	addMark(t, ts, &domain.ProgressMark{ID: "pm-p1", ProjectID: p.ID, Assessor: "gamma", Percent: 15})
+	// Another project's marks must not leak across the project boundary.
+	other := &domain.Project{
+		ID: "other-project", Key: "OTHER", Name: "Other",
+		Version: 1, NextTaskSeq: 1, EstimateUnit: "h",
+		EnforceDependencies: true, StrictDone: false, ClaimTTLSeconds: 3600,
+	}
+	if err := ts.Write(context.Background(), func(tx Tx) error {
+		return ts.Projects().Create(tx, other)
+	}); err != nil {
+		t.Fatalf("seed other project: %v", err)
+	}
+	addMark(t, ts, &domain.ProgressMark{ID: "pm-o1", ProjectID: other.ID, TaskID: &taskA.ID, Assessor: "ghost", Percent: 1})
+
+	var got map[string][]domain.ProgressMark
+	if err := ts.Write(context.Background(), func(tx Tx) error {
+		var err error
+		got, err = ts.Progress().LatestByTask(tx, p.ID)
+		return err
+	}); err != nil {
+		t.Fatalf("LatestByTask: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("tasks with tracks = %d, want 2 (task C has no marks, project-level and other-project marks excluded)", len(got))
+	}
+	if marks := got[taskA.ID]; len(marks) != 2 {
+		t.Fatalf("task A marks = %+v, want exactly one latest per assessor (alpha, beta)", marks)
+	} else {
+		byAssessor := map[string]int{}
+		for _, m := range marks {
+			byAssessor[m.Assessor] = m.Percent
+		}
+		if byAssessor["alpha"] != 50 || byAssessor["beta"] != 60 {
+			t.Fatalf("task A latest = %v, want alpha=50 beta=60", byAssessor)
+		}
+	}
+	if marks := got[taskB.ID]; len(marks) != 1 || marks[0].Assessor != "alpha" || marks[0].Percent != 80 {
+		t.Fatalf("task B marks = %+v, want [alpha/80]", marks)
+	}
+	if _, ok := got[taskC.ID]; ok {
+		t.Fatalf("task C has no marks but appears in the map: %+v", got[taskC.ID])
+	}
+	if _, ok := got[""]; ok {
+		t.Fatalf("project-level marks leaked into the task map under a \"\" key")
 	}
 }

@@ -318,3 +318,12 @@ func keysOf(r projectSearchResponse) []string {
 	sort.Strings(out)
 	return out
 }
+func (searchSvc) TaskProgress(context.Context, service.Actor, service.TaskProgressInput) (*service.TaskProgressResult, error) {
+	return nil, ErrServiceUnavailable
+}
+func (searchSvc) ProjectProgress(context.Context, service.Actor, service.ProjectProgressInput) (*service.ProjectProgressResult, error) {
+	return nil, ErrServiceUnavailable
+}
+func (searchSvc) ProgressTrackDelete(context.Context, service.Actor, service.ProgressTrackDeleteInput) (*service.ProgressTrackDeleteResult, error) {
+	return nil, ErrServiceUnavailable
+}

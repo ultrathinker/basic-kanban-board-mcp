@@ -98,6 +98,44 @@ func (r *progressRepo) LatestByAssessor(tx Tx, projectID string, taskID *string)
 	return scanProgressMarks(rows)
 }
 
+// LatestByTask returns the most recent mark of every assessor for every task
+// track of the project in ONE read — the board renders dozens of cards and
+// must not issue a query per card. Keyed by task id; a task with no marks is
+// absent from the map; project-level marks (task_id IS NULL) are not
+// included — they belong to LatestByAssessor's project scope.
+func (r *progressRepo) LatestByTask(tx Tx, projectID string) (map[string][]domain.ProgressMark, error) {
+	if projectID == "" {
+		return nil, domain.Invalid("project_id", "project id is empty", "Pass the project UUID.")
+	}
+	tw := tx.(*txWrap)
+	q := `SELECT id, project_id, task_id, assessor, percent, eta, created_at
+	      FROM (
+	          SELECT id, project_id, task_id, assessor, percent, eta, created_at,
+	                 ROW_NUMBER() OVER (
+	                     PARTITION BY task_id, assessor
+	                     ORDER BY created_at DESC, id DESC
+	                 ) AS rn
+	          FROM progress_marks
+	          WHERE project_id = ? AND task_id IS NOT NULL
+	      )
+	      WHERE rn = 1
+	      ORDER BY task_id ASC, assessor ASC`
+	rows, err := tw.tx.QueryContext(tw.ctx(), q, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("store: latest progress marks by task: %w", err)
+	}
+	defer rows.Close()
+	marks, err := scanProgressMarks(rows)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string][]domain.ProgressMark, len(marks))
+	for _, m := range marks {
+		out[*m.TaskID] = append(out[*m.TaskID], m)
+	}
+	return out, nil
+}
+
 // History returns every mark in the scope, oldest first. Nothing thins the
 // table, so this grows forever by design.
 func (r *progressRepo) History(tx Tx, projectID string, taskID *string) ([]domain.ProgressMark, error) {

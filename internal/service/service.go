@@ -37,6 +37,10 @@ type Service interface {
 	TaskClaim(ctx context.Context, a Actor, in TaskClaimInput) (*TaskClaimResult, error)
 	TaskRemove(ctx context.Context, a Actor, in TaskRemoveInput) (*TaskRemoveResult, error)
 	ProjectUpsert(ctx context.Context, a Actor, in ProjectUpsertInput) (*ProjectUpsertResult, error)
+
+	TaskProgress(ctx context.Context, a Actor, in TaskProgressInput) (*TaskProgressResult, error)
+	ProjectProgress(ctx context.Context, a Actor, in ProjectProgressInput) (*ProjectProgressResult, error)
+	ProgressTrackDelete(ctx context.Context, a Actor, in ProgressTrackDeleteInput) (*ProgressTrackDeleteResult, error)
 	ChatAdd(ctx context.Context, a Actor, in ChatAddInput) (*domain.ChatMessage, error)
 	ChatList(ctx context.Context, a Actor, in ChatListInput) (*ChatListResult, error)
 }
@@ -633,3 +637,76 @@ type ChatListResult struct {
 }
 
 type ChatMessageListResult = ChatListResult
+
+// ---------------------------------------------------------------------------
+// progress — the one place the metrics arithmetic lives
+//
+// Web and MCP render these results; they must never re-derive them, or the
+// two surfaces drift apart (rounding first, scope next). See progress.go for
+// the rules and the rounding.
+// ---------------------------------------------------------------------------
+
+// TaskProgressInput asks for the summary progress of specific tasks of one
+// project. Keys that do not parse, do not exist in this project, or fall
+// outside the actor's scope are reported in NotFound — the caller asked for N
+// keys and gets N answers, never a silent drop (task_get's rule).
+type TaskProgressInput struct {
+	ProjectKey string
+	Keys       []string // task keys, PROJ-N; up to domain.MaxGetKeys
+}
+
+// TaskProgressResult preserves the requested order.
+type TaskProgressResult struct {
+	ProjectKey string
+	Items      []TaskProgressItem
+	NotFound   []string
+}
+
+// TaskProgressItem is one task's summary progress. Percent is nil when nobody
+// has assessed the task. It must stay distinguishable from an assessed 0%:
+// a bare int cannot — zero claims the work has not started, and a renderer
+// draws a 0% bar while it hides "no data" altogether.
+type TaskProgressItem struct {
+	Key    string
+	TaskID string
+	// Percent is the mean of the assessors' latest marks, rounded halves up.
+	// nil = no assessor has spoken yet.
+	Percent *int
+	// Assessors is how many latest marks the mean used. A track with fifty
+	// revisions still counts once: one mark per assessor.
+	Assessors int
+}
+
+// ProjectProgressInput asks for both project-level progress views.
+type ProjectProgressInput struct {
+	ProjectKey string
+}
+
+// ProjectProgressResult carries the manual and the automatic progress side by
+// side. They never overwrite each other: manual is what assessors said about
+// the project as a whole (task_id IS NULL marks only), auto is what the board
+// itself says. The gap between them is the point of the pair.
+type ProjectProgressResult struct {
+	ProjectKey string
+	// Manual is nil when nobody assessed the project as a whole.
+	Manual          *int
+	ManualAssessors int
+	// Auto is nil when the project has no unarchived tasks: an empty board
+	// has no measured progress, and 0% would claim work not started.
+	Auto       *int
+	DoneTasks  int
+	TotalTasks int
+}
+
+// ProgressTrackDeleteInput names one (project, task, assessor) track. An
+// empty TaskKey selects the project-level track (task_id IS NULL).
+type ProgressTrackDeleteInput struct {
+	ProjectKey string
+	TaskKey    string
+	Assessor   string
+}
+
+// ProgressTrackDeleteResult reports how many marks the store removed.
+type ProgressTrackDeleteResult struct {
+	Removed int64
+}
