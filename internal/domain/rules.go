@@ -158,6 +158,23 @@ func ValidateBody(s string) error {
 	return nil
 }
 
+// ValidateDescription bounds a project description after
+// description_append grows it (project_upsert's full-replacement
+// `description` is not itself length-checked today — a pre-existing gap
+// this does not touch). It reuses MaxBodyBytes rather than inventing a
+// separate limit — the same order of magnitude as a task body, and the
+// same reasoning task_update's body_append already established: repeated
+// small appends must not grow a row past a bound just because each piece
+// was individually small.
+func ValidateDescription(s string) error {
+	if len(s) > MaxBodyBytes {
+		return Invalid("description",
+			fmt.Sprintf("description is %d bytes, the limit is %d", len(s), MaxBodyBytes),
+			"Split the detail into a linked document, or shorten it.")
+	}
+	return nil
+}
+
 // ValidateChatMessageBody validates that a chat message body is non-empty and
 // does not exceed MaxChatMessageLen characters. No formatting or escaping is
 // performed here — the body is stored unaltered.
@@ -281,7 +298,13 @@ type MoveCheck struct {
 	OpenBlocks []string // keys of blockers that are not done
 	// ToCount is how many unarchived tasks the destination already holds,
 	// excluding this task when it is already there.
-	ToCount             int
+	ToCount int
+	// Occupants is the destination's occupying task keys, same scope as
+	// ToCount (unarchived, excluding this task) — named in a wip_exceeded
+	// refusal so the caller learns what to move without reading the board
+	// separately. Optional: a caller that has not fetched keys (only a
+	// count) simply leaves this nil, and the message names nothing extra.
+	Occupants           []string
 	AcceptanceRemaining int
 	EnforceDependencies bool
 	StrictDone          bool
@@ -311,7 +334,7 @@ func CheckMove(c MoveCheck) error {
 		return Blocked(c.TaskKey, c.OpenBlocks)
 	}
 	if c.To.Kind == KindActive && c.To.WIPLimit != nil && c.ToCount >= *c.To.WIPLimit {
-		return WIPExceeded(c.To.Name, *c.To.WIPLimit)
+		return WIPExceeded(c.To.Name, *c.To.WIPLimit, c.Occupants)
 	}
 	if c.StrictDone && c.To.Kind == KindDone && c.AcceptanceRemaining > 0 {
 		return Invalid("acceptance",

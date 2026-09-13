@@ -168,6 +168,38 @@ func (r *columnRepo) CountTasks(tx Tx, columnID string, excludeTaskID string) (i
 	return n, nil
 }
 
+// OccupantKeys returns the same rows CountTasks would count, as keys in
+// column (rank) order, instead of a bare count. See the ColumnRepo doc
+// comment: a caller that wants to name a full column's occupants derives
+// the count from len() of this rather than calling CountTasks too.
+func (r *columnRepo) OccupantKeys(tx Tx, columnID string, excludeTaskID string) ([]string, error) {
+	if columnID == "" {
+		return nil, domain.Invalid("column_id", "column id is empty", "Pass the column UUID.")
+	}
+	tw := tx.(*txWrap)
+	q := "SELECT key FROM tasks WHERE column_id = ? AND archived_at IS NULL"
+	args := []any{columnID}
+	if excludeTaskID != "" {
+		q += " AND id <> ?"
+		args = append(args, excludeTaskID)
+	}
+	q += " ORDER BY rank ASC"
+	rows, err := tw.tx.QueryContext(tw.ctx(), q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: list column occupant keys: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var k string
+		if err := rows.Scan(&k); err != nil {
+			return nil, fmt.Errorf("store: scan column occupant key: %w", err)
+		}
+		out = append(out, k)
+	}
+	return out, rows.Err()
+}
+
 // ---------------------------------------------------------------------------
 // scan helpers
 // ---------------------------------------------------------------------------

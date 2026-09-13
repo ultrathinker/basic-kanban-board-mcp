@@ -214,8 +214,8 @@ func TestToolInputSchemas_CoverEveryPublishedTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
-	if len(res.Tools) != 11 {
-		t.Errorf("published %d tools, want 11", len(res.Tools))
+	if len(res.Tools) != 12 {
+		t.Errorf("published %d tools, want 12", len(res.Tools))
 	}
 	for _, tool := range res.Tools {
 		if toolInputSchemas[tool.Name] == nil {

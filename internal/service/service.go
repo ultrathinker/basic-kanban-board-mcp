@@ -575,15 +575,23 @@ const (
 )
 
 type ProjectUpsertInput struct {
-	Mode          UpsertMode
-	Key           string
-	Name          string
-	Description   *string
-	IfVersion     *int // required for update
-	Columns       []ColumnSpec
-	RemoveColumns []RemoveColumn
-	Settings      *ProjectSettings
-	Archived      *bool
+	Mode        UpsertMode
+	Key         string
+	Name        string
+	Description *string
+	// DescriptionAppend adds text to the end of the current description
+	// instead of replacing it — the same idea as TaskPatch.BodyAppend, and
+	// deliberately built the same way: mutually exclusive with Description
+	// (checked in ProjectUpsert before either mode function runs), joined
+	// with a blank line when the description is not empty, and if_version
+	// already guards every mode:"update" call regardless of which field
+	// changed, so an append is racesafe for free.
+	DescriptionAppend *string
+	IfVersion         *int // required for update
+	Columns           []ColumnSpec
+	RemoveColumns     []RemoveColumn
+	Settings          *ProjectSettings
+	Archived          *bool
 }
 
 type ColumnSpec struct {

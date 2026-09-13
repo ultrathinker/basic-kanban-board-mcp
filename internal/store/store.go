@@ -117,6 +117,13 @@ type ColumnRepo interface {
 	// CountTasks returns unarchived tasks in the column, used for WIP checks
 	// inside the same transaction as the move.
 	CountTasks(tx Tx, columnID string, excludeTaskID string) (int, error)
+	// OccupantKeys returns the keys of unarchived tasks in the column, in
+	// column (rank) order, optionally excluding one task — the same rows
+	// CountTasks would count, but as keys instead of a bare number. A
+	// wip_exceeded refusal derives its count from len() of this instead of
+	// also calling CountTasks, so naming what occupies a full column costs
+	// no second read.
+	OccupantKeys(tx Tx, columnID string, excludeTaskID string) ([]string, error)
 }
 
 // TaskFilter mirrors board_get.filter (PLAN §6.1). Zero value means "no filter".

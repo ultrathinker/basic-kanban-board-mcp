@@ -39,14 +39,17 @@ func NewServer(svc service.Service, version string) *gomcp.Server {
 	registerProjectUpsert(s, svc)
 	registerProjectPost(s, svc)
 	registerProgressSet(s, svc)
+	registerProgressHistory(s, svc)
 	s.AddReceivingMiddleware(schemaErrorEnvelope)
 	return s
 }
 
-// NewReadOnlyServer builds the three-tool /mcp/readonly server (PLAN §6
-// rule 4): board_get, task_get, and task_next with claim/start disabled.
-// It shares every line of translation logic with the full server via the
-// same register* functions — only which tools are registered, and
+// NewReadOnlyServer builds the four-tool /mcp/readonly server (PLAN §6
+// rule 4): board_get, task_get, task_next with claim/start disabled, and
+// progress_history — a read, so it belongs on the no-write-scope surface
+// the same as the other three, unlike progress_set which never appears
+// here. It shares every line of translation logic with the full server via
+// the same register* functions — only which tools are registered, and
 // task_next's readOnly flag, differ.
 func NewReadOnlyServer(svc service.Service, version string) *gomcp.Server {
 	s := gomcp.NewServer(&gomcp.Implementation{Name: ServerName + "-readonly", Version: version}, &gomcp.ServerOptions{
@@ -55,6 +58,7 @@ func NewReadOnlyServer(svc service.Service, version string) *gomcp.Server {
 	registerBoardGet(s, svc)
 	registerTaskGet(s, svc)
 	registerTaskNext(s, svc, true)
+	registerProgressHistory(s, svc)
 	s.AddReceivingMiddleware(schemaErrorEnvelope)
 	return s
 }

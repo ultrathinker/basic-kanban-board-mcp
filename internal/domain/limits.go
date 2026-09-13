@@ -26,6 +26,21 @@ const (
 	MaxDoneLimit    = 200 // board_get done_limit
 	MaxNotesPerRead = 20
 
+	// MaxProgressHistoryLimit bounds progress_history's `limit`: how many of
+	// the most recent marks it returns when a scope's full history is
+	// longer. Same order of magnitude as MaxDoneLimit — both cap a
+	// potentially-unbounded, append-only history down to a browsable
+	// window — and it is also the schema default, so an omitted `limit`
+	// returns everything up to this cap rather than nothing.
+	MaxProgressHistoryLimit = 200 // progress_history
+
+	// WIPExceededKeySample bounds how many occupying task keys a wip_exceeded
+	// error names. Mirrors NextBlockedTopSample's "small sample, not a full
+	// list" rule: a project may set a WIP limit far larger than a handful
+	// (nothing caps wip_limit itself beyond >0), and the error must not turn
+	// into a dump of the whole column.
+	WIPExceededKeySample = 10
+
 	MaxProjectKeyLen = 8
 	MinProjectKeyLen = 2
 	MaxColumnNameLen = 40

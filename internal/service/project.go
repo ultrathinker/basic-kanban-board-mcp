@@ -44,6 +44,11 @@ func (s *svc) ProjectUpsert(ctx context.Context, a Actor, in ProjectUpsertInput)
 	if in.Mode == UpsertCreate && in.Name == "" {
 		return nil, domain.Invalid("name", "name is required to create a project", "Pass a display name.")
 	}
+	if in.Description != nil && in.DescriptionAppend != nil {
+		return nil, domain.Invalid("description_append",
+			"description and description_append are mutually exclusive",
+			"Send either description (replace) or description_append (append), not both.")
+	}
 
 	ctx = store.WithActor(ctx, a.Name)
 	var result ProjectUpsertResult
@@ -80,8 +85,8 @@ func (s *svc) projectCreate(tx store.Tx, pending *[]domain.Event, a Actor, key s
 		StrictDone:          false,
 		ClaimTTLSeconds:     int(domain.ClaimTTLDefault.Seconds()),
 	}
-	if in.Description != nil {
-		p.Description = *in.Description
+	if err := applyDescription(p, in); err != nil {
+		return nil, nil, err
 	}
 	applyProjectSettings(p, in.Settings)
 	if err := s.store.Projects().Create(tx, p); err != nil {
@@ -123,8 +128,8 @@ func (s *svc) projectUpdate(tx store.Tx, pending *[]domain.Event, a Actor, key s
 	if in.Name != "" {
 		p.Name = in.Name
 	}
-	if in.Description != nil {
-		p.Description = *in.Description
+	if err := applyDescription(p, in); err != nil {
+		return nil, nil, err
 	}
 	applyProjectSettings(p, in.Settings)
 	wasArchiving := false
@@ -169,6 +174,35 @@ func (s *svc) projectUpdate(tx store.Tx, pending *[]domain.Event, a Actor, key s
 		}
 	}
 	return p, cols, nil
+}
+
+// applyDescription applies ProjectUpsertInput's description field(s) to p:
+// a full replacement, or an append, whichever the caller sent — the caller
+// (ProjectUpsert) has already rejected both being sent together. This
+// mirrors task_update's body_append exactly (internal/service/tasks_write.go
+// applyUpdate): a blank line separates the existing description from the
+// appended block when it is not empty, an empty description just becomes
+// the appended text, and the result is bounded the same way a body is —
+// repeated small appends must not grow a row past the limit just because
+// each piece was individually small.
+func applyDescription(p *domain.Project, in ProjectUpsertInput) error {
+	if in.Description != nil {
+		p.Description = *in.Description
+		return nil
+	}
+	if in.DescriptionAppend != nil {
+		var next string
+		if p.Description == "" {
+			next = *in.DescriptionAppend
+		} else {
+			next = p.Description + "\n\n" + *in.DescriptionAppend
+		}
+		if err := domain.ValidateDescription(next); err != nil {
+			return err
+		}
+		p.Description = next
+	}
+	return nil
 }
 
 func applyProjectSettings(p *domain.Project, in *ProjectSettings) {

@@ -32,15 +32,19 @@ type projectSettingsIn struct {
 }
 
 type projectUpsertInput struct {
-	Mode          string             `json:"mode" jsonschema:"REQUIRED, no default. \"create\" makes a new project (name is then required too); \"update\" edits an existing one (if_version is then required too). There is deliberately no upsert-by-guess: a mistyped key would silently fork the board into a second project."`
-	Key           string             `json:"key" jsonschema:"project key, case-insensitive"`
-	Name          string             `json:"name,omitempty" jsonschema:"display name; required when mode:create"`
-	Description   *string            `json:"description,omitempty"`
-	IfVersion     *int               `json:"if_version,omitempty" jsonschema:"required when mode:update — the project version your last read returned"`
-	Columns       []columnSpecIn     `json:"columns,omitempty" jsonschema:"the full desired column list, in order, when provided"`
-	RemoveColumns []removeColumnIn   `json:"remove_columns,omitempty" jsonschema:"required for every existing column absent from columns"`
-	Settings      *projectSettingsIn `json:"settings,omitempty"`
-	Archived      *bool              `json:"archived,omitempty"`
+	Mode        string  `json:"mode" jsonschema:"REQUIRED, no default. \"create\" makes a new project (name is then required too); \"update\" edits an existing one (if_version is then required too). There is deliberately no upsert-by-guess: a mistyped key would silently fork the board into a second project."`
+	Key         string  `json:"key" jsonschema:"project key, case-insensitive"`
+	Name        string  `json:"name,omitempty" jsonschema:"display name; required when mode:create"`
+	Description *string `json:"description,omitempty"`
+	// DescriptionAppend mirrors task_update's body_append: same field
+	// naming pattern, same mutual exclusion with the full-replacement
+	// field, same "not both" wording.
+	DescriptionAppend *string            `json:"description_append,omitempty" jsonschema:"append this text to the description instead of replacing it; mutually exclusive with description"`
+	IfVersion         *int               `json:"if_version,omitempty" jsonschema:"required when mode:update — the project version your last read returned"`
+	Columns           []columnSpecIn     `json:"columns,omitempty" jsonschema:"the full desired column list, in order, when provided"`
+	RemoveColumns     []removeColumnIn   `json:"remove_columns,omitempty" jsonschema:"required for every existing column absent from columns"`
+	Settings          *projectSettingsIn `json:"settings,omitempty"`
+	Archived          *bool              `json:"archived,omitempty"`
 }
 
 type projectUpsertOutput struct {
@@ -147,15 +151,16 @@ func registerProjectUpsert(s *gomcp.Server, svc service.Service) {
 		}
 
 		res, err := svc.ProjectUpsert(ctx, actor, service.ProjectUpsertInput{
-			Mode:          service.UpsertMode(in.Mode),
-			Key:           domain.NormalizeProjectKey(in.Key),
-			Name:          in.Name,
-			Description:   in.Description,
-			IfVersion:     in.IfVersion,
-			Columns:       columnSpecsToService(in.Columns),
-			RemoveColumns: removeColumnsToService(in.RemoveColumns),
-			Settings:      settingsToService(in.Settings),
-			Archived:      in.Archived,
+			Mode:              service.UpsertMode(in.Mode),
+			Key:               domain.NormalizeProjectKey(in.Key),
+			Name:              in.Name,
+			Description:       in.Description,
+			DescriptionAppend: in.DescriptionAppend,
+			IfVersion:         in.IfVersion,
+			Columns:           columnSpecsToService(in.Columns),
+			RemoveColumns:     removeColumnsToService(in.RemoveColumns),
+			Settings:          settingsToService(in.Settings),
+			Archived:          in.Archived,
 		})
 		if err != nil {
 			derr := asDomainError(err)

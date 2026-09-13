@@ -963,25 +963,29 @@ func TestRoundTrip_NoActorOnConnectCtx_AllToolsForbidden(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ListTools on a freshly constructed server returns exactly ten tools in
-// the full server and three in the read-only server.
+// ListTools on a freshly constructed server returns exactly twelve tools in
+// the full server and four in the read-only server.
 // ---------------------------------------------------------------------------
 
-func TestListTools_FullServer_HasEleven(t *testing.T) {
+// TestListTools_FullServer_HasTwelve was TestListTools_FullServer_HasEleven
+// before progress_history (KANB-26) was added: a deliberate update to the
+// pinned tool count, not a relaxed test — every tool name is still checked
+// individually below.
+func TestListTools_FullServer_HasTwelve(t *testing.T) {
 	t.Parallel()
 	cs, _ := roundtripServer(t, NewServer)
 	res, err := cs.ListTools(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
-	if len(res.Tools) != 11 {
-		t.Errorf("tools count = %d, want 11 (got: %v)", len(res.Tools), names(res.Tools))
+	if len(res.Tools) != 12 {
+		t.Errorf("tools count = %d, want 12 (got: %v)", len(res.Tools), names(res.Tools))
 	}
 	want := map[string]bool{
 		"board_get": false, "task_next": false, "task_get": false,
 		"task_create": false, "task_update": false, "task_link": false,
 		"task_claim": false, "task_remove": false, "project_upsert": false,
-		"project_post": false, "progress_set": false,
+		"project_post": false, "progress_set": false, "progress_history": false,
 	}
 	for _, t := range res.Tools {
 		want[t.Name] = true

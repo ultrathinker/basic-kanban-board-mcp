@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -822,6 +823,57 @@ func TestTaskUpdate_BatchCannotOverfillWIP(t *testing.T) {
 	}
 	if got := env.countIn(t, doing); got != 3 {
 		t.Fatalf("Doing holds %d after the batch, want 3 (the limit)", got)
+	}
+}
+
+// TestTaskUpdate_WIPExceeded_MessageNamesOccupants is the regression test for
+// KANB-28: the reporter's own words were "not a bug" — the limit and the
+// batch's per-item (non-atomic) semantics are exactly as designed — but the
+// refusal used to make the caller read the board separately to find out
+// what was occupying the full column. This is the exact shape of the
+// original complaint: a batch move dropped mid-batch by a full WIP column.
+func TestTaskUpdate_WIPExceeded_MessageNamesOccupants(t *testing.T) {
+	env := openTestEnv(t)
+	doing := env.cols["Doing"]
+	if doing.WIPLimit == nil || *doing.WIPLimit != 3 {
+		t.Fatalf("Doing WIP limit = %v, want 3", doing.WIPLimit)
+	}
+
+	occupying := make([]*domain.Task, 3)
+	for i := range occupying {
+		occupying[i] = makeBacklogTask(t, env, "occupant")
+		res, err := env.svc.TaskUpdate(context.Background(), env.actor, TaskUpdateInput{
+			Patches: []TaskPatch{env.moveTo(t, occupying[i].Key, "Doing")},
+		})
+		if err != nil || !res.Items[0].OK {
+			t.Fatalf("seed move %s: err=%v res=%+v", occupying[i].Key, err, res)
+		}
+	}
+	if got := env.countIn(t, doing); got != 3 {
+		t.Fatalf("Doing holds %d before the refused move, want 3", got)
+	}
+
+	extra := makeBacklogTask(t, env, "the one that gets dropped")
+	res, err := env.svc.TaskUpdate(context.Background(), env.actor, TaskUpdateInput{
+		Patches: []TaskPatch{env.moveTo(t, extra.Key, "Doing")},
+	})
+	if err != nil {
+		t.Fatalf("batch update: %v", err)
+	}
+	if res.Items[0].OK {
+		t.Fatalf("move into a full column succeeded")
+	}
+	got := res.Items[0].Err
+	if got == nil || got.Code != domain.CodeWIPExceeded {
+		t.Fatalf("error = %+v, want wip_exceeded", got)
+	}
+	for _, occ := range occupying {
+		if !strings.Contains(got.Message, occ.Key) {
+			t.Errorf("message %q does not name occupant %s — the caller still has to read the board separately", got.Message, occ.Key)
+		}
+	}
+	if strings.Contains(got.Message, extra.Key) {
+		t.Errorf("message %q names the task being moved as if it already occupied the column", got.Message)
 	}
 }
 

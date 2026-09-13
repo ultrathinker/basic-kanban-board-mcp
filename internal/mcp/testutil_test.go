@@ -127,6 +127,13 @@ type fakeService struct {
 	DefaultProgressSetEr error
 	LastProgressSet      service.ProgressSetInput
 	LastProgressSetActor service.Actor
+
+	// ProgressHistory.
+	NextProgressHistory      func(ctx context.Context, a service.Actor, in service.ProgressHistoryInput) (*service.ProgressHistoryResult, error)
+	DefaultProgressHistory   *service.ProgressHistoryResult
+	DefaultProgressHistoryEr error
+	LastProgressHistory      service.ProgressHistoryInput
+	LastProgressHistoryActor service.Actor
 }
 
 func (f *fakeService) BoardGet(ctx context.Context, a service.Actor, in service.BoardGetInput) (*service.Board, error) {
@@ -354,13 +361,24 @@ func (f *fakeService) ProjectProgress(ctx context.Context, a service.Actor, in s
 	return f.DefaultProjectProgress, f.DefaultProjectProgressEr
 }
 
-// ProgressHistory is not wired to any MCP tool (KANB-13 is web-only; the
-// history chart is a page feature, not an agent-facing read), so unlike its
-// siblings above this has no Next/Default/Last scaffolding — nothing in
-// this package's tests ever calls it, and the method exists purely to keep
-// fakeService satisfying service.Service.
+// ProgressHistory now backs the progress_history MCP tool (KANB-26), so it
+// gets the same Next/Default/Last scaffolding as its siblings.
 func (f *fakeService) ProgressHistory(ctx context.Context, a service.Actor, in service.ProgressHistoryInput) (*service.ProgressHistoryResult, error) {
-	return &service.ProgressHistoryResult{ProjectKey: in.ProjectKey, TaskKey: in.TaskKey}, nil
+	f.mu.Lock()
+	h := f.NextProgressHistory
+	if h != nil {
+		f.NextProgressHistory = nil
+	}
+	f.LastProgressHistory = in
+	f.LastProgressHistoryActor = a
+	f.mu.Unlock()
+	if h != nil {
+		return h(ctx, a, in)
+	}
+	if f.DefaultProgressHistory != nil {
+		return f.DefaultProgressHistory, f.DefaultProgressHistoryEr
+	}
+	return &service.ProgressHistoryResult{ProjectKey: in.ProjectKey, TaskKey: in.TaskKey}, f.DefaultProgressHistoryEr
 }
 func (f *fakeService) ProgressTrackDelete(ctx context.Context, a service.Actor, in service.ProgressTrackDeleteInput) (*service.ProgressTrackDeleteResult, error) {
 	f.mu.Lock()
