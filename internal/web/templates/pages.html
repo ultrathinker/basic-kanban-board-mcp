@@ -47,9 +47,19 @@
      untouched. #project-progress keeps its id (KANB-12's live-refresh
      target) and .proj-progress-group keeps display:contents so the two bars
      still sit side by side exactly as before; only the row that contains
-     them moved. Rendered only when there is something to show — an empty
-     centered row would be visual noise nobody asked for. */ -}}
-{{if or .ManualProgress .AutoProgress .Chat}}
+     them moved.
+
+     The row is rendered UNCONDITIONALLY, and an empty one is collapsed by
+     CSS (.page-subhead with no metric and no button -> display:none) rather
+     than by this template. That is not a style preference: #project-progress
+     is a live-refresh target, and app.js resolves its targets against the
+     DOM it already has. A row omitted here could never appear later, because
+     the refresh only swaps the innerHTML of elements that are already on
+     screen — so the first project-level assessment on a project that had
+     none would land nowhere and the owner would wait for a bar that only a
+     full reload could produce. Guarding on .Chat made that reachable
+     whenever the best-effort chat read failed. The element the declaration
+     names must always exist. */ -}}
 <div class="page-subhead">
   {{- /* Two project-level progress metrics, side by side and labelled so
        they can never be mistaken for each other: "assessed" is what the
@@ -69,7 +79,6 @@
   {{if .Chat}}<button type="button" class="btn btn-sm" data-chat-toggle
         aria-expanded="false" aria-controls="chat-panel">Thoughts</button>{{end}}
 </div>
-{{end}}
 
 {{template "focus-banner" (dict "Focus" .Focus)}}
 

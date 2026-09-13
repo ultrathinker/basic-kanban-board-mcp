@@ -272,12 +272,14 @@ func ChatEntriesNewestFirst(msgs []domain.ChatMessage, now time.Time, knownKeys 
 // formatChartTime — the exact "today vs older" rule the progress-history
 // chart's own axis labels already use — rather than inventing a second
 // formatting rule for the same distinction (KANB-25 item E is explicit that
-// there must be only one). now is UTC (the store's own convention; see
-// internal/store/scan.go), and so is every CreatedAt this is called with, so
-// the calendar-day comparison never crosses a timezone boundary.
+// there must be only one).
+//
+// The two instants do NOT arrive in the same zone: CreatedAt is forced to UTC
+// by the store, while now comes from Deps.Now, which is the server's local
+// clock. sameCalendarDay reconciles them — see its comment for what a
+// straddled comparison did around local midnight.
 func chatEntryTime(t, now time.Time) string {
-	sameDay := t.Year() == now.Year() && t.YearDay() == now.YearDay()
-	return formatChartTime(t, sameDay)
+	return formatChartTime(t, sameCalendarDay(t, now))
 }
 
 // authorColorClass maps an author name to one of 8 fixed chat-colour CSS
@@ -380,8 +382,12 @@ type BoardModel struct {
 	DoneTotal int
 	DoneShown int
 	HideDone  bool
-	// Chat is the thoughts panel content: one ChatList page, reordered to
-	// oldest first / newest last for display (see ChatPanel). Nil when the
+	// Chat is the thoughts panel content: one ChatList page, ordered NEWEST
+	// FIRST for display (see ChatPanel, and ChatEntriesNewestFirst which
+	// produces it). This doc used to claim the opposite, which mattered:
+	// app.js merges live arrivals with insertChatEntriesAtTop, so believing
+	// the panel is oldest-first and "fixing" the render to match would put
+	// every new message at the wrong end of the feed. Nil when the
 	// chat read failed — the page then renders without the panel rather
 	// than showing a lying "no messages yet".
 	Chat *ChatPanel

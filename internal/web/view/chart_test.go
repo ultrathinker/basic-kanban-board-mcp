@@ -49,7 +49,10 @@ func extractPolylinePoints(t *testing.T, svg, attrSnippet string) string {
 
 // 1. Golden test: fixed set of points producing deterministic SVG.
 func TestChart_GoldenFixedPoints(t *testing.T) {
-	t0 := time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)
+	// time.Local, not time.UTC: the axis labels are printed in the reader's
+	// zone (formatChartTime converts), so a UTC fixture would assert a
+	// different label on every machine whose zone is not UTC.
+	t0 := time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local)
 	marks := []domain.ProgressMark{
 		{ID: "m1", Assessor: "alpha", Percent: 30, CreatedAt: t0},
 		{ID: "m2", Assessor: "beta", Percent: 50, CreatedAt: t0.Add(15 * time.Minute)},
@@ -105,7 +108,7 @@ func TestChart_GoldenFixedPoints(t *testing.T) {
 
 // 2. Drop 91 -> 72 from the same assessor is preserved as a drop (Y coordinate grows downward).
 func TestChart_Drop91To72_PreservedAsYGrowth(t *testing.T) {
-	t0 := time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)
+	t0 := time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local)
 	marks := []domain.ProgressMark{
 		{ID: "m1", Assessor: "evaluator-1", Percent: 50, CreatedAt: t0},
 		{ID: "m2", Assessor: "evaluator-1", Percent: 91, CreatedAt: t0.Add(30 * time.Minute)},
@@ -153,7 +156,7 @@ func TestChart_Drop91To72_PreservedAsYGrowth(t *testing.T) {
 
 // 3. Time scale is proportional to real elapsed time, not point index.
 func TestChart_TimeScale_ProportionalToRealTime(t *testing.T) {
-	t0 := time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)
+	t0 := time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local)
 	// Points at t=0min, 10min, 20min, 40min.
 	// Elapsed times from t0:
 	// t1: 10m
@@ -199,7 +202,7 @@ func TestChart_TimeScale_ProportionalToRealTime(t *testing.T) {
 
 // 4. Polylines for each assessor plus separate highlighted polyline for composite indicator.
 func TestChart_MultiAssessor_AndHighlightedComposite(t *testing.T) {
-	t0 := time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)
+	t0 := time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local)
 	marks := []domain.ProgressMark{
 		{ID: "m1", Assessor: "agent-a", Percent: 40, CreatedAt: t0},
 		{ID: "m2", Assessor: "agent-b", Percent: 60, CreatedAt: t0.Add(10 * time.Minute)},
@@ -268,7 +271,7 @@ func TestChart_DegenerateCases(t *testing.T) {
 	}
 
 	// 5b. Single point renders a circle point marker, NOT a polyline
-	t0 := time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)
+	t0 := time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local)
 	single := []domain.ProgressMark{
 		{ID: "m1", Assessor: "solo", Percent: 65, CreatedAt: t0},
 	}
@@ -304,7 +307,7 @@ func TestChart_DegenerateCases(t *testing.T) {
 
 // 6. 500 points: render does not crash, point count is decimated, drop 91 -> 72 survives.
 func TestChart_500Points_DecimationPreservesDrop(t *testing.T) {
-	t0 := time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)
+	t0 := time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local)
 	var marks []domain.ProgressMark
 
 	// 0..399: monotonic climb from 10% to 90%
@@ -387,7 +390,7 @@ func TestChart_500Points_DecimationPreservesDrop(t *testing.T) {
 
 // 7. Evaluator name with <, &, quotes is properly escaped.
 func TestChart_EscapesAssessorNames(t *testing.T) {
-	t0 := time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)
+	t0 := time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local)
 	marks := []domain.ProgressMark{
 		{ID: "m1", Assessor: `<evaluator & "special'quotes">`, Percent: 45, CreatedAt: t0},
 		{ID: "m2", Assessor: `<evaluator & "special'quotes">`, Percent: 65, CreatedAt: t0.Add(10 * time.Minute)},
@@ -411,7 +414,7 @@ func TestChart_EscapesAssessorNames(t *testing.T) {
 
 // 8. CSP compliance: no inline style attributes and no inline event handlers.
 func TestChart_NoInlineStylesOrHandlers(t *testing.T) {
-	t0 := time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)
+	t0 := time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local)
 	marks := []domain.ProgressMark{
 		{ID: "m1", Assessor: "alpha", Percent: 30, CreatedAt: t0},
 		{ID: "m2", Assessor: "beta", Percent: 70, CreatedAt: t0.Add(20 * time.Minute)},
@@ -431,7 +434,7 @@ func TestChart_NoInlineStylesOrHandlers(t *testing.T) {
 
 // 9. Input sorting: marks out of chronological order are sorted by time.
 func TestChart_SortsUnsortedMarksChronologically(t *testing.T) {
-	t0 := time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)
+	t0 := time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local)
 	// Provide marks in reverse order
 	marks := []domain.ProgressMark{
 		{ID: "m3", Assessor: "bot", Percent: 80, CreatedAt: t0.Add(40 * time.Minute)},
@@ -454,7 +457,7 @@ func TestChart_SortsUnsortedMarksChronologically(t *testing.T) {
 
 // 10. Dimensions and clamping: zero or negative dimensions fallback to defaults.
 func TestChart_DimensionsAndPercentClamping(t *testing.T) {
-	t0 := time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)
+	t0 := time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local)
 	marks := []domain.ProgressMark{
 		{ID: "m1", Assessor: "clamped", Percent: -20, CreatedAt: t0},
 		{ID: "m2", Assessor: "clamped", Percent: 150, CreatedAt: t0.Add(10 * time.Minute)},

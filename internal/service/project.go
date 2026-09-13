@@ -185,8 +185,19 @@ func (s *svc) projectUpdate(tx store.Tx, pending *[]domain.Event, a Actor, key s
 // the appended text, and the result is bounded the same way a body is —
 // repeated small appends must not grow a row past the limit just because
 // each piece was individually small.
+//
+// BOTH branches are bounded, and they must stay that way. When only the
+// append branch validated, a single oversized full replacement (the field
+// had no limit anywhere, not even a schema maxLength) left the project in a
+// state where every later description_append failed forever with "description
+// is N bytes, the limit is M" — and the remediation text told the caller to
+// shorten it using the very tool the bound had just disabled. One column
+// written by two paths needs one ceiling, not two.
 func applyDescription(p *domain.Project, in ProjectUpsertInput) error {
 	if in.Description != nil {
+		if err := domain.ValidateDescription(*in.Description); err != nil {
+			return err
+		}
 		p.Description = *in.Description
 		return nil
 	}

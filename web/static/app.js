@@ -133,6 +133,10 @@
     announceTimer: null,
     inFlight: false,
     dragging: false,
+    // pending records a refresh that had to be dropped because one was
+    // already in flight or the owner was mid-drag. SSE never replays, so a
+    // dropped tick has to be re-run by us or not at all.
+    pending: false,
     // dirtyChartKeys accumulates progressBarKey()-shaped keys for metrics a
     // progress.recorded/progress.track_deleted SSE event named, between now
     // and the next refreshLiveRegions pass — see markProgressEventDirty and
@@ -309,12 +313,27 @@
   }
 
   function refreshLiveRegions() {
-    if (live.inFlight || live.dragging) return;
+    // A refresh that cannot run right now must not be forgotten. SSE is a
+    // "something changed" signal with no replay: if this tick is dropped
+    // because a previous fetch is still in flight (or the owner is mid-drag),
+    // nothing else is coming, and the board would sit on stale markup until
+    // an unrelated write happened to fire another event. Remember the drop
+    // and re-run once the current pass finishes.
+    if (live.inFlight || live.dragging) {
+      live.pending = true;
+      return;
+    }
     var regions = liveRegions();
     if (regions.length === 0) return;
     live.inFlight = true;
+    // cache: 'no-store' because this fetches window.location.href — the exact
+    // URL the browser already navigated to, and therefore the one most likely
+    // to be sitting in its cache. A cached 200 here would replace each live
+    // region with the markup it already had while announceUpdate() still
+    // reported success: a frozen board that says "updated".
     fetch(window.location.href, {
       credentials: 'same-origin',
+      cache: 'no-store',
       headers: { 'Accept': 'text/html', 'X-Live-Refresh': '1' }
     })
       .then(function (r) {
@@ -330,7 +349,7 @@
           // The thoughts feed never gets the generic wholesale swap: see
           // appendNewChatEntries's own comment for why.
           if (current.hasAttribute('data-chat-feed')) {
-            appendNewChatEntries(fresh);
+            appendNewChatEntries(fresh, doc);
             continue;
           }
           var firstRow = current.querySelector('.row');
@@ -349,7 +368,16 @@
         announceUpdate();
       })
       .catch(function () { /* a failed refresh is not worth a toast; SSE will fire again */ })
-      .then(function () { live.inFlight = false; });
+      .then(function () {
+        live.inFlight = false;
+        // Signals that arrived while we were fetching are covered by this
+        // pass only if they committed before the server rendered it, which
+        // we cannot know. Re-run once, debounced, rather than guess.
+        if (live.pending) {
+          live.pending = false;
+          scheduleRefresh();
+        }
+      });
   }
 
   function scheduleRefresh() {
@@ -480,6 +508,8 @@
         onStart: function () { live.dragging = true; },
         onEnd: function (evt) {
           live.dragging = false;
+          // Anything that arrived during the drag was dropped; pick it up now.
+          if (live.pending) { live.pending = false; scheduleRefresh(); }
           var card = evt.item;
           var to = evt.to;
           var columnName = to && to.getAttribute && to.getAttribute('data-column-name');
@@ -965,7 +995,7 @@
   // stable id) is genuinely new and gets inserted as one block at the top,
   // in fresh's own newest-first order. There is no scroll position to
   // preserve or follow here — see this section's header comment.
-  function appendNewChatEntries(fresh) {
+  function appendNewChatEntries(fresh, doc) {
     var feed = chatFeedEl();
     if (!feed) return;
     var known = {};
@@ -975,14 +1005,50 @@
     }
     var incoming = fresh.querySelectorAll('[data-chat-id]');
     var nodes = [];
+    var overlaps = false;
     for (var j = 0; j < incoming.length; j++) {
       var id = incoming[j].getAttribute('data-chat-id');
-      if (!id || known[id]) continue;
+      if (!id) continue;
+      if (known[id]) { overlaps = true; continue; }
       nodes.push(document.importNode(incoming[j], true));
     }
     if (nodes.length === 0) return;
+    // The merge can only ever see what the server rendered, and the server
+    // renders the newest chatInitialLimit entries. So if the feed already
+    // held messages and NOT ONE of the fresh ones is among them, the two
+    // lists do not touch: more than a full page committed since the last
+    // refresh, and whatever fell between them would be inserted nowhere.
+    // "Show more" pages strictly OLDER than the feed's cursor, so those
+    // messages would not be reachable by any click either — the feed would
+    // read as continuous while having a hole in it.
+    //
+    // Rather than splice around an unknown gap, take the server's own answer
+    // wholesale: the feed becomes exactly the page that was just rendered,
+    // and the paging cursor is rewound to match it, so everything older is
+    // reachable again through "show more". The cost is that a feed the owner
+    // had expanded collapses back to one page — the same state a reload
+    // would give, without the reload.
+    if (existing.length > 0 && !overlaps) {
+      resetChatFeedTo(fresh, doc);
+      return;
+    }
     revealChatFeed(feed);
     insertChatEntriesAtTop(feed, nodes);
+  }
+
+  // resetChatFeedTo replaces the whole feed with a freshly rendered one and
+  // rewinds the paging state to match it. Used only for the gap case above:
+  // every other live arrival is merged, never swapped.
+  function resetChatFeedTo(fresh, doc) {
+    var feed = chatFeedEl();
+    if (!feed) return;
+    revealChatFeed(feed);
+    feed.innerHTML = fresh.innerHTML;
+    var cursorEl = doc && doc.querySelector('[data-chat-next-cursor]');
+    chatOlderCursor = cursorEl ? cursorEl.getAttribute('data-chat-next-cursor') || '' : '';
+    chatInitialCursor = chatOlderCursor;
+    chatExtraLoaded = 0;
+    updateChatHistoryControls();
   }
 
   function setChatOpen(open) {
@@ -1086,7 +1152,7 @@
     var url = '/p/' + encodeURIComponent(key) + '/chat/older' +
       '?before=' + encodeURIComponent(chatOlderCursor) +
       '&limit=' + CHAT_HISTORY_PAGE_SIZE;
-    fetch(url, { credentials: 'same-origin', headers: { 'Accept': 'text/html' } })
+    fetch(url, { credentials: 'same-origin', cache: 'no-store', headers: { 'Accept': 'text/html' } })
       .then(function (r) {
         if (!r.ok) throw new Error('status ' + r.status);
         chatOlderCursor = r.headers.get('X-Chat-Next-Cursor') || '';
@@ -1481,7 +1547,7 @@
     var task = bar.getAttribute('data-task') || '';
     var url = '/p/' + encodeURIComponent(project) + '/progress/chart' +
       (task ? '?task=' + encodeURIComponent(task) : '');
-    fetch(url, { credentials: 'same-origin', headers: { 'Accept': 'text/html' } })
+    fetch(url, { credentials: 'same-origin', cache: 'no-store', headers: { 'Accept': 'text/html' } })
       .then(function (r) {
         if (!r.ok) throw new Error('status ' + r.status);
         return r.text();
@@ -1521,7 +1587,7 @@
     });
     // role="button" on a <span> needs Enter/Space wired by hand — a real
     // <button> gets both for free, but .pbar cannot be one (it also paints
-    // the ten square cells app.css positions as flex children).
+    // the ProgressSquares cells app.css positions as flex children).
     document.addEventListener('keydown', function (e) {
       if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
       var bar = e.target.closest && e.target.closest('[data-progress-chart-toggle]');

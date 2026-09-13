@@ -158,14 +158,16 @@ func ValidateBody(s string) error {
 	return nil
 }
 
-// ValidateDescription bounds a project description after
-// description_append grows it (project_upsert's full-replacement
-// `description` is not itself length-checked today — a pre-existing gap
-// this does not touch). It reuses MaxBodyBytes rather than inventing a
-// separate limit — the same order of magnitude as a task body, and the
-// same reasoning task_update's body_append already established: repeated
-// small appends must not grow a row past a bound just because each piece
-// was individually small.
+// ValidateDescription bounds a project description, on BOTH of the paths
+// that write it: project_upsert's full replacement and the description_append
+// that grows it. It reuses MaxBodyBytes rather than inventing a separate
+// limit — the same order of magnitude as a task body, and the same reasoning
+// task_update's body_append already established: repeated small appends must
+// not grow a row past a bound just because each piece was individually small.
+//
+// The replacement path was unbounded when append was added, which let one
+// oversized write make every subsequent append impossible; see the note on
+// service.applyDescription.
 func ValidateDescription(s string) error {
 	if len(s) > MaxBodyBytes {
 		return Invalid("description",

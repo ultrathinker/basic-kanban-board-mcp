@@ -33,6 +33,7 @@ func (w *Web) render(rw http.ResponseWriter, r *http.Request, status int, name s
 		return
 	}
 	rw.Header().Set("Content-Type", "text/html; charset=utf-8")
+	setNoStore(rw)
 	rw.WriteHeader(status)
 	_, _ = buf.WriteTo(rw)
 }
@@ -46,8 +47,27 @@ func (w *Web) renderFragment(rw http.ResponseWriter, r *http.Request, status int
 		return
 	}
 	rw.Header().Set("Content-Type", "text/html; charset=utf-8")
+	setNoStore(rw)
 	rw.WriteHeader(status)
 	_, _ = buf.WriteTo(rw)
+}
+
+// setNoStore marks a dynamic response as never reusable from a cache.
+//
+// The static handler deliberately says "no-cache" and carries an ETag: those
+// bytes cannot change under a running server, so revalidation is the cheap
+// and correct answer there. Pages and fragments are the opposite — they are
+// the board, they change on every write, and they carry no validator at all.
+// With no directive an intermediary (the reverse proxy PLAN section 9
+// documents) or a browser applying heuristic freshness is entitled to reuse
+// them, and that would silently disable live updates rather than break them
+// loudly: refreshLiveRegions fetches window.location.href, the very URL the
+// browser already navigated to, so a cached 200 would swap every live region
+// for the markup it already had while the status still announced "updated".
+// A frozen board that reports success is the same failure the day-old
+// stylesheet was, one layer up.
+func setNoStore(rw http.ResponseWriter) {
+	rw.Header().Set("Cache-Control", "no-store")
 }
 
 // markdownRender reuses view.Funcs()'s "markdown" entry (goldmark render +

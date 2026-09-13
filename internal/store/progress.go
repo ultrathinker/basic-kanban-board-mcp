@@ -156,6 +156,89 @@ func (r *progressRepo) History(tx Tx, projectID string, taskID *string) ([]domai
 	return scanProgressMarks(rows)
 }
 
+// HistoryTail returns the NEWEST limit marks of the scope, still handed back
+// oldest-first (the one chronological order this table is ever read in), plus
+// the total number of marks in the scope.
+//
+// It exists so a bounded read stays bounded in SQL. Reading the whole history
+// and slicing the tail in Go produces the same answer and does none of the
+// work the limit was asked for: on a scope with half a million marks — which
+// this append-only table is built to reach, since nothing ever thins it — a
+// request for the last 200 would materialise all 500,000 rows first.
+//
+// A limit of zero or less is a programming error rather than "no limit": the
+// caller that wants everything calls History, which says so in its name.
+func (r *progressRepo) HistoryTail(tx Tx, projectID string, taskID *string, limit int) ([]domain.ProgressMark, int, error) {
+	if projectID == "" {
+		return nil, 0, domain.Invalid("project_id", "project id is empty", "Pass the project UUID.")
+	}
+	if limit <= 0 {
+		return nil, 0, domain.Invalid("limit", "limit must be positive", "Call History when the whole scope is wanted.")
+	}
+	scope, args := progressScope(projectID, taskID)
+	tw := tx.(*txWrap)
+
+	var total int
+	if err := tw.tx.QueryRowContext(tw.ctx(),
+		"SELECT COUNT(*) FROM progress_marks WHERE "+scope, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("store: count progress history: %w", err)
+	}
+
+	rows, err := tw.tx.QueryContext(tw.ctx(), `
+		SELECT id, project_id, task_id, assessor, percent, eta, created_at FROM (
+			SELECT id, project_id, task_id, assessor, percent, eta, created_at
+			FROM progress_marks
+			WHERE `+scope+`
+			ORDER BY created_at DESC, id DESC
+			LIMIT ?
+		) ORDER BY created_at ASC, id ASC`, append(args, limit)...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("store: progress history tail: %w", err)
+	}
+	defer rows.Close()
+	marks, err := scanProgressMarks(rows)
+	if err != nil {
+		return nil, 0, err
+	}
+	return marks, total, nil
+}
+
+// CountsByAssessor returns how many marks each assessor has logged in the
+// PROJECT-level scope (task_id IS NULL) — the batched counterpart of
+// LatestByAssessor, and the project-scope twin of CountsByTask.
+//
+// The board used to get this by reading the whole project history and
+// tallying it in Go. That was defended as cheap because the project scope is
+// read once per page render, but neither half of that holds: the table is
+// append-only and nothing thins it, and a render is not rare — every SSE
+// signal makes the page re-read itself, so one agent writing thirty updates
+// cost thirty full-history scans of a table that only grows.
+func (r *progressRepo) CountsByAssessor(tx Tx, projectID string) (map[string]int, error) {
+	if projectID == "" {
+		return nil, domain.Invalid("project_id", "project id is empty", "Pass the project UUID.")
+	}
+	tw := tx.(*txWrap)
+	rows, err := tw.tx.QueryContext(tw.ctx(), `
+		SELECT assessor, COUNT(*)
+		FROM progress_marks
+		WHERE project_id = ? AND task_id IS NULL
+		GROUP BY assessor`, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("store: counts progress marks by assessor: %w", err)
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var assessor string
+		var n int
+		if err := rows.Scan(&assessor, &n); err != nil {
+			return nil, fmt.Errorf("store: scan assessor count: %w", err)
+		}
+		out[assessor] = n
+	}
+	return out, rows.Err()
+}
+
 // DeleteTrack removes every mark of one assessor within the scope — a real
 // DELETE, the only one this table has. Other assessors' rows, and the
 // project-level scope when a task scope is deleted, are untouched.

@@ -458,10 +458,7 @@ func TestCSRF_FormFieldIsAccepted(t *testing.T) {
 	secret := "kbn_testadmin00xx00xx00xx00xx00xx00xx00xx"
 	sess := sessionFor(t, mgr, secret)
 	ck := sessionCookie(sess)
-	csrf, err := mgr.IssueCSRF()
-	if err != nil {
-		t.Fatalf("IssueCSRF: %v", err)
-	}
+	csrf := mgr.CSRFTokenForSession(sess.ID)
 
 	// Build a POST to /admin/tokens with a matching form CSRF. The handler
 	// will fail downstream (placeholder service), but it should pass CSRF
@@ -641,7 +638,7 @@ func TestCSRF_SessionFragmentWithCSRF(t *testing.T) {
 	mgr := w.d.Auth
 	secret := "kbn_testadmin00xx00xx00xx00xx00xx00xx00xx"
 	sess := sessionFor(t, mgr, secret)
-	csrf, _ := mgr.IssueCSRF()
+	csrf := mgr.CSRFTokenForSession(sess.ID)
 
 	body := "csrf_token=" + csrf + "&key=BMB-1&action=release"
 	req := httptest.NewRequest("POST", "/fragments/claim", strings.NewReader(body))

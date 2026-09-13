@@ -360,6 +360,13 @@ select, .field input, .field textarea {
   gap: 0.75rem;
   padding: 0.5rem 0;
 }
+/* The row is always in the markup, because #project-progress inside it is a
+   live-refresh target and app.js can only swap elements that already exist
+   (see pages.html). Collapsing an empty one belongs here rather than in the
+   template for exactly that reason: when the first assessment for a project
+   lands over SSE, the bar is written into #project-progress and this rule
+   stops matching by itself, so the row appears without a reload. */
+.page-subhead:not(:has(.proj-progress)):not(:has(button)) { display: none; }
 
 /* --- focus banner -------------------------------------------------------- */
 /* "Now: BMB-14 — title". A band bounded by rules, not a filled card. */
@@ -707,8 +714,10 @@ select, .field input, .field textarea {
   .board { grid-template-columns: repeat(4, 1fr); }
 }
 
-/* --- progress bars: ten squares, ink on paper ----------------------------- */
-/* Exactly ten square cells in a row with a 1px gap; the painted count is
+/* --- progress bars: twenty cells, ink on paper ---------------------------- */
+/* Exactly view.ProgressSquares (20) narrow cells in a row with a 1px gap;
+   they are rectangles rather than squares so twenty of them are no longer
+   than ten squares were. The painted count is
    floor(percent/10) — no partial fills, the owner decided. The palette is
    the existing ink/rule/sunken ramp only, so the bar survives the dark
    theme (whose tokens are re-picked on :root) and greyscale printing

@@ -85,6 +85,7 @@ func mapError(err error) errInfo {
 func apiError(rw http.ResponseWriter, err error) {
 	info := mapError(err)
 	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
+	setNoStore(rw)
 	rw.WriteHeader(info.status)
 	_ = json.NewEncoder(rw).Encode(map[string]any{
 		"ok": false,

@@ -200,13 +200,40 @@ func TestBoardPage_ProgressAndThoughtsMoveToSubhead(t *testing.T) {
 	}
 }
 
-// TestBoardPage_EmptySubheadRendersNothing is the degenerate case: a project
-// with no progress metrics and no chat must not render an empty,
-// content-free .page-subhead row — that would be a blank centered band for
-// no reason, which the owner's minimalism rule does not allow.
-func TestBoardPage_EmptySubheadRendersNothing(t *testing.T) {
+// TestBoardPage_EmptySubheadKeepsTheLiveTarget is the degenerate case: a
+// project with no progress metrics and no chat.
+//
+// This test used to assert the opposite — that the row was omitted entirely,
+// so an empty centered band would not appear for no reason. The band must
+// still not appear, but omitting the ROW cannot be how that is achieved,
+// because #project-progress lives inside it and is a live-refresh target:
+// app.js resolves its targets against the DOM it already has and only swaps
+// the innerHTML of elements that are already on screen. A row left out here
+// could therefore never appear later, so the first project-level assessment
+// on a project that had none would land nowhere and the owner would wait for
+// a bar that only a full reload could produce.
+//
+// So the contract is now split: the markup always carries the row and the
+// target, and app.css collapses an empty row (.page-subhead:not(:has(...))).
+// That also makes the appearance automatic — when the bar is written into
+// #project-progress the CSS stops matching and the row shows itself.
+func TestBoardPage_EmptySubheadKeepsTheLiveTarget(t *testing.T) {
 	html := renderProgress(t, "page-board", view.SamplePage("Test", "board", view.SampleColumnlessBoardModel()))
-	if strings.Contains(html, "page-subhead") {
-		t.Fatal("an empty project still renders .page-subhead — it should render nothing when there is no progress metric and no chat")
+	if !strings.Contains(html, "page-subhead") {
+		t.Fatal(".page-subhead is missing on an empty project: #project-progress then does not exist, and a later live progress update has nowhere to land")
+	}
+	if strings.Count(html, `id="project-progress"`) != 1 {
+		t.Fatal("the live-refresh target #project-progress must exist exactly once even when there is nothing to show in it yet")
+	}
+	if !strings.Contains(html, `data-live-region="#project-progress"`) {
+		t.Fatal(`the data-live-region="#project-progress" declaration must still be present`)
+	}
+	// The row must be EMPTY of content, which is what lets CSS collapse it:
+	// no metric caption and no Thoughts button.
+	if strings.Contains(html, "assessed") || strings.Contains(html, "tasks done") {
+		t.Fatal("an empty project rendered a progress caption")
+	}
+	if strings.Contains(html, "data-chat-toggle") {
+		t.Fatal("an empty project rendered the Thoughts toggle")
 	}
 }

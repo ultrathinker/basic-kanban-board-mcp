@@ -155,15 +155,14 @@ func (e *progressDeleteEnv) countMarks(t *testing.T, taskID *string, assessor st
 	return n
 }
 
-// csrfPair issues a CSRF token and returns both the cookie and the header
-// value a real browser session would carry — the same double-submit shape
-// TestCSRF_SessionFragmentWithCSRF already exercises for /fragments/claim.
-func (e *progressDeleteEnv) csrfPair(t *testing.T) (*http.Cookie, string) {
+// csrfPair returns the cookie and field value a real browser session would
+// carry. The token is the one DERIVED from this session, not a freshly minted
+// random one: an authenticated POST is now verified against
+// CSRFTokenForSession, so a random pair that merely agrees with itself is
+// exactly what an attacker who planted a cookie would have, and is refused.
+func (e *progressDeleteEnv) csrfPair(t *testing.T, sess *domain.Session) (*http.Cookie, string) {
 	t.Helper()
-	tok, err := e.mgr.IssueCSRF()
-	if err != nil {
-		t.Fatalf("IssueCSRF: %v", err)
-	}
+	tok := e.mgr.CSRFTokenForSession(sess.ID)
 	return &http.Cookie{Name: auth.CSRFCookieName, Value: tok}, tok
 }
 
@@ -193,7 +192,7 @@ func TestProgressTrackDelete_RemovesOnlyTheNamedAssessor(t *testing.T) {
 	}
 
 	sess := sessionFor(t, env.mgr, progressDeleteAdminSecret)
-	csrfCookie, csrfTok := env.csrfPair(t)
+	csrfCookie, csrfTok := env.csrfPair(t, sess)
 	body := "csrf_token=" + csrfTok + "&project=BMB&task=" + env.task.Key + "&assessor=alpha"
 	rec := postDelete(env.w, body, sessionCookie(sess), csrfCookie)
 	if rec.Code != http.StatusOK {
@@ -228,7 +227,7 @@ func TestProgressTrackDelete_ProjectScope(t *testing.T) {
 	env.addMark(t, &env.task.ID, "alpha", 90) // same assessor, task scope
 
 	sess := sessionFor(t, env.mgr, progressDeleteAdminSecret)
-	csrfCookie, csrfTok := env.csrfPair(t)
+	csrfCookie, csrfTok := env.csrfPair(t, sess)
 	body := "csrf_token=" + csrfTok + "&project=BMB&assessor=alpha"
 	rec := postDelete(env.w, body, sessionCookie(sess), csrfCookie)
 	if rec.Code != http.StatusOK {
@@ -374,7 +373,7 @@ func TestProgressTrackDelete_WriteScopeSessionCannotDelete(t *testing.T) {
 		t.Fatalf("mint write-scope token: %v", err)
 	}
 	sess := sessionFor(t, env.mgr, secret)
-	csrfCookie, csrfTok := env.csrfPair(t)
+	csrfCookie, csrfTok := env.csrfPair(t, sess)
 	body := "csrf_token=" + csrfTok + "&project=BMB&task=" + env.task.Key + "&assessor=alpha"
 	rec := postDelete(env.w, body, sessionCookie(sess), csrfCookie)
 
@@ -394,7 +393,7 @@ func TestProgressTrackDelete_UnknownAssessorIsANoOp(t *testing.T) {
 	env.addMark(t, &env.task.ID, "alpha", 50)
 
 	sess := sessionFor(t, env.mgr, progressDeleteAdminSecret)
-	csrfCookie, csrfTok := env.csrfPair(t)
+	csrfCookie, csrfTok := env.csrfPair(t, sess)
 	body := "csrf_token=" + csrfTok + "&project=BMB&task=" + env.task.Key + "&assessor=nobody"
 	rec := postDelete(env.w, body, sessionCookie(sess), csrfCookie)
 	if rec.Code != http.StatusOK {

@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -80,6 +81,13 @@ type Manager struct {
 	BaseURL  string
 	Insecure bool // true -> cookie Secure off (loopback)
 	Now      ClockFunc
+
+	// csrfKey keys the HMAC that binds a CSRF token to its session; see
+	// CSRFTokenForSession. It is initialised lazily so a Manager built as a
+	// struct literal (tests do) gets a real key too, and a Manager is
+	// therefore not safe to copy — which `go vet`'s copylocks check enforces.
+	csrfKeyOnce sync.Once
+	csrfKey     [32]byte
 }
 
 // NewManager wires the dependencies. baseURL is the public origin (used for

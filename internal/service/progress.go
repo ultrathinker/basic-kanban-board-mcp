@@ -136,19 +136,6 @@ func buildTracks(latest []domain.ProgressMark, counts map[string]int) []Assessor
 	return out
 }
 
-// countByAssessor tallies a flat history read into per-assessor mark counts.
-// Used only for the project-level scope, which is read once per page render
-// (never once per card), so a full History() plus this Go-side tally costs
-// nothing worth a dedicated batched store method — that batching only
-// matters for TaskProgress, which is CountsByTask's job instead.
-func countByAssessor(marks []domain.ProgressMark) map[string]int {
-	out := make(map[string]int, len(marks))
-	for _, m := range marks {
-		out[m.Assessor]++
-	}
-	return out
-}
-
 // autoPercent is done/total as a 0..100 share, rounded halves up like every
 // other percent here. ok is false when the project has no tasks: there is
 // nothing measured, and 0% would claim work not started (and 100% would
@@ -277,14 +264,16 @@ func (s *svc) ProjectProgress(ctx context.Context, a Actor, in ProjectProgressIn
 		}
 		result.ManualAssessors = len(latest)
 		result.ManualForecastETA, result.ManualForecastBy = latestForecast(latest)
-		// The project-level scope is read once per page render (never once
-		// per card), so a full History() plus a Go-side tally is cheap here
-		// — CountsByTask's batching is what TaskProgress needs, not this.
-		hist, err := s.store.Progress().History(tx, p.ID, nil)
+		// A grouped count, not a full history read. All this needs is "how
+		// many marks back each assessor's track goes", and reading every
+		// project-level mark ever recorded to tally them in Go made the
+		// hottest path in the product grow without bound: the table is
+		// append-only, and the page re-reads itself on every SSE signal.
+		counts, err := s.store.Progress().CountsByAssessor(tx, p.ID)
 		if err != nil {
 			return err
 		}
-		result.ManualTracks = buildTracks(latest, countByAssessor(hist))
+		result.ManualTracks = buildTracks(latest, counts)
 
 		// Auto: the board's own verdict, from column membership. IncludeDone
 		// is required — the filter's default hides done columns, which is a
@@ -357,11 +346,19 @@ func (s *svc) ProgressHistory(ctx context.Context, a Actor, in ProgressHistoryIn
 			taskID = &t.ID
 			result.TaskKey = t.Key
 		}
+		if in.Limit > 0 {
+			marks, total, err := s.store.Progress().HistoryTail(tx, p.ID, taskID, in.Limit)
+			if err != nil {
+				return err
+			}
+			result.Marks, result.Total = marks, total
+			return nil
+		}
 		marks, err := s.store.Progress().History(tx, p.ID, taskID)
 		if err != nil {
 			return err
 		}
-		result.Marks = marks
+		result.Marks, result.Total = marks, len(marks)
 		return nil
 	})
 	if err != nil {

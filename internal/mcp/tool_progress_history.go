@@ -114,15 +114,6 @@ func registerProgressHistory(s *gomcp.Server, svc service.Service) {
 			projectKey = pk
 		}
 
-		res, err := svc.ProgressHistory(ctx, actor, service.ProgressHistoryInput{
-			ProjectKey: projectKey,
-			TaskKey:    taskKey,
-		})
-		if err != nil {
-			derr := asDomainError(err)
-			return errorResult(opProgressHistory, derr), progressHistoryOutput{OK: false, Op: opProgressHistory, Error: newErrorEnvelope(derr)}, nil
-		}
-
 		// Cap to the most recent `limit` marks: keep the tail (newest) and
 		// drop the head (oldest), same direction board_get's done_limit
 		// truncates in ("most recently done first"). Unlike done_limit this
@@ -130,15 +121,27 @@ func registerProgressHistory(s *gomcp.Server, svc service.Service) {
 		// the same order the browser's progress chart already consumes —
 		// rather than flipping to newest-first, which would invent a second,
 		// undocumented order convention for the same data.
+		//
+		// The limit goes DOWN into the read rather than being applied to the
+		// result: the marks table is append-only and nothing thins it, so
+		// asking for everything and keeping 200 would materialise the whole
+		// scope on a call an agent can make in a loop.
 		limit := in.Limit
 		if limit <= 0 || limit > domain.MaxProgressHistoryLimit {
 			limit = domain.MaxProgressHistoryLimit
 		}
-		total := len(res.Marks)
-		marks := res.Marks
-		if total > limit {
-			marks = marks[total-limit:]
+		res, err := svc.ProgressHistory(ctx, actor, service.ProgressHistoryInput{
+			ProjectKey: projectKey,
+			TaskKey:    taskKey,
+			Limit:      limit,
+		})
+		if err != nil {
+			derr := asDomainError(err)
+			return errorResult(opProgressHistory, derr), progressHistoryOutput{OK: false, Op: opProgressHistory, Error: newErrorEnvelope(derr)}, nil
 		}
+
+		total := res.Total
+		marks := res.Marks
 
 		marksOut := make([]progressHistoryMarkOut, len(marks))
 		for i, m := range marks {

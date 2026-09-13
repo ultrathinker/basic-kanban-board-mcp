@@ -154,7 +154,12 @@ func TestChatMarkup_NoInlineStylesNoHandlers(t *testing.T) {
 // the old TestChatEntriesOldestFirst_FullOrder, which pinned the previous
 // reversal; see REPORT.md.
 func TestChatEntriesNewestFirst_FullOrder(t *testing.T) {
-	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
+	// time.Local, not time.UTC: the panel prints the clock the READER goes
+	// by (formatChartTime converts), so a fixture pinned in UTC would assert
+	// a different string on every machine whose zone is not UTC. Building
+	// the fixture in the same zone the renderer prints in is what makes the
+	// expected "12:00" a property of the code rather than of the runner.
+	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.Local)
 	msgs := []domain.ChatMessage{
 		{ID: "m3", Author: "agent-c", Body: "third, newest", CreatedAt: now},
 		{ID: "m2", Author: "agent-b", Body: "second", CreatedAt: now.Add(-time.Minute)},

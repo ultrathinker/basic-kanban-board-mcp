@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +27,7 @@ func TestProgressHistory_TaskTarget(t *testing.T) {
 			{ID: "pm-1", Assessor: "Codex", Percent: 70, CreatedAt: now},
 			{ID: "pm-2", Assessor: "Codex", Percent: 45, CreatedAt: now.Add(time.Hour)},
 		},
+		Total: 2,
 	}
 
 	_, sc := callTool(t, cs, "progress_history", map[string]any{"task": "kanb-3"})
@@ -127,47 +127,83 @@ func TestProgressHistory_MutualExclusionValidation(t *testing.T) {
 	}
 }
 
-// TestProgressHistory_LimitCapsToMostRecent verifies the truncation
-// direction: when the scope's history is longer than `limit`, the OLDEST
-// marks are dropped and the NEWEST survive, still in chronological order —
-// and `total` still reports the full count.
-func TestProgressHistory_LimitCapsToMostRecent(t *testing.T) {
+// TestProgressHistory_LimitIsAppliedByTheReadNotByTheHandler pins what this
+// tool is actually responsible for once the bound moved into SQL: passing the
+// caller's limit DOWN to the service, and reporting the scope total the
+// service returns verbatim.
+//
+// It used to assert the truncation itself — with a fake service that returned
+// all five marks and a handler that sliced them. That proved the handler's
+// arithmetic and nothing about the product: the marks table is append-only,
+// so read-everything-then-slice does all the work the limit exists to avoid.
+// The truncation is now a property of the store (see
+// TestProgressHistory_HistoryTail_KeepsTheNewest in internal/store), and what
+// is left to check here is the wiring.
+func TestProgressHistory_LimitIsAppliedByTheReadNotByTheHandler(t *testing.T) {
 	t.Parallel()
 	cs, svc := roundtripServer(t, NewServer)
 
-	var marks []domain.ProgressMark
+	// What a real service returns for limit:2 over a five-mark scope — the
+	// two newest, oldest-first among themselves, and the UNCAPPED total.
 	base := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
-	for i := 0; i < 5; i++ {
-		marks = append(marks, domain.ProgressMark{
-			ID: fmt.Sprintf("pm-%d", i), Assessor: "alpha",
-			Percent: i * 10, CreatedAt: base.Add(time.Duration(i) * time.Hour),
-		})
-	}
 	svc.DefaultProgressHistory = &service.ProgressHistoryResult{
-		ProjectKey: "KANB", TaskKey: "KANB-3", Marks: marks,
+		ProjectKey: "KANB", TaskKey: "KANB-3",
+		Marks: []domain.ProgressMark{
+			{ID: "pm-3", Assessor: "alpha", Percent: 30, CreatedAt: base.Add(3 * time.Hour)},
+			{ID: "pm-4", Assessor: "alpha", Percent: 40, CreatedAt: base.Add(4 * time.Hour)},
+		},
+		Total: 5,
 	}
 
 	_, sc := callTool(t, cs, "progress_history", map[string]any{"task": "KANB-3", "limit": 2})
 	expectOK(t, sc, "progress_history")
 
+	// The load-bearing assertion: the limit reached the read.
+	if svc.LastProgressHistory.Limit != 2 {
+		t.Errorf("service was called with Limit = %d, want 2 — the bound must go into the read, not be applied to its result",
+			svc.LastProgressHistory.Limit)
+	}
+
 	data := sc["data"].(map[string]any)
 	if data["total"] != float64(5) {
-		t.Errorf("data.total = %v, want 5 (the uncapped count)", data["total"])
+		t.Errorf("data.total = %v, want 5 (the scope total the service reported, not the page size)", data["total"])
 	}
 	got := data["marks"].([]any)
 	if len(got) != 2 {
-		t.Fatalf("marks len = %d, want 2 (the limit)", len(got))
+		t.Fatalf("marks len = %d, want 2", len(got))
 	}
-	// The two most recent: percent 30 then 40, oldest-first among themselves.
-	if got[0].(map[string]any)["percent"] != float64(30) {
-		t.Errorf("marks[0].percent = %v, want 30 (kept, not the oldest 0)", got[0].(map[string]any)["percent"])
-	}
-	if got[1].(map[string]any)["percent"] != float64(40) {
-		t.Errorf("marks[1].percent = %v, want 40 (the newest)", got[1].(map[string]any)["percent"])
+	if got[0].(map[string]any)["percent"] != float64(30) || got[1].(map[string]any)["percent"] != float64(40) {
+		t.Errorf("marks were reordered or altered: %v", got)
 	}
 	meta := sc["meta"].(map[string]any)
 	if meta["count"] != float64(2) {
 		t.Errorf("meta.count = %v, want 2", meta["count"])
+	}
+}
+
+// TestProgressHistory_OversizedLimitIsRefusedBySchemaNotSilentlyWidened pins
+// the other half of the wiring: a caller cannot widen the read beyond
+// domain.MaxProgressHistoryLimit.
+//
+// Note WHERE that is enforced. The handler clamps too — belt and braces for a
+// direct Go caller — but over MCP the request never reaches it: the published
+// inputSchema carries the maximum, so an oversized limit is a validation
+// error, not a silently shrunk read. That is the better answer (the agent
+// learns the bound from tools/list and from the refusal), and this test pins
+// it as the observable behaviour rather than pinning the unreachable clamp.
+func TestProgressHistory_OversizedLimitIsRefusedBySchemaNotSilentlyWidened(t *testing.T) {
+	t.Parallel()
+	cs, svc := roundtripServer(t, NewServer)
+	svc.DefaultProgressHistory = &service.ProgressHistoryResult{ProjectKey: "KANB", TaskKey: "KANB-3"}
+
+	_, sc := callTool(t, cs, "progress_history", map[string]any{
+		"task": "KANB-3", "limit": domain.MaxProgressHistoryLimit * 10,
+	})
+	if sc["ok"] != false {
+		t.Fatalf("an oversized limit was accepted: %v", sc)
+	}
+	if svc.LastProgressHistoryActor.TokenID != "" {
+		t.Errorf("the service was read despite the refusal: %+v", svc.LastProgressHistory)
 	}
 }
 
@@ -185,6 +221,7 @@ func TestProgressHistory_NoLimitReturnsEverythingUpToTheCap(t *testing.T) {
 			{ID: "pm-2", Assessor: "alpha", Percent: 20, CreatedAt: time.Now().UTC()},
 			{ID: "pm-3", Assessor: "alpha", Percent: 30, CreatedAt: time.Now().UTC()},
 		},
+		Total: 3,
 	}
 
 	_, sc := callTool(t, cs, "progress_history", map[string]any{"task": "KANB-3"})
@@ -192,6 +229,13 @@ func TestProgressHistory_NoLimitReturnsEverythingUpToTheCap(t *testing.T) {
 	data := sc["data"].(map[string]any)
 	if got := len(data["marks"].([]any)); got != 3 {
 		t.Fatalf("marks len = %d, want 3 (no limit given, well under the cap)", got)
+	}
+	// An omitted limit must still bound the READ — at the cap, not at
+	// "everything". This is the clause the old version of this test could not
+	// make, because the handler decided the size after the fact.
+	if svc.LastProgressHistory.Limit != domain.MaxProgressHistoryLimit {
+		t.Errorf("omitted limit reached the service as %d, want the cap %d",
+			svc.LastProgressHistory.Limit, domain.MaxProgressHistoryLimit)
 	}
 }
 

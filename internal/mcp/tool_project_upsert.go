@@ -60,6 +60,12 @@ func projectUpsertTool() *gomcp.Tool {
 	setEnum(prop(s, "mode"), string(service.UpsertCreate), string(service.UpsertUpdate))
 	setMinLen(prop(s, "key"), domain.MinProjectKeyLen)
 	setMaxLen(prop(s, "key"), domain.MaxProjectKeyLen)
+	// Both description writers carry the same ceiling the service enforces,
+	// so an agent learns the bound from tools/list instead of from a
+	// rejection — and so the replacement path cannot store a value that
+	// would make every later append impossible.
+	setMaxLen(prop(s, "description"), domain.MaxBodyBytes)
+	setMaxLen(prop(s, "description_append"), domain.MaxBodyBytes)
 	cols := prop(s, "columns")
 	setMaxItems(cols, domain.MaxColumnsPerPrj)
 	item := cols.Items

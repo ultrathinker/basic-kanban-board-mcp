@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"net/http"
@@ -48,10 +50,86 @@ func (m *Manager) SetCSRFCookie(w http.ResponseWriter, r *http.Request, token st
 	http.SetCookie(w, c)
 }
 
-// VerifyCSRF checks that the request carried a CSRF token equal to the cookie
-// value, using constant-time comparison. It accepts both the hidden field
-// and the X-CSRF-Token header. Either alone is enough: cookie + form/header
-// is the documented double-submit pattern.
+// CSRFTokenForSession returns the CSRF token that belongs to one session:
+// HMAC-SHA256 over the session id, truncated to the same csrfTokenByteLen a
+// minted token carries, so it is indistinguishable in shape from one
+// IssueCSRF produced.
+//
+// Why a derived token rather than a random one. The page re-reads itself over
+// GET after every SSE signal, so the token a render hands out must be STABLE
+// across renders or the already-rendered <meta name="csrf-token"> stops
+// matching the cookie and every later POST is a 403. Reusing whatever token
+// the request's own cookie carried achieved that stability, but it also meant
+// the value the server embedded in the page was one the CLIENT supplied:
+// ValidCSRFToken is a shape check, so anything 24-bytes-base64url was
+// accepted and echoed back. An attacker who can write a cookie for this site
+// (a sibling host under the same registrable domain is enough — SameSite=Lax
+// is site-scoped and does not stop a cross-origin POST from one) could pin a
+// token they knew and then satisfy a pure cookie-vs-form comparison.
+//
+// Deriving from the session id gives the same stability with none of that:
+// the value is a deterministic function of a secret the browser never
+// exposes to script (the session cookie is HttpOnly) and of a per-process
+// key. An attacker who can set cookies still cannot produce the token,
+// because they cannot read the session id.
+func (m *Manager) CSRFTokenForSession(sessionID string) string {
+	mac := hmac.New(sha256.New, m.csrfHMACKey())
+	mac.Write([]byte(sessionID))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil)[:csrfTokenByteLen])
+}
+
+// CSRFTokenForRequest returns the token a page rendered for r should embed.
+// A request with a session gets that session's derived token — the same value
+// on every render, which is what lets the page re-read itself over SSE
+// without invalidating its own <meta>. A request without one (the login page)
+// gets a freshly minted random token, as it always did.
+func (m *Manager) CSRFTokenForRequest(r *http.Request) (string, error) {
+	if r != nil {
+		if sid := sessionIDForCSRF(r); sid != "" {
+			return m.CSRFTokenForSession(sid), nil
+		}
+	}
+	return m.CSRFToken()
+}
+
+// csrfHMACKey lazily mints the per-process key backing CSRFTokenForSession.
+//
+// If the CSPRNG fails the key stays zero rather than panicking mid-request:
+// the defence rests on the session id being unguessable, not on this key
+// being secret, so a zero key degrades to "still unforgeable by anyone who
+// cannot read the session cookie" instead of to "open".
+func (m *Manager) csrfHMACKey() []byte {
+	m.csrfKeyOnce.Do(func() {
+		_ = readRandom(m.csrfKey[:])
+	})
+	return m.csrfKey[:]
+}
+
+// sessionIDForCSRF returns the session cookie's value, or "" when the request
+// carries none.
+func sessionIDForCSRF(r *http.Request) string {
+	c, err := r.Cookie(DefaultCookiePolicy(false).Name)
+	if err != nil {
+		return ""
+	}
+	return c.Value
+}
+
+// VerifyCSRF checks the CSRF token on a state-changing browser request, using
+// constant-time comparison. It accepts both the hidden field and the
+// X-CSRF-Token header; either alone is enough.
+//
+// There are two regimes, and the difference matters:
+//
+//   - The request carries a session cookie. The token is then verified
+//     against the value derived from that session (CSRFTokenForSession), NOT
+//     against the CSRF cookie. This is an authenticity check: only a caller
+//     who could read the page rendered for this session can produce the
+//     token, so planting a cookie proves nothing. Everything an agent or the
+//     owner can actually change on the board goes through this branch.
+//   - The request is anonymous (the login form). There is no session to bind
+//     to yet, so the stateless double-submit comparison is all there is, and
+//     it stays exactly as it was.
 //
 // Callers MUST invoke this on every state-changing UI route (POST, PUT,
 // PATCH, DELETE). It is not the middleware's job because the middleware
@@ -62,12 +140,19 @@ func (m *Manager) VerifyCSRF(r *http.Request) error {
 	if r == nil {
 		return ErrForbidden
 	}
-	c, err := r.Cookie(CSRFCookieName)
-	if err != nil || c.Value == "" {
-		return ErrForbidden
-	}
 	got := readCSRFToken(r)
 	if got == "" {
+		return ErrForbidden
+	}
+	if sid := sessionIDForCSRF(r); sid != "" {
+		want := m.CSRFTokenForSession(sid)
+		if subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
+			return ErrForbidden
+		}
+		return nil
+	}
+	c, err := r.Cookie(CSRFCookieName)
+	if err != nil || c.Value == "" {
 		return ErrForbidden
 	}
 	if subtle.ConstantTimeCompare([]byte(got), []byte(c.Value)) != 1 {

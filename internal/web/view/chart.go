@@ -380,7 +380,7 @@ func renderFullChart(b chartBounds, seriesList []chartSeries, tStart, tEnd time.
 	w := int(b.width)
 	h := int(b.height)
 	y50 := (b.yMin + b.yMax) / 2.0
-	sameDay := tStart.Year() == tEnd.Year() && tStart.YearDay() == tEnd.YearDay()
+	sameDay := sameCalendarDay(tStart, tEnd)
 	startLabel := formatChartTime(tStart, sameDay)
 	endLabel := formatChartTime(tEnd, sameDay)
 
@@ -598,8 +598,27 @@ func absInt(x int) int {
 }
 
 func formatChartTime(t time.Time, sameDay bool) string {
+	t = t.Local()
 	if sameDay {
 		return t.Format("15:04")
 	}
 	return t.Format("2006-01-02 15:04")
+}
+
+// sameCalendarDay reports whether two instants fall on the same calendar day
+// for the person reading the page, which is the only sense in which "today"
+// means anything here.
+//
+// Both sides are converted to the SAME zone first, and the zone is the
+// server's local one because that is what formatChartTime prints. Getting
+// this wrong is not academic: every CreatedAt is forced to UTC by the store
+// (internal/store/scan.go), while the clock the callers pass comes from
+// Deps.Now, which defaults to time.Now — local. Comparing one against the
+// other straddles two zones, so around local midnight a message posted five
+// minutes ago rendered with a full date ("yesterday" to the reader), and one
+// posted late in the local evening rendered as a bare clock time that was
+// hours behind the one the author wrote it by.
+func sameCalendarDay(a, b time.Time) bool {
+	a, b = a.Local(), b.Local()
+	return a.Year() == b.Year() && a.YearDay() == b.YearDay()
 }

@@ -132,10 +132,11 @@ func TestCSRF_ResponseIsSelfConsistent(t *testing.T) {
 //     second response set one, else A).
 //
 // Before the fix, step 1 and step 2 each mint a brand new token, so T1 !=
-// cookie B and the POST is rejected with 403. After the fix, newPage reuses
-// the token already in the request's own CSRF cookie, so every render in
-// this sequence keeps handing out the same value: T1 == cookie B, and the
-// POST must not be rejected as a CSRF failure.
+// cookie B and the POST is rejected with 403. After the fix the token is
+// derived from the session (auth.CSRFTokenForSession), so every render in
+// this sequence keeps handing out the same value without the client having
+// any say in what it is: T1 == cookie B, and the POST must not be rejected
+// as a CSRF failure.
 func TestCSRF_PageRereadKeepsPOSTWorking(t *testing.T) {
 	w := newCSRFReissueWeb(t)
 	mgr := w.d.Auth
@@ -226,5 +227,97 @@ func TestCSRF_ReissuedWhenCookieMalformed(t *testing.T) {
 	}
 	if !auth.ValidCSRFToken(meta) {
 		t.Fatalf("replacement token is not well-formed: %q", meta)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The token must be the SERVER's choice, not the client's.
+//
+// The first version of the reread fix kept the token stable by reusing
+// whatever value the request's CSRF cookie carried, validated only for shape.
+// That made the value in <meta> — and in the cookie the server then set —
+// something the client could pick. The two tests below pin the property that
+// closes it, from both ends: the page never echoes a planted value, and a
+// self-consistent planted pair does not authorise a write.
+// ---------------------------------------------------------------------------
+
+// plantedCSRFToken is well-formed — 24 bytes, base64url — and therefore
+// passes auth.ValidCSRFToken. It is exactly what an attacker who can write a
+// cookie for this site would plant: shape is all they need to fake.
+const plantedCSRFToken = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
+func TestCSRF_WellFormedButUnknownCookieIsNotEchoedIntoThePage(t *testing.T) {
+	w := newCSRFReissueWeb(t)
+	sess := sessionFor(t, w.d.Auth, "kbn_testadmin00xx00xx00xx00xx00xx00xx00xx")
+
+	if !auth.ValidCSRFToken(plantedCSRFToken) {
+		t.Fatalf("fixture is wrong: %q must be well-formed for this test to mean anything", plantedCSRFToken)
+	}
+
+	rec := do(w, "GET", "/p/BMB", nil,
+		sessionCookie(sess),
+		&http.Cookie{Name: auth.CSRFCookieName, Value: plantedCSRFToken})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /p/BMB = %d, want 200\n%s", rec.Code, rec.Body.String())
+	}
+
+	meta := metaCSRFToken(t, rec.Body.String())
+	if meta == plantedCSRFToken {
+		t.Fatal("the page echoed a client-supplied CSRF token: shape was checked, authenticity was not")
+	}
+	if want := w.d.Auth.CSRFTokenForSession(sess.ID); meta != want {
+		t.Fatalf("meta token = %q, want the session-derived %q", meta, want)
+	}
+	cookie, ok := setCSRFCookie(rec.Result())
+	if !ok || cookie == plantedCSRFToken {
+		t.Fatalf("the server re-set the planted value as its own cookie (%q, ok=%v)", cookie, ok)
+	}
+}
+
+// TestCSRF_PlantedCookieAndMatchingFieldIsRefused is the attack itself, end
+// to end: a cross-origin POST carrying the victim's session cookie plus a
+// CSRF cookie and form field the attacker chose and therefore knows. Under a
+// pure cookie-vs-field comparison this pair agrees with itself and passes.
+// It must not.
+func TestCSRF_PlantedCookieAndMatchingFieldIsRefused(t *testing.T) {
+	w := newCSRFReissueWeb(t)
+	sess := sessionFor(t, w.d.Auth, "kbn_testadmin00xx00xx00xx00xx00xx00xx00xx")
+
+	req := httptest.NewRequest("POST", "/fragments/claim",
+		strings.NewReader("csrf_token="+plantedCSRFToken+"&key=BMB-1&action=release"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(sessionCookie(sess))
+	req.AddCookie(&http.Cookie{Name: auth.CSRFCookieName, Value: plantedCSRFToken})
+	rec := httptest.NewRecorder()
+	w.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("a self-consistent planted CSRF pair was accepted: status = %d, want 403; body=%q",
+			rec.Code, trim(rec.Body.String(), 300))
+	}
+}
+
+// TestCSRF_DerivedTokenIsStableAndSessionScoped pins the two properties the
+// derivation buys, which no shape check could give: the same session always
+// yields the same token (that is what survives the SSE reread), and two
+// different sessions never share one (that is what stops a token learned in
+// one browser from working in another).
+func TestCSRF_DerivedTokenIsStableAndSessionScoped(t *testing.T) {
+	w := newCSRFReissueWeb(t)
+	mgr := w.d.Auth
+	a := sessionFor(t, mgr, "kbn_testadmin00xx00xx00xx00xx00xx00xx00xx")
+	b := sessionFor(t, mgr, "kbn_testadmin00xx00xx00xx00xx00xx00xx00xx")
+
+	if a.ID == b.ID {
+		t.Fatal("fixture is wrong: the two sessions must be distinct")
+	}
+	if got, again := mgr.CSRFTokenForSession(a.ID), mgr.CSRFTokenForSession(a.ID); got != again {
+		t.Fatalf("token for one session is not stable: %q then %q", got, again)
+	}
+	if mgr.CSRFTokenForSession(a.ID) == mgr.CSRFTokenForSession(b.ID) {
+		t.Fatal("two different sessions derived the same CSRF token")
+	}
+	if tok := mgr.CSRFTokenForSession(a.ID); !auth.ValidCSRFToken(tok) {
+		t.Fatalf("derived token is not shaped like a minted one: %q", tok)
 	}
 }

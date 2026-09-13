@@ -238,8 +238,20 @@ type ProgressRepo interface {
 	// read the board progress rendering needs. Tasks without marks are
 	// absent; project-level marks are not included.
 	LatestByTask(tx Tx, projectID string) (map[string][]domain.ProgressMark, error)
-	// History returns every mark in the scope, oldest first.
+	// History returns every mark in the scope, oldest first. Unbounded by
+	// design — callers that want a bounded read must say so via HistoryTail
+	// rather than reading everything and slicing.
 	History(tx Tx, projectID string, taskID *string) ([]domain.ProgressMark, error)
+	// HistoryTail returns the newest `limit` marks of the scope (still handed
+	// back oldest-first) together with the scope's total mark count. The
+	// limit is applied in SQL: this table is append-only and nothing thins
+	// it, so read-then-slice does all the work the limit was meant to avoid.
+	HistoryTail(tx Tx, projectID string, taskID *string, limit int) ([]domain.ProgressMark, int, error)
+	// CountsByAssessor returns how many marks each assessor logged in the
+	// PROJECT-level scope (task_id IS NULL) — the project-scope twin of
+	// CountsByTask, so the board's assessor track counts cost a grouped
+	// count instead of a full history read on every render.
+	CountsByAssessor(tx Tx, projectID string) (map[string]int, error)
 	// CountsByTask returns, for every task track of the project, how many
 	// marks each assessor logged — keyed by task id, then assessor. The
 	// batched counterpart of LatestByTask, so the delete-track control's

@@ -245,10 +245,16 @@ func (s *svc) startClaimedTask(tx store.Tx, p *domain.Project, cc *columnCache, 
 	if err != nil {
 		return nil, err
 	}
-	cnt, err := s.store.Columns().CountTasks(tx, toCol.ID, t.ID)
+	// OccupantKeys instead of CountTasks, for the same reason prepareUpdate
+	// uses it: a wip_exceeded refusal on this path has to name what occupies
+	// the destination, or the agent has to issue a second board read to find
+	// out what to move — which is the round trip the message was changed to
+	// remove. Deriving the count from len() keeps that at one read.
+	occupants, err := s.store.Columns().OccupantKeys(tx, toCol.ID, t.ID)
 	if err != nil {
 		return nil, err
 	}
+	cnt := len(occupants)
 	openBlocks, err := s.store.Links().OpenBlockers(tx, t.ID)
 	if err != nil {
 		return nil, err
@@ -259,6 +265,7 @@ func (s *svc) startClaimedTask(tx store.Tx, p *domain.Project, cc *columnCache, 
 		To:                  *toCol,
 		OpenBlocks:          openBlocks,
 		ToCount:             cnt,
+		Occupants:           occupants,
 		EnforceDependencies: p.EnforceDependencies,
 		StrictDone:          p.StrictDone,
 	}); err != nil {

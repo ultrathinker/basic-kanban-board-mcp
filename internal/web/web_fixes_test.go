@@ -365,10 +365,10 @@ func postBackupWithSession(t *testing.T, w *Web, withCSRF bool) *httptest.Respon
 	body := ""
 	var csrfCookie *http.Cookie
 	if withCSRF {
-		csrf, err := w.d.Auth.IssueCSRF()
-		if err != nil {
-			t.Fatalf("IssueCSRF: %v", err)
-		}
+		// Derived from the session, because that is what an authenticated
+		// POST is verified against now — a self-consistent random pair is
+		// what cookie-planting produces, and it is refused.
+		csrf := w.d.Auth.CSRFTokenForSession(sess.ID)
 		body = "csrf_token=" + csrf
 		csrfCookie = &http.Cookie{Name: auth.CSRFCookieName, Value: csrf}
 	}

@@ -24,12 +24,15 @@ const ProgressSquares = 20
 // the service (internal/service/progress.go owns every average and every
 // rounding of marks). The one number derived here is the painted-square count,
 // which is the bar's own presentation rule — how a finished percent maps onto
-// ten squares — not a second opinion about the percent itself.
+// ProgressSquares cells — not a second opinion about the percent itself.
 type ProgressView struct {
 	// Percent is the aggregated value as the service reported it.
 	Percent int
-	// Filled is the painted square count: floor(percent/10). 45% paints 4
-	// squares. There is no partial fill — the owner decided that explicitly.
+	// Filled is the painted cell count: floor(percent * ProgressSquares / 100).
+	// With ProgressSquares at 20, 45% paints 9 cells. There is no partial
+	// fill — the owner decided that explicitly, which is also why the count
+	// was raised from ten: twenty cells make the step fine enough that a
+	// partly-painted last cell is not missed.
 	Filled int
 	// Cells carries the painted flags so the template can range and paint
 	// without doing any arithmetic of its own: exactly ProgressSquares

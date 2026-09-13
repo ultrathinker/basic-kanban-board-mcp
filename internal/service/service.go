@@ -761,6 +761,12 @@ type ProjectProgressResult struct {
 type ProgressHistoryInput struct {
 	ProjectKey string
 	TaskKey    string
+	// Limit bounds the read to the newest Limit marks (still returned
+	// oldest-first). Zero or less means "the whole scope", which is what the
+	// browser's chart asks for. A caller that wants a page MUST set this
+	// rather than trimming the result: the bound is applied in SQL, so
+	// trimming afterwards would read every row the limit was meant to skip.
+	Limit int
 }
 
 // ProgressHistoryResult carries the marks in chronological order (the store's
@@ -770,6 +776,10 @@ type ProgressHistoryResult struct {
 	ProjectKey string
 	TaskKey    string
 	Marks      []domain.ProgressMark
+	// Total is how many marks the scope holds, which is not len(Marks) when
+	// Limit trimmed the read. It is what tells a caller that older history
+	// exists beyond the page it asked for.
+	Total int
 }
 
 // ProgressTrackDeleteInput names one (project, task, assessor) track. An
