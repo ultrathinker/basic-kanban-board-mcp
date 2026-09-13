@@ -177,6 +177,20 @@
   </div>
 </div>
 
+{{- /* The enlarged-chart modal. Empty until app.js fills it: the body is
+     fetched from the same chart endpoint with detail=1, so the modal and the
+     inline panel can never show two different readings of the same data. A
+     native <dialog>, opened with showModal() by the same initDialog wiring
+     the Prompts popup uses. */ -}}
+<dialog class="modal modal-wide" id="chart-dialog" aria-labelledby="chart-dialog-title" data-dialog>
+  <div class="modal-head">
+    <h2 id="chart-dialog-title">Progress detail</h2>
+    <span class="spacer"></span>
+    <button type="button" class="icon-btn" data-dialog-close aria-label="Close">&#10005;</button>
+  </div>
+  <div class="modal-body" data-chart-dialog-body></div>
+</dialog>
+
 <noscript>
   <p class="text-subtle">Drag-and-drop, live updates and the move menu need JavaScript. The board itself renders without it.</p>
 </noscript>

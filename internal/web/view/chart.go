@@ -94,6 +94,15 @@ func ProgressChartSVG(history []domain.ProgressMark, width, height int) template
 // the shared 0..100 vertical axis.
 // If history is empty, it returns empty HTML ("").
 func RenderProgressChart(history []domain.ProgressMark, width, height int) template.HTML {
+	return renderProgressChart(history, width, height, false)
+}
+
+// renderProgressChart is RenderProgressChart with the detail switch the
+// enlarged, modal version needs: axis ticks and labelled gridlines instead of
+// the single 50% guideline the inline panel carries. The data, the series and
+// every projection are identical — "detailed" adds furniture around the same
+// picture, it never changes the picture.
+func renderProgressChart(history []domain.ProgressMark, width, height int, detailed bool) template.HTML {
 	if len(history) == 0 {
 		return ""
 	}
@@ -128,7 +137,7 @@ func RenderProgressChart(history []domain.ProgressMark, width, height int) templ
 	// Degenerate case: exactly one point in history.
 	// Render a point marker, 50% guideline, and timestamp label — never a polyline.
 	if len(marks) == 1 {
-		return renderSinglePointChart(marks[0], bounds)
+		return renderSinglePointChart(marks[0], bounds, detailed)
 	}
 
 	// Group marks by assessor and compute composite progress over time.
@@ -192,7 +201,7 @@ func RenderProgressChart(history []domain.ProgressMark, width, height int) templ
 			Name:        name,
 			IsComposite: false,
 			Points:      assessorMarks[name],
-			DashArray:   chartDashPatterns[i%len(chartDashPatterns)],
+			DashArray:   assessorDash(i),
 			StrokeWidth: 1.2,
 		})
 	}
@@ -219,7 +228,7 @@ func RenderProgressChart(history []domain.ProgressMark, width, height int) templ
 		StrokeWidth: 2.5,
 	})
 
-	return renderFullChart(bounds, seriesList, tStart, tEnd)
+	return renderFullChart(bounds, seriesList, tStart, tEnd, detailed)
 }
 
 // buildForecastSeries derives the forecast track from the same history the
@@ -354,7 +363,7 @@ func (b chartBounds) y(percent int) float64 {
 }
 
 // renderSinglePointChart renders the degenerate single-point history.
-func renderSinglePointChart(m domain.ProgressMark, b chartBounds) template.HTML {
+func renderSinglePointChart(m domain.ProgressMark, b chartBounds, detailed bool) template.HTML {
 	var buf bytes.Buffer
 	w := int(b.width)
 	h := int(b.height)
@@ -365,8 +374,12 @@ func renderSinglePointChart(m domain.ProgressMark, b chartBounds) template.HTML 
 	timeLabel := formatChartTime(m.CreatedAt, true)
 
 	fmt.Fprintf(&buf, `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %d %d" width="%d" height="%d" class="chart-progress" role="img" aria-label="Progress history">`, w, h, w, h)
-	fmt.Fprintf(&buf, `<line x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f" stroke="currentColor" stroke-dasharray="2 3" stroke-width="1" stroke-opacity="0.3"/>`, b.xMin, y50, b.xMax, y50)
-	fmt.Fprintf(&buf, `<text x="%.1f" y="%.1f" text-anchor="end" font-size="10" fill="currentColor" fill-opacity="0.5">50%%</text>`, b.xMin-4.0, y50+3.0)
+	if detailed {
+		writePercentAxis(&buf, b)
+	} else {
+		fmt.Fprintf(&buf, `<line x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f" stroke="currentColor" stroke-dasharray="2 3" stroke-width="1" stroke-opacity="0.3"/>`, b.xMin, y50, b.xMax, y50)
+		fmt.Fprintf(&buf, `<text x="%.1f" y="%.1f" text-anchor="end" font-size="10" fill="currentColor" fill-opacity="0.5">50%%</text>`, b.xMin-4.0, y50+3.0)
+	}
 	fmt.Fprintf(&buf, `<text x="%.1f" y="%.1f" text-anchor="middle" font-size="10" fill="currentColor" fill-opacity="0.6">%s</text>`, x, b.height-ChartPadBottom+16.0, timeLabel)
 	fmt.Fprintf(&buf, `<circle cx="%.1f" cy="%.1f" r="4" fill="currentColor" data-assessor="%s"><title>%s: %d%%</title></circle>`, x, y, escapedAssessor, escapedAssessor, clampPercent(m.Percent))
 	buf.WriteString(`</svg>`)
@@ -375,7 +388,7 @@ func renderSinglePointChart(m domain.ProgressMark, b chartBounds) template.HTML 
 }
 
 // renderFullChart renders the complete SVG with 50% guideline, time labels, and polylines.
-func renderFullChart(b chartBounds, seriesList []chartSeries, tStart, tEnd time.Time) template.HTML {
+func renderFullChart(b chartBounds, seriesList []chartSeries, tStart, tEnd time.Time, detailed bool) template.HTML {
 	var buf bytes.Buffer
 	w := int(b.width)
 	h := int(b.height)
@@ -386,17 +399,30 @@ func renderFullChart(b chartBounds, seriesList []chartSeries, tStart, tEnd time.
 
 	fmt.Fprintf(&buf, `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %d %d" width="%d" height="%d" class="chart-progress" role="img" aria-label="Progress history">`, w, h, w, h)
 
-	// Minimal horizontal 50% guideline and label.
-	fmt.Fprintf(&buf, `<line x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f" stroke="currentColor" stroke-dasharray="2 3" stroke-width="1" stroke-opacity="0.3"/>`, b.xMin, y50, b.xMax, y50)
-	fmt.Fprintf(&buf, `<text x="%.1f" y="%.1f" text-anchor="end" font-size="10" fill="currentColor" fill-opacity="0.5">50%%</text>`, b.xMin-4.0, y50+3.0)
+	if detailed {
+		// The enlarged chart gets a real percent axis: a labelled gridline
+		// every 25 points, so a reader can tell 72% from 61% by eye instead
+		// of guessing against a single midline.
+		writePercentAxis(&buf, b)
+	} else {
+		// The inline panel is 600x200 in a narrow column; one guideline is
+		// all that fits without the labels colliding.
+		fmt.Fprintf(&buf, `<line x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f" stroke="currentColor" stroke-dasharray="2 3" stroke-width="1" stroke-opacity="0.3"/>`, b.xMin, y50, b.xMax, y50)
+		fmt.Fprintf(&buf, `<text x="%.1f" y="%.1f" text-anchor="end" font-size="10" fill="currentColor" fill-opacity="0.5">50%%</text>`, b.xMin-4.0, y50+3.0)
+	}
 
-	// Minimal time labels at first and last points.
+	// Time labels at first and last points, plus a midpoint tick when there
+	// is room for one (detailed only) so the horizontal scale is readable
+	// rather than merely bounded.
 	if b.durationNan <= 0 {
 		midX := (b.xMin + b.xMax) / 2.0
 		fmt.Fprintf(&buf, `<text x="%.1f" y="%.1f" text-anchor="middle" font-size="10" fill="currentColor" fill-opacity="0.6">%s</text>`, midX, b.height-ChartPadBottom+16.0, startLabel)
 	} else {
 		fmt.Fprintf(&buf, `<text x="%.1f" y="%.1f" text-anchor="start" font-size="10" fill="currentColor" fill-opacity="0.6">%s</text>`, b.xMin, b.height-ChartPadBottom+16.0, startLabel)
 		fmt.Fprintf(&buf, `<text x="%.1f" y="%.1f" text-anchor="end" font-size="10" fill="currentColor" fill-opacity="0.6">%s</text>`, b.xMax, b.height-ChartPadBottom+16.0, endLabel)
+		if detailed {
+			writeTimeMidTick(&buf, b, tStart, tEnd)
+		}
 	}
 
 	// Render each series track.

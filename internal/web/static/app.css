@@ -824,6 +824,59 @@ select, .field input, .field textarea {
    The caption prints both current numbers, because a reader should not have
    to measure a line to learn that 109 of 151 items are done. */
 .items-chart { margin-top: 0.4rem; }
+/* Both inline panels open the full chart. The affordance is the same one
+   .pbar-clickable uses, for the same reason: a click target with no cursor
+   change is a click target nobody finds. */
+[data-chart-zoom] { cursor: zoom-in; }
+[data-chart-zoom]:hover { border-color: var(--rule-strong); }
+[data-chart-zoom]:focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+
+/* --- the enlarged charts (modal) ----------------------------------------- */
+/* Wide, because the axis carrying the most information in both charts is
+   time. The legend is HTML rather than SVG: with no colour in this design a
+   line is named by its dash, and those swatches have to wrap like text. */
+.modal.modal-wide { max-width: min(62rem, 95vw); }
+.chart-detail + .chart-detail {
+  margin-top: 1.25rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--rule);
+}
+.chart-detail-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.chart-detail-head h3 { margin: 0; }
+.chart-detail-axes {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  margin: 0.15rem 0 0.5rem;
+}
+.chart-detail-plot {
+  border: 1px solid var(--rule);
+  padding: 0.5rem;
+  overflow-x: auto;
+}
+.chart-legend {
+  list-style: none;
+  margin: 0.6rem 0 0;
+  padding: 0;
+  max-width: none;
+  display: grid;
+  gap: 0.3rem;
+}
+.chart-legend-item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.chart-legend-swatch { flex: none; align-self: center; }
+.chart-legend-label { font-weight: 600; }
+.chart-legend-note { flex: 1 1 12rem; }
+.chart-legend-points { flex: none; }
 .items-chart-caption {
   display: flex;
   align-items: baseline;

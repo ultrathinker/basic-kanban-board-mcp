@@ -296,6 +296,65 @@ func renderCases() []renderCase {
 			notWants: []string{"<no value>"},
 		},
 		{
+			// The enlarged charts the modal shows. Same data as the inline
+			// panel, plus the furniture that panel has no room for: a
+			// labelled percent axis, a legend naming every line, and the
+			// range each line covered.
+			name:     "chart-detail-fragment/both-panels",
+			template: "chart-detail-fragment",
+			data: &view.ChartDetailFragment{
+				Progress: view.NewProgressChartDetail([]domain.ProgressMark{
+					{ID: "m1", Assessor: "alpha", Percent: 91, CreatedAt: time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local)},
+					{ID: "m2", Assessor: "beta", Percent: 60, CreatedAt: time.Date(2026, 9, 12, 11, 0, 0, 0, time.Local)},
+					{ID: "m3", Assessor: "alpha", Percent: 72, CreatedAt: time.Date(2026, 9, 12, 12, 0, 0, 0, time.Local)},
+				}),
+				Items: view.NewItemsChartDetail([]service.ItemCountPoint{
+					{At: time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local), Total: 4, Open: 4},
+					{At: time.Date(2026, 9, 12, 12, 0, 0, 0, time.Local), Total: 9, Open: 3},
+				}),
+			},
+			wants: []string{
+				"Assessed progress",
+				"Items on the board",
+				"chart-legend",
+				// The axis is labelled at both ends, not just at the midline.
+				">0%<", ">100%<",
+				// Every line is named, and says what it did.
+				"alpha", "beta", "composite",
+				"91% -&gt; 72%",
+				"6 of 9 done, 3 still open",
+				// Both swatch dashes come from the same rule as the lines.
+				"chart-legend-swatch",
+			},
+			notWants: []string{"<no value>"},
+		},
+		{
+			// Nothing to chart: the modal body renders empty, and app.js
+			// prints its own "no history yet" rather than showing a frame
+			// around nothing.
+			name:      "chart-detail-fragment/nil",
+			template:  "chart-detail-fragment",
+			data:      (*view.ChartDetailFragment)(nil),
+			wantEmpty: true,
+		},
+		{
+			// The panel define on its own, so it is covered even if the
+			// fragment above stops using one of its branches.
+			name:     "chart-detail-panel/items-only",
+			template: "chart-detail-panel",
+			data: view.NewItemsChartDetail([]service.ItemCountPoint{
+				{At: time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local), Total: 2, Open: 2},
+				{At: time.Date(2026, 9, 12, 11, 0, 0, 0, time.Local), Total: 2, Open: 0},
+			}),
+			wants: []string{
+				"Items on the board",
+				"vertical: number of tasks, 0 to 2",
+				"2 of 2 done, 0 still open",
+				`data-series="items-open"`,
+			},
+			notWants: []string{"<no value>"},
+		},
+		{
 			// A vanished/never-existed history (the marks were deleted, or
 			// the fetch races a delete) renders nothing at all — no empty
 			// wrapper, no placeholder — the same "no data, no placeholder"

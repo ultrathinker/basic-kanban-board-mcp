@@ -274,6 +274,10 @@ func (w *Web) handleProgressChart(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	taskKey := strings.TrimSpace(r.URL.Query().Get("task"))
+	// detail=1 asks for the enlarged version the modal shows: same data,
+	// same projections, with the axis ticks, midpoint tick and legend the
+	// 600x200 inline panel has no room for.
+	detail := r.URL.Query().Get("detail") == "1"
 
 	result, err := w.d.Service.ProgressHistory(r.Context(), actorFor(tok), service.ProgressHistoryInput{
 		ProjectKey: key,
@@ -287,6 +291,18 @@ func (w *Web) handleProgressChart(rw http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		apiError(rw, err)
+		return
+	}
+	if detail {
+		big := &view.ChartDetailFragment{
+			Progress: view.NewProgressChartDetail(result.Marks),
+			Items:    view.NewItemsChartDetail(result.Items),
+		}
+		if big.Empty() {
+			w.renderFragment(rw, r, http.StatusOK, "chart-detail-fragment", nil)
+			return
+		}
+		w.renderFragment(rw, r, http.StatusOK, "chart-detail-fragment", big)
 		return
 	}
 	frag := &view.ProgressChartFragment{

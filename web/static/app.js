@@ -1586,8 +1586,42 @@
     fetchProgressChart();
   }
 
+  // openChartDetail loads the enlarged charts into the modal. It asks the
+  // SAME endpoint with detail=1 rather than rendering a second picture on the
+  // client, so the modal and the inline panel can never disagree about the
+  // data — there is one renderer, and the difference between the two is only
+  // how much furniture it draws around the same marks.
+  function openChartDetail() {
+    var dlg = document.getElementById('chart-dialog');
+    if (!dlg || typeof dlg.showModal !== 'function' || !chartSlot.project) return;
+    var body = dlg.querySelector('[data-chart-dialog-body]');
+    if (!body) return;
+    body.innerHTML = '<p class="text-subtle">Loading the full chart…</p>';
+    if (!dlg.open) dlg.showModal();
+    var url = '/p/' + encodeURIComponent(chartSlot.project) + '/progress/chart?detail=1' +
+      (chartSlot.task ? '&task=' + encodeURIComponent(chartSlot.task) : '');
+    fetch(url, { credentials: 'same-origin', cache: 'no-store', headers: { 'Accept': 'text/html' } })
+      .then(function (r) {
+        if (!r.ok) throw new Error('status ' + r.status);
+        return r.text();
+      })
+      .then(function (html) {
+        body.innerHTML = html || '<p class="text-subtle">There is no history to chart yet.</p>';
+      })
+      .catch(function () {
+        body.innerHTML = '<p class="text-subtle">Could not load the full chart.</p>';
+      });
+  }
+
   function initProgressChart() {
     document.addEventListener('click', function (e) {
+      // The zoom target is checked FIRST: a chart panel sits inside the
+      // slot, never inside a bar, so the two cannot both match — but
+      // checking the panel first keeps that independent of future markup.
+      if (e.target.closest && e.target.closest('[data-chart-zoom]')) {
+        openChartDetail();
+        return;
+      }
       var bar = e.target.closest && e.target.closest('[data-progress-chart-toggle]');
       if (!bar) return;
       toggleProgressChart(bar);
@@ -1597,6 +1631,11 @@
     // the ProgressSquares cells app.css positions as flex children).
     document.addEventListener('keydown', function (e) {
       if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
+      if (e.target.closest && e.target.closest('[data-chart-zoom]')) {
+        e.preventDefault();
+        openChartDetail();
+        return;
+      }
       var bar = e.target.closest && e.target.closest('[data-progress-chart-toggle]');
       if (!bar) return;
       // Space must not also scroll the page, the way it would with no
