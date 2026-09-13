@@ -845,11 +845,19 @@ select, .field input, .field textarea {
    both and the viewBox does the work. preserveAspectRatio defaults to
    xMidYMid meet, so it letterboxes rather than distorting — a chart with a
    stretched vertical axis would misreport every slope on it. */
+/* NOTE THE [open]. A <dialog> is hidden by the UA rule
+   `dialog:not([open]) { display: none }`, which has specificity (0,1,1). An
+   unconditional `.modal.modal-wide { display: flex }` is (0,2,0) and beats
+   it — so the dialog stayed on screen permanently and close() appeared to do
+   nothing: the cross "did not work" because there was nothing left to hide.
+   Any display on a dialog must therefore be gated on [open]. */
 .modal.modal-wide {
   max-width: min(76rem, 96vw);
   width: 96vw;
   height: 88vh;
   max-height: 88vh;
+}
+.modal.modal-wide[open] {
   display: flex;
   flex-direction: column;
 }
@@ -917,6 +925,7 @@ select, .field input, .field textarea {
    a strip. */
 @media (max-height: 30rem), (max-width: 30rem) {
   .modal.modal-wide { height: auto; max-height: 92vh; }
+
   .modal.modal-wide .modal-body { overflow-y: auto; }
   .chart-detail-plot { min-height: 12rem; }
 }
