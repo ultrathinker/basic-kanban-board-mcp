@@ -795,8 +795,25 @@ select, .field input, .field textarea {
    row has to wrap first; only then does a full basis mean "own line".
    `order` puts the chart last, below the tracks it charts. Task cards are
    plain block flow and never had either problem. */
-.page-subhead .proj-progress { flex-wrap: wrap; }
-.page-subhead .proj-progress .progress-chart {
+/* ...but wrapping .proj-progress was not enough, and the second attempt is
+   worth recording because the first two looked right in the rule and wrong
+   on the page.
+
+   .proj-progress is itself a flex ITEM of .page-subhead. A child asking for
+   100% of it makes it grow to fit, so opening the chart blew that item up to
+   the full width and shoved "tasks done" to the far right — the row spread
+   apart instead of staying put. Percentages resolve against the parent, and
+   the parent's width came from its content: the chart was sizing the very
+   box it was trying to fill.
+
+   So the metric stops being a flex container: its label, bar, forecast,
+   track list and chart all become items of .page-subhead directly, which
+   already wraps. Now the full basis lands on a box whose width is the row's,
+   not its own, and nothing has to grow. Measured on the live page: the first
+   line's left and right edges are identical with the chart open and closed,
+   and stay centred. */
+.page-subhead .proj-progress { display: contents; }
+.page-subhead .progress-chart {
   flex: 0 0 100%;
   order: 1;
   display: flex;
