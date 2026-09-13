@@ -182,6 +182,12 @@ type TaskRepo interface {
 	// the same transaction.
 	Move(tx Tx, id, columnID string, rank int64, actor string) error
 
+	// ItemHistory returns (created_at, done_at) for every live task of the
+	// project, oldest first — enough to replay how many items the project
+	// held and how many were still open at any instant. Archived tasks are
+	// excluded, matching how the board's own "tasks done" metric counts.
+	ItemHistory(tx Tx, projectID string) ([]ItemLifespan, error)
+
 	// NeighbourRanks returns the ranks bracketing a requested position so the
 	// service can pick a sparse rank; when the gap is exhausted the
 	// implementation renumbers the column inside the transaction.

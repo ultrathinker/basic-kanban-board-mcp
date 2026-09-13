@@ -936,3 +936,78 @@ func normalizeKeysForLookup(in []string) []string {
 	}
 	return out
 }
+
+// ---------------------------------------------------------------------------
+// ItemHistory
+// ---------------------------------------------------------------------------
+
+// ItemLifespan is one task reduced to the only two instants a burn-up chart
+// needs: when it joined the project's scope, and when it left it by being
+// finished. DoneAt is nil for a task that is not in a done column now.
+type ItemLifespan struct {
+	CreatedAt time.Time
+	DoneAt    *time.Time
+}
+
+// ItemHistory returns one ItemLifespan per live task of the project, so the
+// caller can reconstruct how the project's item count moved over time: how
+// many tasks existed at any instant, and how many of those were still open.
+//
+// Two deliberate exclusions, both matching how the board's own "tasks done"
+// metric counts (see service.ProjectProgress): archived tasks are out on both
+// sides of the fraction, and a deleted task is simply gone — there is no
+// tombstone, so a burn-up built from this cannot show work that was removed
+// rather than finished. That is a real limitation and the reason the totals
+// here are "the project as it stands now, laid out over time" rather than a
+// forensic record; the alternative would be an event log this table does not
+// keep (the events table is pruned by age).
+//
+// done_at itself is maintained by Move, which sets it when a task enters a
+// done-kind column and clears it when it leaves one — so a task finished,
+// reopened and finished again reports only the latest completion, which is
+// the right answer for "is it done now, and since when".
+func (r *taskRepo) ItemHistory(tx Tx, projectID string) ([]ItemLifespan, error) {
+	if projectID == "" {
+		return nil, domain.Invalid("project_id", "project id is empty", "Pass the project UUID.")
+	}
+	tw := tx.(*txWrap)
+	rows, err := tw.tx.QueryContext(tw.ctx(), `
+		SELECT created_at, done_at
+		FROM tasks
+		WHERE project_id = ? AND archived_at IS NULL
+		ORDER BY created_at ASC`, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("store: task item history: %w", err)
+	}
+	defer rows.Close()
+
+	var out []ItemLifespan
+	for rows.Next() {
+		var createdRaw string
+		var doneRaw sql.NullString
+		if err := rows.Scan(&createdRaw, &doneRaw); err != nil {
+			return nil, fmt.Errorf("store: scan item lifespan: %w", err)
+		}
+		created, err := parseTime(createdRaw)
+		if err != nil {
+			return nil, fmt.Errorf("store: parse task created_at: %w", err)
+		}
+		span := ItemLifespan{CreatedAt: created}
+		if doneRaw.Valid && doneRaw.String != "" {
+			d, err := parseTime(doneRaw.String)
+			if err != nil {
+				return nil, fmt.Errorf("store: parse task done_at: %w", err)
+			}
+			// A done_at earlier than created_at would make the open count go
+			// negative at replay. It should be impossible (Move stamps it
+			// from the same clock), but clamping here costs nothing and
+			// keeps a corrupt row from producing a nonsense chart.
+			if d.Before(created) {
+				d = created
+			}
+			span.DoneAt = &d
+		}
+		out = append(out, span)
+	}
+	return out, rows.Err()
+}

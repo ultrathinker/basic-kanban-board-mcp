@@ -61,35 +61,48 @@
        pointer cursor and no dead click: see view.ProgressView.Clickable's
        own comment). When Clickable, the bar carries
        data-progress-chart-toggle plus the (project, task) scope app.js
-       needs to fetch "GET /p/{key}/progress/chart" the first time it is
-       opened — see app.js's "progress chart toggle" section — and an empty
-       hidden container, "progress-chart", is rendered right after it (as a
-       CHILD of the wrapper, a sibling of the bar, never inside
-       .progress-tracks) for that fragment to land in. role/tabindex/
+       needs to fetch "GET /p/{key}/progress/chart" — see app.js's "progress
+       chart toggle" section. The fragment does NOT land next to the bar: it
+       goes into the single shared slot at the top of the left-hand thoughts
+       column (#progress-chart-slot in pages.html), so opening a chart never
+       moves the board. Each bar used to carry its own hidden container right
+       after it, which pushed everything below it down. role/tabindex/
        aria-expanded make the toggle a real keyboard target, matching every
        other custom control on this board (chat-toggle, progress-track-
        delete): a span with only a click listener would be invisible to Tab.
        The chart is fetched, not rendered here, so it costs nothing on every
        page load for cards nobody opens — see REPORT.md for the measured
        page-weight argument. */ -}}
-{{- if .Progress}}<span class="progress-metric" data-progress-metric data-project="{{.Progress.ProjectKey}}" data-task="{{.Progress.TaskKey}}"><span class="pbar{{with .Class}} {{.}}{{end}}{{if .Progress.Clickable}} pbar-clickable{{end}}" data-filled="{{.Progress.Filled}}" title="{{.Progress.Label}}" aria-label="{{.Progress.Label}}"{{if .Progress.Clickable}} data-progress-chart-toggle data-project="{{.Progress.ProjectKey}}" data-task="{{.Progress.TaskKey}}" role="button" tabindex="0" aria-expanded="false"{{end}}>{{range .Progress.Cells}}{{if .}}<i class="f"></i>{{else}}<i></i>{{end}}{{end}}<span class="pbar-label mono">{{.Progress.Label}}</span></span>{{if .Progress.Forecast}}<span class="forecast" title="Forecast by {{.Progress.Forecast.By}}">{{if .Progress.Forecast.Overdue}}<span class="mark">overdue</span> {{end}}<span class="text-subtle">eta {{.Progress.Forecast.Text}} · {{.Progress.Forecast.By}}</span></span>{{end}}{{if .Progress.Clickable}}<div class="progress-chart" data-progress-chart hidden></div>{{end}}{{template "progress-tracks" .Progress}}</span>{{- end}}
+{{- if .Progress}}<span class="progress-metric" data-progress-metric data-project="{{.Progress.ProjectKey}}" data-task="{{.Progress.TaskKey}}"><span class="pbar{{with .Class}} {{.}}{{end}}{{if .Progress.Clickable}} pbar-clickable{{end}}" data-filled="{{.Progress.Filled}}" title="{{.Progress.Label}}" aria-label="{{.Progress.Label}}"{{if .Progress.Clickable}} data-progress-chart-toggle data-project="{{.Progress.ProjectKey}}" data-task="{{.Progress.TaskKey}}" role="button" tabindex="0" aria-expanded="false"{{end}}>{{range .Progress.Cells}}{{if .}}<i class="f"></i>{{else}}<i></i>{{end}}{{end}}<span class="pbar-label mono">{{.Progress.Label}}</span></span>{{if .Progress.Forecast}}<span class="forecast" title="Forecast by {{.Progress.Forecast.By}}">{{if .Progress.Forecast.Overdue}}<span class="mark">overdue</span> {{end}}<span class="text-subtle">eta {{.Progress.Forecast.Text}} · {{.Progress.Forecast.By}}</span></span>{{end}}{{template "progress-tracks" .Progress}}</span>{{- end}}
 {{end}}
 
 {{define "progress-chart-fragment"}}
 {{- /* Response body of "GET /p/{key}/progress/chart" (see
        handleProgressChart in pages.go): expects . (dot) to be
-       *view.ProgressChartView, or nil. app.js inserts this fragment once,
-       the first time a clickable bar's data-progress-chart container is
-       opened, then just toggles it hidden/visible on later clicks without
-       fetching again. A nil chart (the history vanished between the click
-       and this request — e.g. the last mark's track was deleted a moment
-       before) renders nothing at all, the same "no data, no placeholder"
-       rule the bar itself follows; app.js treats an empty body as a no-op,
-       exactly like loadOlderChatMessages already does for an exhausted chat
-       page. The SVG itself is chart.go's own output, untouched — this
-       fragment only wraps it so app.js has one element to insert and later
-       toggle. */ -}}
-{{- if .}}<div class="progress-chart-inner">{{.SVG}}</div>{{end}}
+       *view.ProgressChartFragment, or nil. app.js inserts this fragment into
+       the single shared chart slot at the top of the left-hand column.
+       Nothing at all renders when there is nothing to show (the history
+       vanished between the click and this request — e.g. the last mark's
+       track was deleted a moment before), the same "no data, no
+       placeholder" rule the bar itself follows; app.js treats an empty body
+       as a no-op, exactly like loadOlderChatMessages already does for an
+       exhausted chat page.
+
+       Two panels, stacked. The upper one is what the ASSESSORS said over
+       time (percent axis); the lower one is what the BOARD holds over time
+       (item counts, its own axis) and appears for the project scope only,
+       since a single task has no item count. They are not merged into one
+       picture because percents and counts share no axis — see chart_items.go
+       for the full argument. The SVGs are chart.go's and chart_items.go's
+       own output, untouched. */ -}}
+{{- if .}}{{if .Progress}}<div class="progress-chart-inner">{{.Progress.SVG}}</div>{{end}}
+{{- if .Items}}<div class="progress-chart-inner items-chart">
+  <div class="items-chart-caption">
+    <span class="caps text-subtle">items</span>
+    <span class="mono">{{.Items.Total}} total · {{.Items.Open}} open</span>
+  </div>
+  {{.Items.SVG}}
+</div>{{end}}{{end}}
 {{end}}
 
 {{define "progress-tracks"}}

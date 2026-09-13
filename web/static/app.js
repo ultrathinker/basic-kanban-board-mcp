@@ -261,50 +261,28 @@
   }
 
   function captureProgressState(root) {
-    var openCharts = {};
-    var staleCharts = {};
-    var bars = root.querySelectorAll('[data-progress-chart-toggle][aria-expanded="true"]');
-    for (var i = 0; i < bars.length; i++) {
-      var key = progressBarKey(bars[i]);
-      var container = progressChartContainer(bars[i]);
-      if (!container || container.childElementCount === 0) continue;
-      if (live.dirtyChartKeys[key]) {
-        // This exact metric just recorded a mark or lost a track: the
-        // cached SVG is now showing stale data, so it must not be restored.
-        // staleCharts remembers only that the chart WAS open, so the
-        // restore step below re-opens it and fetches a fresh copy instead.
-        staleCharts[key] = true;
-      } else {
-        openCharts[key] = container.innerHTML;
-      }
-    }
+    // The chart no longer lives inside a live region: there is one slot at
+    // the top of the left-hand column (see pages.html), and a board refresh
+    // never touches it. So nothing about the chart's CONTENT has to survive
+    // this swap. What does have to survive is which bar is marked as the
+    // open one, because the bars themselves are replaced wholesale — that is
+    // re-applied by markOpenChartBar() after the swap, from state app.js
+    // already holds.
     var armed = {};
     var rows = root.querySelectorAll('.progress-track.is-confirming');
     for (var j = 0; j < rows.length; j++) {
       armed[trackKey(rows[j])] = true;
     }
-    return { openCharts: openCharts, staleCharts: staleCharts, armed: armed };
+    return { armed: armed };
   }
 
   function restoreProgressState(root, state) {
-    var bars = root.querySelectorAll('[data-progress-chart-toggle]');
-    for (var i = 0; i < bars.length; i++) {
-      var key = progressBarKey(bars[i]);
-      var container = progressChartContainer(bars[i]);
-      if (!container) continue;
-      if (state.staleCharts[key]) {
-        // Reopen against an empty container (the fresh markup's own chart
-        // container always renders empty) so fetchProgressChart's "already
-        // filled" guard does not treat this as already current, then fetch
-        // the real, up-to-date chart the same way a first click would.
-        setProgressChartOpen(bars[i], container, true);
-        fetchProgressChart(bars[i], container);
-        continue;
-      }
-      var html = state.openCharts[key];
-      if (html === undefined) continue;
-      container.innerHTML = html;
-      setProgressChartOpen(bars[i], container, true);
+    markOpenChartBar();
+    // A metric that just recorded a mark or lost a track is showing stale
+    // markup in the slot; re-fetch that one chart rather than leaving a
+    // number on screen that the board has already moved past.
+    if (chartSlot.key && live.dirtyChartKeys[chartSlot.key]) {
+      fetchProgressChart();
     }
     var rows = root.querySelectorAll('[data-progress-track]');
     for (var j = 0; j < rows.length; j++) {
@@ -1492,17 +1470,22 @@
   //
   // Clicking a progress bar's .pbar span (data-progress-chart-toggle, see
   // partials.html's "progress-bar" define) opens its history chart in the
-  // hidden <div class="progress-chart"> rendered right after it; clicking
-  // again closes it. Works on a task card and in the project header alike —
+  // single shared slot at the top of the left-hand thoughts column; clicking
+  // the same bar again closes it, and clicking a different one replaces what
+  // the slot shows. Works on a task card and in the project header alike —
   // both go through the same "progress-bar" define, so there is only one
-  // place this is wired. The chart is fetched once, the first time a given
-  // bar opens — GET /p/{key}/progress/chart?task=<key> (task omitted
-  // selects the project-level scope) — and cached in the DOM afterwards, so
-  // reopening the same bar just toggles `hidden` with no second request.
-  // This mirrors loadOlderChatMessages's fetch-fragment shape (see that
-  // function's own comment above) rather than inventing a second
-  // convention; KANB-13's REPORT.md has the measured argument for fetching
-  // instead of rendering every chart on every card up front.
+  // place this is wired. GET /p/{key}/progress/chart?task=<key> (task
+  // omitted selects the project-level scope) fetches the fragment; this
+  // mirrors loadOlderChatMessages's fetch-fragment shape rather than
+  // inventing a second convention, and KANB-13's REPORT.md has the measured
+  // argument for fetching instead of rendering every chart up front.
+  //
+  // The slot is where it is because the chart used to render inline under
+  // its own bar, which pushed the entire board down the moment it opened.
+  // One slot, off to the side, means opening a chart moves nothing the owner
+  // was looking at. It also means there is no per-bar cache to keep
+  // coherent: each open is a fresh read, which is the honest answer for a
+  // number other agents are still writing to.
   //
   // The toggle attribute lives ONLY on the .pbar span, never on anything
   // that also contains the delete-track control's <ul
@@ -1515,68 +1498,92 @@
   // simply never matched here: no dead click, and app.css paints the
   // pointer-cursor affordance only on .pbar-clickable.
 
-  // progressChartContainer finds the empty (or already-filled) chart
-  // container that belongs to one .pbar span: its next sibling, skipping
-  // over the forecast badge when one is rendered between them (the
-  // "progress-bar" define's fixed emission order is pbar, optional
-  // forecast, optional chart container). Anything else in between means
-  // this bar has no chart container — should not happen for a Clickable
-  // bar, but a missing container is simply treated as nothing to open.
-  function progressChartContainer(bar) {
-    var el = bar.nextElementSibling;
-    while (el) {
-      if (el.hasAttribute('data-progress-chart')) return el;
-      if (!el.classList.contains('forecast')) return null;
-      el = el.nextElementSibling;
+  // chartSlot is the page's single open-chart state. There is exactly one
+  // chart slot — at the top of the left-hand thoughts column — so "which
+  // chart is open" is one value, not a per-bar flag. key is the bar's
+  // progressBarKey(); project/task are what the fetch needs.
+  var chartSlot = { key: '', project: '', task: '' };
+
+  function progressChartSlotEl() {
+    return document.querySelector('[data-progress-chart-slot]');
+  }
+
+  // markOpenChartBar keeps every bar's aria-expanded in step with the one
+  // open chart. It runs after a live refresh too, because the refresh
+  // replaces the bars but not the slot.
+  function markOpenChartBar() {
+    var bars = document.querySelectorAll('[data-progress-chart-toggle]');
+    for (var i = 0; i < bars.length; i++) {
+      bars[i].setAttribute('aria-expanded',
+        chartSlot.key && progressBarKey(bars[i]) === chartSlot.key ? 'true' : 'false');
     }
-    return null;
   }
 
-  function setProgressChartOpen(bar, container, open) {
-    bar.setAttribute('aria-expanded', open ? 'true' : 'false');
-    container.hidden = !open;
+  function closeProgressChart() {
+    var slot = progressChartSlotEl();
+    if (slot) {
+      slot.hidden = true;
+      slot.innerHTML = '';
+    }
+    chartSlot.key = '';
+    chartSlot.project = '';
+    chartSlot.task = '';
+    markOpenChartBar();
   }
 
-  // fetchProgressChart loads the fragment exactly once per bar: a filled
-  // container (childElementCount > 0) is assumed current for the lifetime
-  // of the page, the same "fetch once, toggle after" contract
-  // loadOlderChatMessages's cursor guard gives the chat panel's pages.
-  function fetchProgressChart(bar, container) {
-    var project = bar.getAttribute('data-project') || '';
-    if (!project) return;
-    var task = bar.getAttribute('data-task') || '';
-    var url = '/p/' + encodeURIComponent(project) + '/progress/chart' +
-      (task ? '?task=' + encodeURIComponent(task) : '');
+  // fetchProgressChart loads the fragment for whatever chartSlot currently
+  // names and puts it in the shared slot. Unlike the old per-bar version
+  // there is no "fetch once and toggle after" cache: one slot means one
+  // in-flight chart at a time, and re-opening a metric should show what the
+  // board says NOW rather than what it said when the bar was first clicked.
+  function fetchProgressChart() {
+    var slot = progressChartSlotEl();
+    if (!slot || !chartSlot.project) return;
+    var url = '/p/' + encodeURIComponent(chartSlot.project) + '/progress/chart' +
+      (chartSlot.task ? '?task=' + encodeURIComponent(chartSlot.task) : '');
+    var forKey = chartSlot.key;
     fetch(url, { credentials: 'same-origin', cache: 'no-store', headers: { 'Accept': 'text/html' } })
       .then(function (r) {
         if (!r.ok) throw new Error('status ' + r.status);
         return r.text();
       })
       .then(function (html) {
+        // The owner may have clicked another metric (or closed this one)
+        // while this was in flight; a late response must not overwrite it.
+        if (chartSlot.key !== forKey) return;
         // An empty fragment means the history vanished between render and
         // fetch (e.g. a track delete raced this click) — nothing to show,
-        // and the bar stays closed rather than opening on emptiness.
-        if (!html) return;
-        container.innerHTML = html;
-        setProgressChartOpen(bar, container, true);
+        // so close rather than open on emptiness.
+        if (!html) {
+          closeProgressChart();
+          return;
+        }
+        delete live.dirtyChartKeys[forKey];
+        slot.innerHTML = html;
+        slot.hidden = false;
+        markOpenChartBar();
       })
       .catch(function () {
         toast('Could not load the progress chart.', 'error');
       });
   }
 
+  // toggleProgressChart opens the clicked metric's chart in the shared slot,
+  // or closes it if that metric is already the one on show. Opening also
+  // opens the left column: the chart lives in it, and a chart rendered into
+  // a hidden panel would look like a click that did nothing.
   function toggleProgressChart(bar) {
-    var container = progressChartContainer(bar);
-    if (!container) return;
-    if (!container.hidden) {
-      setProgressChartOpen(bar, container, false);
+    var key = progressBarKey(bar);
+    if (chartSlot.key === key) {
+      closeProgressChart();
       return;
     }
-    if (container.childElementCount > 0) {
-      setProgressChartOpen(bar, container, true);
-      return;
-    }
-    fetchProgressChart(bar, container);
+    chartSlot.key = key;
+    chartSlot.project = bar.getAttribute('data-project') || '';
+    chartSlot.task = bar.getAttribute('data-task') || '';
+    setChatOpen(true);
+    markOpenChartBar();
+    fetchProgressChart();
   }
 
   function initProgressChart() {

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -346,6 +347,13 @@ func (s *svc) ProgressHistory(ctx context.Context, a Actor, in ProgressHistoryIn
 			taskID = &t.ID
 			result.TaskKey = t.Key
 		}
+		if in.IncludeItems && taskID == nil {
+			spans, err := s.store.Tasks().ItemHistory(tx, p.ID)
+			if err != nil {
+				return err
+			}
+			result.Items = buildItemCounts(spans)
+		}
 		if in.Limit > 0 {
 			marks, total, err := s.store.Progress().HistoryTail(tx, p.ID, taskID, in.Limit)
 			if err != nil {
@@ -434,4 +442,67 @@ func (s *svc) ProgressTrackDelete(ctx context.Context, a Actor, in ProgressTrack
 	}
 	s.publishAll(pending)
 	return &result, nil
+}
+
+// buildItemCounts replays task lifespans into the two curves the owner asked
+// the chart to show: how the project's TOTAL item count grew, and how many
+// items were still OPEN at each moment.
+//
+// The shape of the answer matters more than the arithmetic. The total is not
+// a fixed denominator — this board is used to manage its own development, so
+// noticing new work and writing it down is the normal case, and a burn-DOWN
+// against a frozen total would hide exactly that. Plotting both curves makes
+// the two forces legible at once: the gap between them is finished work, the
+// total's staircase is scope discovered along the way, and the open curve
+// reaching zero is the only definition of done that does not need a caveat.
+//
+// Method: each task contributes +1 to total (and to open) when it is created,
+// and -1 to open when it is finished. Sorting those 2N events by time and
+// running a cumulative sum gives both curves in one pass. Events at the same
+// instant collapse into a single point — a point per event would draw
+// vertical segments that mean nothing.
+//
+// "Done" is done-at-a-column, not done-by-acceptance: DoneAt is stamped by
+// the store when a task enters a done-kind column and cleared when it leaves
+// one, which is the same rule the board's own "tasks done" metric uses. A
+// task finished, reopened and finished again therefore shows only its latest
+// completion — the open curve dips and recovers only if the reopening is
+// still in effect now. That is a real simplification of a reopened task's
+// history and the price of not keeping an event log.
+func buildItemCounts(spans []store.ItemLifespan) []ItemCountPoint {
+	if len(spans) == 0 {
+		return nil
+	}
+	type delta struct {
+		at          time.Time
+		total, open int
+	}
+	events := make([]delta, 0, 2*len(spans))
+	for _, sp := range spans {
+		events = append(events, delta{at: sp.CreatedAt, total: 1, open: 1})
+		if sp.DoneAt != nil {
+			events = append(events, delta{at: *sp.DoneAt, open: -1})
+		}
+	}
+	sort.Slice(events, func(i, j int) bool {
+		if events[i].at.Equal(events[j].at) {
+			// Creations before completions at the same instant, so the open
+			// count never dips below what exists yet.
+			return events[i].total > events[j].total
+		}
+		return events[i].at.Before(events[j].at)
+	})
+
+	out := make([]ItemCountPoint, 0, len(events))
+	var total, open int
+	for i, e := range events {
+		total += e.total
+		open += e.open
+		// Collapse a run of events sharing one instant into the last state.
+		if i+1 < len(events) && events[i+1].at.Equal(e.at) {
+			continue
+		}
+		out = append(out, ItemCountPoint{At: e.at, Total: total, Open: open})
+	}
+	return out
 }

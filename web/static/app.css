@@ -787,58 +787,48 @@ select, .field input, .field textarea {
   outline: 1px solid var(--rule-strong);
   outline-offset: 2px;
 }
-.progress-chart {
-  margin-top: 0.35rem;
-}
-.card .progress-chart { margin-top: 0.25rem; }
+/* --- the progress chart's slot ------------------------------------------- */
+/* The chart opens in ONE place: the top of the left-hand thoughts column
+   (#progress-chart-slot in pages.html), never underneath the bar that was
+   clicked.
 
-/* In the header, a metric's chart and its assessor-track list each need a
-   line of their own. .progress-metric is display:contents, so both are flex
-   items of .proj-progress — the metric's own row, which is align-items:
-   baseline and was flex-wrap: nowrap.
-
-   Nowrap is what actually broke: a full-basis item in a row that cannot wrap
-   does not move to the next line, it just claims the full width IN that row.
-   The chart did exactly that, and the track list beside it was squeezed to
-   33px, which turned "Opus 5 / orchestrator" into one letter per line. So the
-   row has to wrap first; only then does a full basis mean "own line".
-   `order` puts the chart last, below the tracks it charts. Task cards are
-   plain block flow and never had either problem. */
-/* ...but wrapping .proj-progress was not enough, and the second attempt is
-   worth recording because the first two looked right in the rule and wrong
-   on the page.
-
-   .proj-progress is itself a flex ITEM of .page-subhead. A child asking for
-   100% of it makes it grow to fit, so opening the chart blew that item up to
-   the full width and shoved "tasks done" to the far right — the row spread
-   apart instead of staying put. Percentages resolve against the parent, and
-   the parent's width came from its content: the chart was sizing the very
-   box it was trying to fill.
-
-   So the metric stops being a flex container: its label, bar, forecast,
-   track list and chart all become items of .page-subhead directly, which
-   already wraps. Now the full basis lands on a box whose width is the row's,
-   not its own, and nothing has to grow. Measured on the live page: the first
-   line's left and right edges are identical with the chart open and closed,
-   and stay centred. */
-.page-subhead .proj-progress { display: contents; }
-.page-subhead .progress-chart {
-  flex: 0 0 100%;
-  order: 1;
-  display: flex;
-  justify-content: center;
+   This replaces a long and instructive fight. The chart used to render right
+   after its own bar, which made it a flex item of the metric row, and every
+   attempt to give it a line of its own moved something else: a full basis in
+   a nowrap row squeezed the track list to 33px; making the row wrap let the
+   metric grow to full width and spread the row apart; display:contents on
+   the metric finally kept the first line still. All of that was work to stop
+   the chart disturbing the layout around it — and it still pushed the whole
+   board down the moment it appeared. Moving it out of the flow entirely
+   makes the question go away: the right-hand side does not move at all now,
+   only this column's own top. */
+.chart-slot {
+  padding: 0.5rem 0.5rem 0;
 }
 .progress-chart-inner {
   border: 1px solid var(--rule);
   padding: 0.35rem;
-  display: inline-block;
+  display: block;
   max-width: 100%;
   overflow-x: auto;
 }
-.progress-chart .chart-progress {
+.chart-progress,
+.chart-items {
   display: block;
   max-width: 100%;
   height: auto;
+}
+/* The second panel sits under the first with its own frame, so the two
+   readings are never mistaken for one picture: the upper chart is a percent
+   (what the assessors said), the lower one is a count (what the board holds).
+   The caption prints both current numbers, because a reader should not have
+   to measure a line to learn that 109 of 151 items are done. */
+.items-chart { margin-top: 0.4rem; }
+.items-chart-caption {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  margin-bottom: 0.25rem;
 }
 
 /* The header pair: manual ("assessed") and automatic ("tasks done") stand

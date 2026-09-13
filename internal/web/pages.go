@@ -278,13 +278,28 @@ func (w *Web) handleProgressChart(rw http.ResponseWriter, r *http.Request) {
 	result, err := w.d.Service.ProgressHistory(r.Context(), actorFor(tok), service.ProgressHistoryInput{
 		ProjectKey: key,
 		TaskKey:    taskKey,
+		// The item-count panel is a project-level reading — how much work
+		// the board holds and how much of it is still open — so it is asked
+		// for only on the project scope. The service ignores the flag when a
+		// task is named, but not asking keeps the second read off the
+		// per-task path entirely.
+		IncludeItems: taskKey == "",
 	})
 	if err != nil {
 		apiError(rw, err)
 		return
 	}
-	chart := view.NewProgressChartView(result.Marks, view.DefaultChartWidth, view.DefaultChartHeight)
-	w.renderFragment(rw, r, http.StatusOK, "progress-chart-fragment", chart)
+	frag := &view.ProgressChartFragment{
+		Progress: view.NewProgressChartView(result.Marks, view.DefaultChartWidth, view.DefaultChartHeight),
+		Items:    view.NewItemsChartView(result.Items, view.DefaultChartWidth, view.DefaultChartHeight),
+	}
+	if frag.Empty() {
+		// Nothing to draw at all: render the empty body app.js already
+		// treats as "leave the slot closed", rather than an empty frame.
+		w.renderFragment(rw, r, http.StatusOK, "progress-chart-fragment", nil)
+		return
+	}
+	w.renderFragment(rw, r, http.StatusOK, "progress-chart-fragment", frag)
 }
 
 // handleDrawer is "/t/{key}": the full task detail view.

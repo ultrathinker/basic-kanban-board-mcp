@@ -100,8 +100,20 @@
      the button above nor the panel below renders. data-chat-project feeds
      app.js the project key for the "older messages" endpoint. */ -}}
 <div class="board-split{{if .ChatOpen}} is-open{{end}}" data-chat-split data-chat-project="{{.Project.Key}}">
-  {{if .Chat}}
+  {{- /* The left column holds two things, in this order: the progress chart
+       and the thoughts feed. The chart used to open inline underneath the
+       metric it belongs to, which pushed the whole board down the moment it
+       appeared; the owner asked for it here instead, so opening a chart
+       moves nothing on the right-hand side. There is exactly ONE chart slot
+       on the page, shared by every clickable bar — opening a second metric
+       replaces the first rather than stacking.
+
+       The <aside> renders even when .Chat is nil (a failed best-effort chat
+       read), because the chart does not depend on the thoughts feed and must
+       still have somewhere to open. Only the feed itself is guarded. */ -}}
   <aside class="chat-panel" id="chat-panel" data-chat-panel aria-label="AI thoughts"{{if not .ChatOpen}} hidden{{end}}>
+    <div class="chart-slot" id="progress-chart-slot" data-progress-chart-slot hidden></div>
+    {{if .Chat}}
     <header class="chat-panel-head">
       <span class="caps">thoughts</span>
       <span class="spacer"></span>
@@ -147,6 +159,7 @@
       <button type="button" data-chat-hide-history hidden>Hide all history</button>
     </div>
     {{end}}
+    {{end}}
   </aside>
   {{- /* KANB-25 D1: the draggable splitter. It only exists (and is only
        reachable by keyboard) while the panel is open — hidden along with the
@@ -159,7 +172,6 @@
        aria-controls="chat-panel" aria-label="Resize the thoughts panel"
        aria-valuemin="0" aria-valuenow="288"
        tabindex="0"{{if not .ChatOpen}} hidden{{end}}></div>
-  {{end}}
   <div class="board-region">
     {{template "board-columns" (dict "Columns" .Columns "CSRF" $.CSRF)}}
   </div>

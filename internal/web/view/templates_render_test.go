@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/domain"
+	"github.com/ultrathinker/basic-kanban-board-mcp/internal/service"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/web/templates"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/web/view"
 )
@@ -213,11 +214,12 @@ func renderCases() []renderCase {
 		},
 		{
 			// KANB-13: a bar WithTracks did attach a scope to (a real
-			// marks-derived metric) is Clickable, carries the toggle's
-			// data-project/data-task/role/tabindex, and renders its own
-			// empty, hidden chart container ready for app.js to fill in on
-			// first click.
-			name:     "progress-bar/clickable-with-chart-container",
+			// marks-derived metric) is Clickable and carries the toggle's
+			// data-project/data-task/role/tabindex. It does NOT render a
+			// chart container of its own any more: there is one shared slot
+			// at the top of the left-hand column (pages.html), because an
+			// inline container pushed the whole board down when it opened.
+			name:     "progress-bar/clickable-carries-the-toggle-scope",
 			template: "progress-bar",
 			data: map[string]any{"Progress": view.NewAssessedProgress(percentPtr(60), 2, nil, "").
 				WithTracks("BMB", "BMB-1", []view.ProgressTrack{{Assessor: "alpha", Percent: 60, Count: 4}})},
@@ -229,10 +231,10 @@ func renderCases() []renderCase {
 				`role="button"`,
 				`tabindex="0"`,
 				`aria-expanded="false"`,
-				`data-progress-chart`,
-				"hidden",
 			},
-			notWants: []string{"<no value>"},
+			// The bar must not carry a chart container: the one place a
+			// chart may land is the shared slot.
+			notWants: []string{"<no value>", "data-progress-chart-slot", `class="progress-chart"`},
 		},
 		{
 			// The project-header manual metric is Clickable too (TaskKey
@@ -251,18 +253,45 @@ func renderCases() []renderCase {
 		},
 		{
 			// The fragment "GET /p/{key}/progress/chart" responds with:
-			// wraps chart.go's own SVG output verbatim, nothing added or
-			// escaped a second time.
+			// wraps chart.go's and chart_items.go's own SVG output verbatim,
+			// nothing added or escaped a second time.
 			name:     "progress-chart-fragment/rendered",
 			template: "progress-chart-fragment",
-			data: view.NewProgressChartView([]domain.ProgressMark{
-				{ID: "m1", Assessor: "alpha", Percent: 30, CreatedAt: time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)},
-				{ID: "m2", Assessor: "alpha", Percent: 55, CreatedAt: time.Date(2026, 9, 12, 11, 0, 0, 0, time.UTC)},
-			}, view.DefaultChartWidth, view.DefaultChartHeight),
+			data: &view.ProgressChartFragment{
+				Progress: view.NewProgressChartView([]domain.ProgressMark{
+					{ID: "m1", Assessor: "alpha", Percent: 30, CreatedAt: time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local)},
+					{ID: "m2", Assessor: "alpha", Percent: 55, CreatedAt: time.Date(2026, 9, 12, 11, 0, 0, 0, time.Local)},
+				}, view.DefaultChartWidth, view.DefaultChartHeight),
+			},
 			wants: []string{
 				"progress-chart-inner",
 				"<svg",
 				`data-assessor="alpha"`,
+			},
+			notWants: []string{"<no value>", "items-chart"},
+		},
+		{
+			// The project scope carries a second panel: the item counts.
+			// Both are present, and the caption prints the two current
+			// numbers so nobody has to measure a line to read them.
+			name:     "progress-chart-fragment/with-items",
+			template: "progress-chart-fragment",
+			data: &view.ProgressChartFragment{
+				Progress: view.NewProgressChartView([]domain.ProgressMark{
+					{ID: "m1", Assessor: "alpha", Percent: 30, CreatedAt: time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local)},
+					{ID: "m2", Assessor: "alpha", Percent: 55, CreatedAt: time.Date(2026, 9, 12, 11, 0, 0, 0, time.Local)},
+				}, view.DefaultChartWidth, view.DefaultChartHeight),
+				Items: view.NewItemsChartView([]service.ItemCountPoint{
+					{At: time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local), Total: 4, Open: 4},
+					{At: time.Date(2026, 9, 12, 11, 0, 0, 0, time.Local), Total: 7, Open: 5},
+					{At: time.Date(2026, 9, 12, 12, 0, 0, 0, time.Local), Total: 7, Open: 2},
+				}, view.DefaultChartWidth, view.DefaultChartHeight),
+			},
+			wants: []string{
+				"items-chart",
+				`data-series="items-total"`,
+				`data-series="items-open"`,
+				"7 total · 2 open",
 			},
 			notWants: []string{"<no value>"},
 		},
@@ -273,7 +302,7 @@ func renderCases() []renderCase {
 			// rule the bar itself follows.
 			name:      "progress-chart-fragment/nil",
 			template:  "progress-chart-fragment",
-			data:      (*view.ProgressChartView)(nil),
+			data:      (*view.ProgressChartFragment)(nil),
 			wantEmpty: true,
 		},
 		{

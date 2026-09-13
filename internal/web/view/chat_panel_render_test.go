@@ -93,12 +93,24 @@ func TestChatPanel_EmptyProjectShowsSaneEmptiness(t *testing.T) {
 		t.Fatal("empty project still needs the toggle button: the panel must open")
 	}
 
-	// A failed chat read (Chat == nil) renders no panel and no button —
-	// the board alone, never a panel pretending the chat is empty.
+	// A failed chat read (Chat == nil) renders no thoughts content and no
+	// toggle button — never a panel pretending the chat is empty.
+	//
+	// The left column ITSELF still renders, because it also holds the
+	// progress chart's one slot, and the chart has nothing to do with the
+	// chat: a transient failure of the best-effort chat read must not take
+	// the chart with it. So the assertion is about the thoughts, not about
+	// the <aside>.
 	none := boardWithChat(nil, false)
 	noneHTML := renderProgress(t, "page-board", view.SamplePage("Test", "board", none))
-	if strings.Contains(noneHTML, "data-chat-toggle") || strings.Contains(noneHTML, `id="chat-panel"`) {
-		t.Fatal("a failed chat read must not render a panel or its button")
+	if strings.Contains(noneHTML, "data-chat-toggle") {
+		t.Error("a failed chat read still offered the Thoughts button")
+	}
+	if strings.Contains(noneHTML, "No thoughts yet") || strings.Contains(noneHTML, `id="chat-feed"`) {
+		t.Error("a failed chat read rendered the feed or its empty-state text, which would claim there are no messages")
+	}
+	if !strings.Contains(noneHTML, "data-progress-chart-slot") {
+		t.Error("the chart slot went missing with the chat: the chart does not depend on the chat read")
 	}
 }
 
