@@ -783,16 +783,20 @@ select, .field input, .field textarea {
 }
 .card .progress-chart { margin-top: 0.25rem; }
 
-/* In the header row the chart must drop to a line of its own instead of
-   opening INSIDE the row. .progress-metric is display:contents, so the chart
-   div is a direct flex child of .page-subhead: without this it lands between
-   "assessed 73%" and "tasks done 73%" and shoves the two metrics to opposite
-   ends of the screen with the chart wedged in the gap. A full-basis item in a
-   wrapping flex row takes the whole next line, which is where a chart of the
-   metric above it belongs. `order` keeps it after both metrics even though it
-   is emitted inside the first one. Task cards are plain block flow and are
-   not affected. */
-.page-subhead .progress-chart {
+/* In the header, a metric's chart and its assessor-track list each need a
+   line of their own. .progress-metric is display:contents, so both are flex
+   items of .proj-progress — the metric's own row, which is align-items:
+   baseline and was flex-wrap: nowrap.
+
+   Nowrap is what actually broke: a full-basis item in a row that cannot wrap
+   does not move to the next line, it just claims the full width IN that row.
+   The chart did exactly that, and the track list beside it was squeezed to
+   33px, which turned "Opus 5 / orchestrator" into one letter per line. So the
+   row has to wrap first; only then does a full basis mean "own line".
+   `order` puts the chart last, below the tracks it charts. Task cards are
+   plain block flow and never had either problem. */
+.page-subhead .proj-progress { flex-wrap: wrap; }
+.page-subhead .proj-progress .progress-chart {
   flex: 0 0 100%;
   order: 1;
   display: flex;
