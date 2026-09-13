@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -196,9 +197,12 @@ func renderCases() []renderCase {
 			template: "progress-bar",
 			data:     map[string]any{"Progress": view.NewAssessedProgress(percentPtr(45), 3, nil, "")},
 			wants: []string{
-				// Exactly ten cells, four painted, the label carrying both the
-				// percent and how many tracks produced it.
-				`data-filled="4"`,
+				// The painted count for 45%, derived from the cell count
+				// rather than written out: the owner has already changed that
+				// number once, and a literal here pins the old decision
+				// instead of the rule. The label carries both the percent and
+				// how many tracks produced it.
+				`data-filled="` + strconv.Itoa(45*view.ProgressSquares/100) + `"`,
 				"45% · 3 assessments",
 			},
 			// No WithTracks call here means Clickable is false (see

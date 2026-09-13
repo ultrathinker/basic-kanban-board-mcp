@@ -25,8 +25,9 @@ type chatKeyLinkService struct {
 	chatMsgs     []domain.ChatMessage
 	existingKeys map[string]bool
 
-	taskGetCalls int
-	lastKeys     []string
+	taskGetCalls   int
+	lastKeys       []string
+	lastChatListIn service.ChatListInput
 }
 
 func (s *chatKeyLinkService) BoardGet(_ context.Context, _ service.Actor, _ service.BoardGetInput) (*service.Board, error) {
@@ -47,7 +48,8 @@ func (s *chatKeyLinkService) TaskProgress(_ context.Context, _ service.Actor, _ 
 	return nil, nil
 }
 
-func (s *chatKeyLinkService) ChatList(_ context.Context, _ service.Actor, _ service.ChatListInput) (*service.ChatListResult, error) {
+func (s *chatKeyLinkService) ChatList(_ context.Context, _ service.Actor, in service.ChatListInput) (*service.ChatListResult, error) {
+	s.lastChatListIn = in
 	return &service.ChatListResult{Messages: s.chatMsgs}, nil
 }
 
@@ -216,5 +218,26 @@ func TestBoardChat_InjectionIsEscapedAndCannotEscapeTheLinkAttribute(t *testing.
 	// the injected `">` never became part of the tag.
 	if !strings.Contains(body, `<a href="/t/BMB-1">BMB-1</a>&#34;&gt;&lt;script&gt;`) {
 		t.Fatalf("the injection attempt broke out of (or altered) the link markup:\n%s", body)
+	}
+}
+
+// TestBoardChat_InitialLoadRequestsChatInitialLimit is KANB-24's server-side
+// wiring test: the board page's thoughts panel must ask ChatList for exactly
+// chatInitialLimit (10) messages, not the whole project history — this is
+// what makes the panel open showing only the 10 most recent messages, and
+// what makes Chat.NextCursor (and therefore the "show more" control) appear
+// at all for a project with more than 10 messages.
+func TestBoardChat_InitialLoadRequestsChatInitialLimit(t *testing.T) {
+	svc := &chatKeyLinkService{existingKeys: map[string]bool{}}
+	w, sess := newChatKeyLinkTestWeb(t, svc)
+	rw := do(w, "GET", "/p/BMB", nil, sessionCookie(sess))
+	if rw.Code != http.StatusOK {
+		t.Fatalf("GET /p/BMB = %d, want 200", rw.Code)
+	}
+	if svc.lastChatListIn.Limit != chatInitialLimit {
+		t.Fatalf("ChatList called with Limit = %d, want %d", svc.lastChatListIn.Limit, chatInitialLimit)
+	}
+	if svc.lastChatListIn.ProjectKey != "BMB" {
+		t.Fatalf("ChatList called with ProjectKey = %q, want BMB", svc.lastChatListIn.ProjectKey)
 	}
 }

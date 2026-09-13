@@ -41,7 +41,9 @@ func TestChatPanel_RendersMessagesWithAuthorsAndTimes(t *testing.T) {
 	for _, want := range []string{
 		"agent-alpha", "agent-beta",
 		"investigating the flaky test", "found the root cause",
-		"1m ago", "just now",
+		// KANB-25 item E: absolute HH:MM, not a relative age — both fixture
+		// messages fall on the same calendar day as chatFixtureNow.
+		"11:59", "12:00",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("panel is missing %q", want)
@@ -58,13 +60,13 @@ func TestChatPanel_RendersMessagesWithAuthorsAndTimes(t *testing.T) {
 	}
 }
 
-// TestChatFeed_NewestLastAtBottom pins the feed order: the newest message is
-// the LAST one rendered, like a chat window — the owner's eye rests at the
-// bottom of the panel, and that is where a new thought must land. app.js
-// autoscrolls the panel to its bottom (see the "ai thoughts panel" section
-// of app.js), which only reads right if the newest entry is actually last
-// in the DOM.
-func TestChatFeed_NewestLastAtBottom(t *testing.T) {
+// TestChatFeed_NewestFirstAtTop pins the feed order after KANB-23 reversed
+// it: the newest message is the FIRST one rendered — the owner asked for the
+// most current thought at the top, not the bottom. This REPLACES the old
+// TestChatFeed_NewestLastAtBottom, which pinned the opposite (and now
+// obsolete) order; it is a deliberate rewrite, not a weakened test — see
+// REPORT.md.
+func TestChatFeed_NewestFirstAtTop(t *testing.T) {
 	m := boardWithChat(view.NewChatPanel(chatFixtureMsgs, "", chatFixtureNow, nil), true)
 	html := renderProgress(t, "page-board", view.SamplePage("Test", "board", m))
 
@@ -73,8 +75,8 @@ func TestChatFeed_NewestLastAtBottom(t *testing.T) {
 	if newest < 0 || older < 0 {
 		t.Fatalf("messages missing from the panel (newest at %d, older at %d)", newest, older)
 	}
-	if newest < older {
-		t.Fatal("feed renders newest first; the newest thought must be last, at the bottom")
+	if newest > older {
+		t.Fatal("feed renders oldest first; the newest thought must be first, at the top")
 	}
 }
 
@@ -143,46 +145,50 @@ func TestChatMarkup_NoInlineStylesNoHandlers(t *testing.T) {
 	}
 }
 
-// TestChatEntriesOldestFirst_FullOrder pins the exact reordering
-// ChatEntriesOldestFirst performs (not just "first differs from last", the
-// way the render test above does): a ChatList page arrives newest-first and
-// must come out fully reversed, oldest first, with every field intact and
-// no message dropped or duplicated. Both the initial panel and the "older
-// messages" endpoint depend on this exact mapping.
-func TestChatEntriesOldestFirst_FullOrder(t *testing.T) {
+// TestChatEntriesNewestFirst_FullOrder pins the exact mapping
+// ChatEntriesNewestFirst performs (not just "first differs from last", the
+// way the render test above does): since KANB-23, a ChatList page arrives
+// newest-first and stays newest-first — no reordering — with every field
+// intact and no message dropped or duplicated. Both the initial panel and
+// the "older messages" endpoint depend on this exact mapping. This REPLACES
+// the old TestChatEntriesOldestFirst_FullOrder, which pinned the previous
+// reversal; see REPORT.md.
+func TestChatEntriesNewestFirst_FullOrder(t *testing.T) {
 	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
 	msgs := []domain.ChatMessage{
 		{ID: "m3", Author: "agent-c", Body: "third, newest", CreatedAt: now},
 		{ID: "m2", Author: "agent-b", Body: "second", CreatedAt: now.Add(-time.Minute)},
 		{ID: "m1", Author: "agent-a", Body: "first, oldest", CreatedAt: now.Add(-2 * time.Minute)},
 	}
-	entries := view.ChatEntriesOldestFirst(msgs, now, nil)
+	entries := view.ChatEntriesNewestFirst(msgs, now, nil)
 	if len(entries) != 3 {
 		t.Fatalf("got %d entries, want 3", len(entries))
 	}
-	wantAuthors := []string{"agent-a", "agent-b", "agent-c"}
-	wantBodies := []string{"first, oldest", "second", "third, newest"}
+	wantAuthors := []string{"agent-c", "agent-b", "agent-a"}
+	wantBodies := []string{"third, newest", "second", "first, oldest"}
 	for i, e := range entries {
 		if e.Author != wantAuthors[i] {
-			t.Errorf("entry %d: author = %q, want %q (order not fully reversed)", i, e.Author, wantAuthors[i])
+			t.Errorf("entry %d: author = %q, want %q (order must match the service's own newest-first order)", i, e.Author, wantAuthors[i])
 		}
 		if e.Text != wantBodies[i] {
 			t.Errorf("entry %d: text = %q, want %q", i, e.Text, wantBodies[i])
 		}
 	}
-	// The oldest message is 2 minutes behind now.
-	if entries[0].When != "2m ago" {
-		t.Errorf("entries[0].When = %q, want %q", entries[0].When, "2m ago")
+	// KANB-25 item E: When is now the absolute HH:MM, not a relative age.
+	// entries[0] (agent-c) was posted exactly at now; entries[2] (agent-a)
+	// two minutes earlier — both still the same calendar day as now.
+	if entries[0].When != "12:00" {
+		t.Errorf("entries[0].When = %q, want %q", entries[0].When, "12:00")
 	}
-	if entries[2].When != "just now" {
-		t.Errorf("entries[2].When = %q, want %q", entries[2].When, "just now")
+	if entries[2].When != "11:58" {
+		t.Errorf("entries[2].When = %q, want %q", entries[2].When, "11:58")
 	}
 }
 
-// TestChatEntriesOldestFirst_Empty: an empty page maps to an empty (not
+// TestChatEntriesNewestFirst_Empty: an empty page maps to an empty (not
 // nil-that-panics-on-range, not one-element) slice.
-func TestChatEntriesOldestFirst_Empty(t *testing.T) {
-	entries := view.ChatEntriesOldestFirst(nil, chatFixtureNow, nil)
+func TestChatEntriesNewestFirst_Empty(t *testing.T) {
+	entries := view.ChatEntriesNewestFirst(nil, chatFixtureNow, nil)
 	if len(entries) != 0 {
 		t.Fatalf("got %d entries for an empty page, want 0", len(entries))
 	}

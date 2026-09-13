@@ -37,33 +37,32 @@ func countOccurrences(s, substr string) int {
 	return strings.Count(s, substr)
 }
 
-// TestProgressBar_PaintsFloorTensPercents pins the bar's shape contract:
-// exactly ten squares at every percent, painted floor(percent/10) of them —
-// 0% paints none, 45% paints four (never five: no rounding up, no partial
-// fill), 100% paints all ten.
-func TestProgressBar_PaintsFloorTensPercents(t *testing.T) {
-	cases := []struct {
-		percent int
-		filled  int
-	}{
-		{0, 0},
-		{45, 4},
-		{100, 10},
-	}
-	for _, tc := range cases {
+// TestProgressBar_PaintsFloorStepPercents pins the bar's shape contract:
+// exactly view.ProgressSquares cells at every percent, painted
+// floor(percent * cells / 100) of them — 0% paints none, 45% paints nine of
+// twenty (never ten: no rounding up, no partial fill), 100% paints all.
+//
+// The counts below are derived from view.ProgressSquares rather than written
+// out, because the owner has already changed that number once (ten cells at a
+// 10% step became twenty at 5%) and a hand-written count silently pins the
+// old decision instead of the rule.
+func TestProgressBar_PaintsFloorStepPercents(t *testing.T) {
+	cells := view.ProgressSquares
+	for _, percent := range []int{0, 45, 100} {
+		filled := percent * cells / 100
 		html := renderProgress(t, "progress-bar", map[string]any{
-			"Progress": view.NewAssessedProgress(percentPtr(tc.percent), 3, nil, ""),
+			"Progress": view.NewAssessedProgress(percentPtr(percent), 3, nil, ""),
 		})
-		if total := countOccurrences(html, "<i"); total != 10 {
-			t.Fatalf("percent %d: %d squares rendered, want exactly 10", tc.percent, total)
+		if total := countOccurrences(html, "<i"); total != cells {
+			t.Fatalf("percent %d: %d cells rendered, want exactly %d", percent, total, cells)
 		}
-		if painted := countOccurrences(html, `<i class="f">`); painted != tc.filled {
-			t.Fatalf("percent %d: %d squares painted, want %d (floor(percent/10))", tc.percent, painted, tc.filled)
+		if painted := countOccurrences(html, `<i class="f">`); painted != filled {
+			t.Fatalf("percent %d: %d cells painted, want %d (floor of the step)", percent, painted, filled)
 		}
-		if !strings.Contains(html, `data-filled="`+strconv.Itoa(tc.filled)+`"`) {
-			t.Fatalf("percent %d: markup does not carry data-filled=%d: %s", tc.percent, tc.filled, html)
+		if !strings.Contains(html, `data-filled="`+strconv.Itoa(filled)+`"`) {
+			t.Fatalf("percent %d: markup does not carry data-filled=%d: %s", percent, filled, html)
 		}
-		if !strings.Contains(html, "45%") && tc.percent == 45 {
+		if percent == 45 && !strings.Contains(html, "45%") {
 			t.Fatalf("percent 45: label missing: %s", html)
 		}
 	}
@@ -138,10 +137,16 @@ func TestProjectHeader_ShowsBothLabelledMetrics(t *testing.T) {
 	if !strings.Contains(html, "50% · 2/4 tasks") {
 		t.Fatalf("automatic metric value/label missing: %s", html)
 	}
-	// The two bars must actually differ: manual 30% paints 3 squares,
-	// automatic 50% paints 5.
-	if !strings.Contains(html, `data-filled="3"`) || !strings.Contains(html, `data-filled="5"`) {
-		t.Fatalf("header bars do not carry distinct fill counts: %s", html)
+	// The two bars must actually differ. The counts come from the cell count
+	// rather than being written out: 30% and 50% paint different numbers of
+	// cells at any step, and hard-coding them would pin one particular
+	// ProgressSquares value instead of the invariant being tested.
+	manualFilled := 30 * view.ProgressSquares / 100
+	autoFilled := 50 * view.ProgressSquares / 100
+	if !strings.Contains(html, `data-filled="`+strconv.Itoa(manualFilled)+`"`) ||
+		!strings.Contains(html, `data-filled="`+strconv.Itoa(autoFilled)+`"`) {
+		t.Fatalf("header bars do not carry distinct fill counts (%d and %d): %s",
+			manualFilled, autoFilled, html)
 	}
 
 	// Neither metric renders when nobody measured it: an empty-project board

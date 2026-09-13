@@ -308,30 +308,6 @@
     }
   }
 
-  // appendNewChatEntries is the thoughts-feed's own swap strategy — never a
-  // blind innerHTML replace like the generic path below. fresh is the
-  // freshly fetched document's counterpart of the live <ol>; every entry in
-  // it not already present (matched by data-chat-id, the message's own,
-  // stable id) is handed to appendChatEntry ONE AT A TIME, in order, so each
-  // one gets the real append-then-follow-or-mark behaviour that function
-  // implements instead of a wholesale re-render that would reset scroll and
-  // re-trigger every entry as "new".
-  function appendNewChatEntries(fresh) {
-    var feed = chatFeedEl();
-    if (!feed) return;
-    var known = {};
-    var existing = feed.querySelectorAll('[data-chat-id]');
-    for (var i = 0; i < existing.length; i++) {
-      known[existing[i].getAttribute('data-chat-id')] = true;
-    }
-    var incoming = fresh.querySelectorAll('[data-chat-id]');
-    for (var j = 0; j < incoming.length; j++) {
-      var id = incoming[j].getAttribute('data-chat-id');
-      if (!id || known[id]) continue;
-      appendChatEntry(document.importNode(incoming[j], true));
-    }
-  }
-
   function refreshLiveRegions() {
     if (live.inFlight || live.dragging) return;
     var regions = liveRegions();
@@ -933,51 +909,27 @@
 
   // -- 7. ai thoughts panel -----------------------------------------------
   //
-  // The panel is a chat window, not a feed: newest message at the bottom
-  // (the server now renders it that way — see view.ChatEntriesOldestFirst),
-  // autoscroll follows the bottom only while the owner is already there,
-  // and scrolling to the top loads older history from the server.
+  // KANB-23 reversed a previously deliberate decision: the panel used to be
+  // a chat window with the newest message at the BOTTOM. The owner now wants
+  // the newest message at the TOP instead. The server already renders that
+  // order (view.ChatEntriesNewestFirst); a live SSE arrival is inserted at
+  // the top of the feed here to match it, preserving fresh's own
+  // newest-first order when more than one arrived since the last refresh.
+  //
+  // The panel has NO scroll region of its own — a later owner instruction
+  // dropped that entirely ("no scrolling in Thoughts, answers stack, the
+  // PAGE scrolls"): the panel simply grows taller with its content. That
+  // means there is no "is the reader still at the edge" state to track, no
+  // autoscroll-on-arrival, and no "new thoughts" marker to raise when the
+  // reader has scrolled away — none of that exists any more. What keeps the
+  // panel a sane size instead is KANB-24's show-more/hide-all-history
+  // (section 7b below), which also replaced the panel's old
+  // scroll-triggered infinite pagination with explicit controls to click.
 
   var CHAT_STORAGE_KEY = 'kanban.chatPanel';
-  // A few pixels of slack: browsers rarely land scrollTop at the exact
-  // mathematical bottom (sub-pixel zoom, momentum scrolling), so an exact
-  // equality check would flash the "new thoughts" marker on messages the
-  // owner is already looking at.
-  var CHAT_BOTTOM_TOLERANCE_PX = 6;
-  // Loading older messages starts a little before the physical top so the
-  // request is in flight before the owner's eye reaches the edge.
-  var CHAT_LOAD_MORE_THRESHOLD_PX = 48;
 
   function chatFeedEl() {
     return document.querySelector('[data-chat-feed]');
-  }
-
-  function chatMarkerEl() {
-    return document.querySelector('[data-chat-new-marker]');
-  }
-
-  // isChatPinnedToBottom reports whether the feed's scroll position is
-  // (within tolerance) at its bottom edge. A feed with no overflow at all
-  // (a short list, or not measurable while the panel is hidden) counts as
-  // pinned — there is nothing to scroll past.
-  function isChatPinnedToBottom(feed) {
-    if (!feed) return true;
-    var distance = feed.scrollHeight - feed.scrollTop - feed.clientHeight;
-    return distance <= CHAT_BOTTOM_TOLERANCE_PX;
-  }
-
-  function scrollChatToBottom(feed) {
-    if (feed) feed.scrollTop = feed.scrollHeight;
-  }
-
-  function showChatNewMarker() {
-    var marker = chatMarkerEl();
-    if (marker) marker.hidden = false;
-  }
-
-  function hideChatNewMarker() {
-    var marker = chatMarkerEl();
-    if (marker) marker.hidden = true;
   }
 
   // revealChatFeed un-hides the feed <ol> (and hides the "No thoughts yet"
@@ -991,73 +943,46 @@
     if (empty && !empty.hidden) empty.hidden = true;
   }
 
-  // appendChatEntry is the single path anything that adds a message to the
-  // live end of the feed goes through — SSE arrival (KANB-12) and, above,
-  // the initial reveal of a feed that started empty. It appends the node,
-  // then either follows it to the bottom — if the owner was already there —
-  // or leaves their scroll position alone and raises the unobtrusive marker
-  // instead.
-  function appendChatEntry(li) {
-    var feed = chatFeedEl();
-    if (!feed || !li) return;
-    revealChatFeed(feed);
-    var pinned = isChatPinnedToBottom(feed);
-    feed.appendChild(li);
-    if (pinned) {
-      scrollChatToBottom(feed);
-    } else {
-      showChatNewMarker();
+  // insertChatEntriesAtTop inserts one or more freshly-arrived <li> nodes at
+  // the very top of the feed, preserving their relative order. nodes must
+  // already be newest-first (matching the freshly fetched document's own
+  // order); inserting each one against the SAME reference node — the feed's
+  // first child from before any of them were inserted — is what keeps a
+  // batch of several new entries in that same newest-first order, rather
+  // than reversed by N separate "insert right before whatever is now first"
+  // calls.
+  function insertChatEntriesAtTop(feed, nodes) {
+    var ref = feed.firstChild;
+    for (var i = 0; i < nodes.length; i++) {
+      feed.insertBefore(nodes[i], ref);
     }
   }
 
-  var chatOlderCursor = '';
-  var chatOlderInFlight = false;
-
-  function chatProjectKey() {
-    var split = document.querySelector('[data-chat-split]');
-    return split ? split.getAttribute('data-chat-project') || '' : '';
-  }
-
-  // loadOlderChatMessages fetches one older page from GET
-  // /p/{key}/chat/older?before=<cursor> and prepends it above the feed's
-  // current first entry. The cursor is keyset pagination (see
-  // domain.ChatCursor / service.ChatListInput.Before): the server's query is
-  // a strict "older than this exact point", so re-requesting it can neither
-  // duplicate nor skip a message at the page boundary.
-  //
-  // Scroll position must not jump: the container's scrollTop is nudged by
-  // exactly the height the new content added, the same technique any
-  // prepend-above-the-viewport list uses. The response's
-  // X-Chat-Next-Cursor header becomes the next call's cursor; an empty
-  // header (or an empty body — belt and braces, both mean the same thing)
-  // clears the stored cursor, and the guard at the top of this function
-  // then refuses to ask again.
-  function loadOlderChatMessages() {
+  // appendNewChatEntries is the thoughts-feed's own swap strategy — never a
+  // blind innerHTML replace like the generic path below. fresh is the
+  // freshly fetched document's counterpart of the live <ol>; every entry in
+  // it not already present (matched by data-chat-id, the message's own,
+  // stable id) is genuinely new and gets inserted as one block at the top,
+  // in fresh's own newest-first order. There is no scroll position to
+  // preserve or follow here — see this section's header comment.
+  function appendNewChatEntries(fresh) {
     var feed = chatFeedEl();
-    if (!feed || chatOlderInFlight || !chatOlderCursor) return;
-    var key = chatProjectKey();
-    if (!key) return;
-    chatOlderInFlight = true;
-    var url = '/p/' + encodeURIComponent(key) + '/chat/older?before=' + encodeURIComponent(chatOlderCursor);
-    fetch(url, { credentials: 'same-origin', headers: { 'Accept': 'text/html' } })
-      .then(function (r) {
-        if (!r.ok) throw new Error('status ' + r.status);
-        chatOlderCursor = r.headers.get('X-Chat-Next-Cursor') || '';
-        return r.text();
-      })
-      .then(function (html) {
-        if (!html) return;
-        var beforeHeight = feed.scrollHeight;
-        var beforeTop = feed.scrollTop;
-        feed.insertAdjacentHTML('afterbegin', html);
-        feed.scrollTop = beforeTop + (feed.scrollHeight - beforeHeight);
-      })
-      .catch(function () { /* a failed page is not worth a toast; the next scroll retries with the same cursor */ })
-      .then(function () { chatOlderInFlight = false; });
-  }
-
-  function onChatFeedScroll(e) {
-    if (e.currentTarget.scrollTop <= CHAT_LOAD_MORE_THRESHOLD_PX) loadOlderChatMessages();
+    if (!feed) return;
+    var known = {};
+    var existing = feed.querySelectorAll('[data-chat-id]');
+    for (var i = 0; i < existing.length; i++) {
+      known[existing[i].getAttribute('data-chat-id')] = true;
+    }
+    var incoming = fresh.querySelectorAll('[data-chat-id]');
+    var nodes = [];
+    for (var j = 0; j < incoming.length; j++) {
+      var id = incoming[j].getAttribute('data-chat-id');
+      if (!id || known[id]) continue;
+      nodes.push(document.importNode(incoming[j], true));
+    }
+    if (nodes.length === 0) return;
+    revealChatFeed(feed);
+    insertChatEntriesAtTop(feed, nodes);
   }
 
   function setChatOpen(open) {
@@ -1067,35 +992,26 @@
     if (!split || !panel || !btn) return;
     split.classList.toggle('is-open', open);
     panel.hidden = !open;
+    var splitter = document.querySelector('[data-chat-splitter]');
+    if (splitter) splitter.hidden = !open;
     btn.setAttribute('aria-expanded', open ? 'true' : 'false');
     // Persistence is best effort: private mode or a blocked quota must not
     // break the toggle, it only means the state is not remembered.
     try { localStorage.setItem(CHAT_STORAGE_KEY, open ? 'open' : 'closed'); } catch (e) { /* ignore */ }
-    // A hidden panel (display: none) cannot report a real scrollHeight, so
-    // "first render" of the feed is really "the first time it becomes
-    // visible" — whether that is right now (persisted open) or later, the
-    // moment the owner clicks the toggle. Either way the newest message
-    // must be there waiting, with no scrolling required.
-    if (open) scrollChatToBottom(chatFeedEl());
   }
 
-  function initChatPanel() {
-    var btn = document.querySelector('[data-chat-toggle]');
-    if (!btn) return;
-    var cursorEl = document.querySelector('[data-chat-next-cursor]');
-    chatOlderCursor = cursorEl ? cursorEl.getAttribute('data-chat-next-cursor') || '' : '';
-    var feed = chatFeedEl();
-    if (feed) feed.addEventListener('scroll', onChatFeedScroll);
-    var marker = chatMarkerEl();
-    if (marker) {
-      marker.addEventListener('click', function () {
-        scrollChatToBottom(feed);
-        hideChatNewMarker();
-      });
-    }
-    var saved = null;
-    try { saved = localStorage.getItem(CHAT_STORAGE_KEY); } catch (e) { /* ignore */ }
-    setChatOpen(saved === 'open');
+  // initChatRefresh wires KANB-22's refresh icon in the panel header
+  // (data-chat-refresh): it reuses refreshLiveRegions() verbatim — the exact
+  // fetch-and-swap the SSE handler already triggers on every event, and the
+  // same one the "Update" link (data-live-refresh) runs — rather than a
+  // second, bespoke "just refetch the chat" mechanism.
+  function initChatRefresh() {
+    document.addEventListener('click', function (e) {
+      var btn = e.target.closest && e.target.closest('[data-chat-refresh]');
+      if (!btn) return;
+      e.preventDefault();
+      refreshLiveRegions();
+    });
   }
 
   document.addEventListener('click', function (e) {
@@ -1105,6 +1021,277 @@
     if (!split) return;
     setChatOpen(!split.classList.contains('is-open'));
   });
+
+  // -- 7b. ai thoughts panel: show more / hide all history (KANB-24) --------
+  //
+  // The panel opens with only the chatInitialLimit (10, mirrored from
+  // pages.go) most recent messages — this, not scrolling (there is none;
+  // see section 7's header comment), is what keeps the panel a reasonable
+  // size. "Show more" pages in another 10 via the same GET
+  // /p/{key}/chat/older route the panel's old scroll-triggered pagination
+  // used to call — appended below the feed's current last entry, since
+  // older history lives further down, not above. "Hide all history"
+  // collapses back to the most recent chatInitialLimit without losing
+  // anything that arrived over SSE while expanded (see hideAllChatHistory's
+  // own comment for why that falls out of newest-first ordering for free).
+
+  var CHAT_HISTORY_PAGE_SIZE = 10; // mirrors chatInitialLimit in pages.go
+
+  var chatOlderCursor = '';    // the cursor for the NEXT "show more" page
+  var chatInitialCursor = '';  // the FIRST page's cursor, cached so "hide all
+                                // history" can rewind to the right boundary
+  var chatOlderInFlight = false;
+  var chatExtraLoaded = 0;     // entries appended beyond the initial page
+
+  function chatProjectKey() {
+    var split = document.querySelector('[data-chat-split]');
+    return split ? split.getAttribute('data-chat-project') || '' : '';
+  }
+
+  function chatShowMoreBtn() {
+    return document.querySelector('[data-chat-show-more]');
+  }
+
+  function chatHideHistoryBtn() {
+    return document.querySelector('[data-chat-hide-history]');
+  }
+
+  // updateChatHistoryControls shows "show more" only while a next cursor is
+  // left to page through, and reveals "hide all history" only once a "show
+  // more" click has actually grown the feed past the initial page — nothing
+  // to collapse back to before that.
+  function updateChatHistoryControls() {
+    var more = chatShowMoreBtn();
+    if (more) more.hidden = !chatOlderCursor;
+    var hide = chatHideHistoryBtn();
+    if (hide) hide.hidden = chatExtraLoaded <= 0;
+  }
+
+  // loadOlderChatMessages fetches one older page from GET
+  // /p/{key}/chat/older?before=<cursor>&limit=10 and appends it below the
+  // feed's current last entry — the older messages "show more" reveals. The
+  // cursor is keyset pagination (see domain.ChatCursor /
+  // service.ChatListInput.Before): the server's query is a strict "older
+  // than this exact point", so re-requesting it can neither duplicate nor
+  // skip a message at the page boundary. The response's X-Chat-Next-Cursor
+  // header becomes the next call's cursor; an empty header (or an empty
+  // body — belt and braces, both mean the same thing) clears it, which is
+  // also updateChatHistoryControls's signal to hide "show more" for good.
+  function loadOlderChatMessages() {
+    var feed = chatFeedEl();
+    if (!feed || chatOlderInFlight || !chatOlderCursor) return;
+    var key = chatProjectKey();
+    if (!key) return;
+    chatOlderInFlight = true;
+    var url = '/p/' + encodeURIComponent(key) + '/chat/older' +
+      '?before=' + encodeURIComponent(chatOlderCursor) +
+      '&limit=' + CHAT_HISTORY_PAGE_SIZE;
+    fetch(url, { credentials: 'same-origin', headers: { 'Accept': 'text/html' } })
+      .then(function (r) {
+        if (!r.ok) throw new Error('status ' + r.status);
+        chatOlderCursor = r.headers.get('X-Chat-Next-Cursor') || '';
+        return r.text();
+      })
+      .then(function (html) {
+        if (html) {
+          var before = feed.querySelectorAll('[data-chat-id]').length;
+          feed.insertAdjacentHTML('beforeend', html);
+          var after = feed.querySelectorAll('[data-chat-id]').length;
+          chatExtraLoaded += Math.max(0, after - before);
+        }
+        updateChatHistoryControls();
+      })
+      .catch(function () { /* a failed page is not worth a toast; the next click retries with the same cursor */ })
+      .then(function () { chatOlderInFlight = false; });
+  }
+
+  // hideAllChatHistory collapses the feed back to its CHAT_HISTORY_PAGE_SIZE
+  // most recent messages. Newest-first order (KANB-23) means "most recent"
+  // is simply "the first N <li>s currently in the DOM" — which already
+  // includes any message that arrived over SSE while the history was
+  // expanded, since a live arrival is always inserted at the very top (see
+  // appendNewChatEntries): nothing that arrived while expanded is lost.
+  // Rewinding chatOlderCursor to chatInitialCursor (captured once, from the
+  // server's own first page, in initChatPanel) rather than leaving it
+  // wherever paging had advanced to is what lets a later "show more" resume
+  // from the correct boundary instead of silently skipping everything just
+  // hidden.
+  function hideAllChatHistory() {
+    var feed = chatFeedEl();
+    if (!feed) return;
+    var entries = feed.querySelectorAll('[data-chat-id]');
+    for (var i = entries.length - 1; i >= CHAT_HISTORY_PAGE_SIZE; i--) {
+      feed.removeChild(entries[i]);
+    }
+    chatExtraLoaded = 0;
+    chatOlderCursor = chatInitialCursor;
+    updateChatHistoryControls();
+  }
+
+  function initChatHistoryControls() {
+    var more = chatShowMoreBtn();
+    if (more) more.addEventListener('click', loadOlderChatMessages);
+    var hide = chatHideHistoryBtn();
+    if (hide) hide.addEventListener('click', hideAllChatHistory);
+  }
+
+  function initChatPanel() {
+    var btn = document.querySelector('[data-chat-toggle]');
+    if (!btn) return;
+    var cursorEl = document.querySelector('[data-chat-next-cursor]');
+    chatOlderCursor = cursorEl ? cursorEl.getAttribute('data-chat-next-cursor') || '' : '';
+    chatInitialCursor = chatOlderCursor;
+    initChatHistoryControls();
+    var saved = null;
+    try { saved = localStorage.getItem(CHAT_STORAGE_KEY); } catch (e) { /* ignore */ }
+    setChatOpen(saved === 'open');
+  }
+
+  // -- 7c. ai thoughts panel: draggable / keyboard-resizable splitter -------
+  //
+  // KANB-25 D1: a hairline handle between the panel and the board the owner
+  // can drag (or, once it has focus, resize with the left/right arrow keys)
+  // to change how much width the panel takes. The width lives as a CSS
+  // custom property (--chat-panel-w) on .board-split, which app.css's
+  // grid-template-columns reads for .chat-panel's column — app.js never
+  // touches .chat-panel's width directly, so the panel and the splitter can
+  // never disagree about the current value.
+
+  var CHAT_WIDTH_STORAGE_KEY = 'kanban.chatPanelWidth';
+  var CHAT_WIDTH_MIN = 200;     // px — narrower than this stops being legible
+  var CHAT_WIDTH_MAX = 480;     // px — wide enough for a long author + time line, no wider
+  var CHAT_WIDTH_DEFAULT = 288; // px — the pre-KANB-25 fixed width (18rem at the 16px root)
+  var CHAT_WIDTH_STEP = 16;     // px moved per arrow-key press
+
+  function clampChatWidth(px) {
+    if (typeof px !== 'number' || isNaN(px)) return CHAT_WIDTH_DEFAULT;
+    return Math.min(CHAT_WIDTH_MAX, Math.max(CHAT_WIDTH_MIN, Math.round(px)));
+  }
+
+  function savedChatWidth() {
+    try {
+      var v = parseInt(localStorage.getItem(CHAT_WIDTH_STORAGE_KEY), 10);
+      if (!isNaN(v)) return clampChatWidth(v);
+    } catch (e) { /* private mode, blocked storage */ }
+    return CHAT_WIDTH_DEFAULT;
+  }
+
+  function applyChatWidth(px) {
+    var split = document.querySelector('[data-chat-split]');
+    var splitter = document.querySelector('[data-chat-splitter]');
+    if (split) split.style.setProperty('--chat-panel-w', px + 'px');
+    if (splitter) splitter.setAttribute('aria-valuenow', String(px));
+  }
+
+  function setChatWidth(px) {
+    var clamped = clampChatWidth(px);
+    applyChatWidth(clamped);
+    // Persistence is best effort, same rule as everywhere else in this
+    // file: private mode or a blocked quota must not break resizing, only
+    // the memory of the chosen width.
+    try { localStorage.setItem(CHAT_WIDTH_STORAGE_KEY, String(clamped)); } catch (e) { /* ignore */ }
+    return clamped;
+  }
+
+  function currentChatWidth(splitter) {
+    return clampChatWidth(parseInt(splitter.getAttribute('aria-valuenow'), 10));
+  }
+
+  function initChatSplitterDrag(splitter) {
+    var dragging = false;
+    var startX = 0;
+    var startWidth = CHAT_WIDTH_DEFAULT;
+
+    function pointerX(e) {
+      return (e.touches && e.touches.length > 0) ? e.touches[0].clientX : e.clientX;
+    }
+
+    function onMove(e) {
+      if (!dragging) return;
+      setChatWidth(startWidth + (pointerX(e) - startX));
+    }
+
+    function onEnd() {
+      if (!dragging) return;
+      dragging = false;
+      document.body.style.userSelect = '';
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onEnd);
+      document.removeEventListener('touchmove', onMove);
+      document.removeEventListener('touchend', onEnd);
+    }
+
+    function onStart(e) {
+      dragging = true;
+      startX = pointerX(e);
+      startWidth = currentChatWidth(splitter);
+      document.body.style.userSelect = 'none';
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onEnd);
+      document.addEventListener('touchmove', onMove);
+      document.addEventListener('touchend', onEnd);
+    }
+
+    splitter.addEventListener('mousedown', function (e) { e.preventDefault(); onStart(e); });
+    splitter.addEventListener('touchstart', function (e) {
+      if (!e.touches || e.touches.length === 0) return;
+      onStart(e);
+    });
+    splitter.addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowRight' || e.key === 'Right') {
+        e.preventDefault();
+        setChatWidth(currentChatWidth(splitter) + CHAT_WIDTH_STEP);
+      } else if (e.key === 'ArrowLeft' || e.key === 'Left') {
+        e.preventDefault();
+        setChatWidth(currentChatWidth(splitter) - CHAT_WIDTH_STEP);
+      }
+    });
+  }
+
+  function initChatSplitter() {
+    var splitter = document.querySelector('[data-chat-splitter]');
+    if (!splitter) return;
+    applyChatWidth(savedChatWidth());
+    initChatSplitterDrag(splitter);
+  }
+
+  // -- 7d. board full-width toggle (KANB-25 D2) -----------------------------
+  //
+  // A header toggle that drops .container's centering max-width (app.css)
+  // so the board can use the full window width instead of sitting centered
+  // on the page. Persisted the same way the theme toggle already is: an
+  // attribute on <html> (data-board-wide), applied before first paint so
+  // there is no flash of the layout the owner did not choose.
+
+  var BOARD_WIDE_STORAGE_KEY = 'kanban.boardWide';
+
+  function savedBoardWide() {
+    try { return localStorage.getItem(BOARD_WIDE_STORAGE_KEY) === '1'; }
+    catch (e) { return false; }
+  }
+
+  function applyBoardWide(wide) {
+    if (wide) document.documentElement.setAttribute('data-board-wide', 'true');
+    else document.documentElement.removeAttribute('data-board-wide');
+    var btns = document.querySelectorAll('[data-board-wide-toggle]');
+    for (var i = 0; i < btns.length; i++) {
+      btns[i].setAttribute('aria-pressed', wide ? 'true' : 'false');
+    }
+  }
+
+  // Applied at parse time, same reasoning as applyTheme near the top of this
+  // file: avoid a flash of the layout the owner did not choose.
+  applyBoardWide(savedBoardWide());
+
+  function initBoardWide() {
+    document.addEventListener('click', function (e) {
+      var btn = e.target.closest && e.target.closest('[data-board-wide-toggle]');
+      if (!btn) return;
+      var next = document.documentElement.getAttribute('data-board-wide') !== 'true';
+      try { localStorage.setItem(BOARD_WIDE_STORAGE_KEY, next ? '1' : '0'); } catch (err) { /* ignore */ }
+      applyBoardWide(next);
+    });
+  }
 
   // -- 8. progress track delete --------------------------------------------
   //
@@ -1350,6 +1537,9 @@
     initAutoSubmit();
     initProjectCombobox();
     initChatPanel();
+    initChatRefresh();
+    initChatSplitter();
+    initBoardWide();
     initProgressTrackDelete();
     initProgressChart();
     initLiveRefresh();

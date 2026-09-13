@@ -25,6 +25,13 @@
        unchanged. */ -}}
   {{template "live-status" .}}
   <a class="btn btn-sm" href="{{boardURL .Project.Key}}" data-live-refresh>Update</a>
+  {{- /* KANB-25 D2: "on"/"off" is carried by aria-pressed, restored from
+       localStorage by app.js on load (best-effort — see initBoardWide) — the
+       server always renders the narrow, centered default. Widening removes
+       .container's max-width (see app.css); nothing here is board-specific
+       markup, so the same button works from any page that happens to render
+       it, but only the board header offers it, per the owner's request. */ -}}
+  <button type="button" class="btn btn-sm" data-board-wide-toggle aria-pressed="false" title="Show the board at full page width">Full width</button>
   {{if .HideDone}}<a class="btn btn-sm" href="?hide_done=0">Show done</a>
   {{else}}<a class="btn btn-sm" href="?hide_done=1">Hide done</a>{{end}}
   <a class="btn btn-sm" href="{{activityURL .Project.Key}}">Activity</a>
@@ -89,26 +96,60 @@
     <header class="chat-panel-head">
       <span class="caps">thoughts</span>
       <span class="spacer"></span>
+      {{- /* KANB-22: a refresh icon in the panel HEADER — outside .chat-feed,
+           so it is outside the one zone allowed colour (the greyscale test
+           fences exactly that zone) and must stay plain ink like every other
+           icon-btn. Clicking it re-runs refreshLiveRegions() — the exact
+           fetch-and-swap the SSE handler already triggers on every event —
+           rather than a second, bespoke "just reload the chat" fetch. */ -}}
+      <button type="button" class="icon-btn" data-chat-refresh aria-label="Refresh thoughts" title="Refresh thoughts">
+        <span aria-hidden="true">⟳</span>
+      </button>
       <span class="mono text-subtle">{{.Chat.Count}}</span>
     </header>
     {{- /* The <ol> always renders, even with zero entries: its id is the
          live-region target (see data-live-region="#chat-feed" above), and
-         app.js's appendChatEntry needs somewhere to land the project's very
-         first message the moment it arrives — a panel that started empty
-         must not need a reload just because it had nothing to show yet.
-         app.js reveals it (and hides the placeholder) the first time it
-         appends an entry. */ -}}
+         app.js's appendNewChatEntries needs somewhere to land the project's
+         very first message the moment it arrives — a panel that started
+         empty must not need a reload just because it had nothing to show
+         yet. app.js reveals it (and hides the placeholder) the first time
+         it appends an entry. KANB-23: entries render newest first now (see
+         view.ChatEntriesNewestFirst), a live arrival is inserted at the top.
+         The panel has no scroll region of its own (the owner does not want
+         one — see app.css's comment on .chat-feed), so there is no
+         autoscroll and no "new thoughts" marker: the panel just grows. */ -}}
     <ol class="chat-feed" id="chat-feed" data-chat-feed{{if not (hasAny .Chat.Entries)}} hidden{{end}}>
       {{range .Chat.Entries}}{{template "chat-entry" .}}{{end}}
     </ol>
     <p class="chat-empty text-subtle" data-chat-empty{{if hasAny .Chat.Entries}} hidden{{end}}>No thoughts yet. Agents post here with the <code>project_post</code> tool.</p>
-    {{- /* Unobtrusive "new messages" marker: hidden until app.js reveals it
-         (a message arrived while the owner had scrolled away from the
-         bottom). Clicking it scrolls to the bottom and hides it again —
-         wired by data-chat-new-marker, no inline handler. */ -}}
-    <button type="button" class="chat-new-marker" data-chat-new-marker hidden>New thoughts ↓</button>
-    {{if .Chat.NextCursor}}<span data-chat-next-cursor="{{.Chat.NextCursor}}" hidden></span>{{end}}
+    {{- /* KANB-24: "show more" / "hide all history". Only rendered when the
+         initial page did not already cover the whole feed (NextCursor set) —
+         a project with 10 or fewer messages has nothing to page through and
+         nothing worth collapsing. Both controls are wired in app.js
+         (data-chat-show-more / data-chat-hide-history) against the same
+         GET /p/{key}/chat/older route the old scroll-triggered pagination
+         used; "hide all history" starts hidden and app.js reveals it once a
+         "show more" click has actually grown the feed past the initial
+         chatInitialLimit. */ -}}
+    {{if .Chat.NextCursor}}
+    <div class="chat-history-controls" data-chat-history-controls>
+      <span data-chat-next-cursor="{{.Chat.NextCursor}}" hidden></span>
+      <button type="button" data-chat-show-more>Show more</button>
+      <button type="button" data-chat-hide-history hidden>Hide all history</button>
+    </div>
+    {{end}}
   </aside>
+  {{- /* KANB-25 D1: the draggable splitter. It only exists (and is only
+       reachable by keyboard) while the panel is open — hidden along with the
+       panel, in step with its `hidden` attribute above, since there is
+       nothing to resize against when the panel itself is not shown. app.js
+       reads/writes its width via a CSS custom property on .board-split
+       (--chat-panel-w) rather than inline width on the aside, so the panel
+       and the splitter never disagree about the current width. */ -}}
+  <div class="chat-splitter" data-chat-splitter role="separator" aria-orientation="vertical"
+       aria-controls="chat-panel" aria-label="Resize the thoughts panel"
+       aria-valuemin="200" aria-valuemax="480" aria-valuenow="288"
+       tabindex="0"{{if not .ChatOpen}} hidden{{end}}></div>
   {{end}}
   <div class="board-region">
     {{template "board-columns" (dict "Columns" .Columns "CSRF" $.CSRF)}}
@@ -133,10 +174,11 @@
 {{end}}
 
 {{- /* chat-entries is the response body of "GET /p/{key}/chat/older": a bare
-     run of chat-entry <li>s, oldest first, with no wrapping <ol> — the
-     caller already holds the real <ol> and inserts this straight above its
-     current first child with insertAdjacentHTML, which only accepts <li>
-     markup in that position. */ -}}
+     run of chat-entry <li>s, newest first within the page (KANB-23: the
+     panel's own order now), with no wrapping <ol> — the caller already holds
+     the real <ol> and inserts this straight below its current last child
+     with insertAdjacentHTML, which only accepts <li> markup in that
+     position. */ -}}
 {{define "chat-entries"}}{{range .}}{{template "chat-entry" .}}{{end}}{{end}}
 
 {{define "page-drawer"}}

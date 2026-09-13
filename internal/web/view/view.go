@@ -181,9 +181,15 @@ type ChatEntry struct {
 	// never user input and needs no escaping, but html/template escapes it
 	// like any other field anyway.
 	AuthorColor string
-	When        string // relative age ("12m ago"), the cards' convention
-	FullTime    string // RFC3339, carried for the hover title
-	Text        string
+	// When is the compact ABSOLUTE timestamp shown next to the message:
+	// hours:minutes for a message posted today, a date-qualified form for
+	// anything older (see chatEntryTime, which reuses chart.go's own
+	// formatChartTime rather than inventing a second "today vs older" rule).
+	// The owner asked for this in place of a relative age ("7h ago") because
+	// that is how they themselves timestamp notes.
+	When     string
+	FullTime string // RFC3339, carried for the hover title
+	Text     string
 	// TextHTML is Text with HTML escaped throughout and, on top of the
 	// escaped text, any mentioned task key that is a KNOWN key (see
 	// linkifyChatText / CandidateTaskKeys) turned into a link. It is the only
@@ -194,24 +200,28 @@ type ChatEntry struct {
 // ChatPanel is the project's "AI thoughts" side panel: the short messages
 // agents post as they work, roughly one every few minutes.
 //
-// Entries are oldest first, newest LAST — a chat window, not a feed. The
-// owner sits in front of this panel for hours; the eye rests at the bottom,
-// and that is where a new thought must arrive. app.js scrolls the panel to
-// its bottom on first render and keeps it pinned there as long as the owner
-// has not scrolled away (see the "ai thoughts panel" section of app.js), so
-// "newest last" and "newest visible without scrolling" are the same thing.
+// Entries are newest FIRST, oldest last (KANB-23 reversed the original "chat
+// window" convention: the owner wants the most current thought at the top,
+// not the bottom).
+//
+// The panel has no scroll region of its own: messages stack and the panel
+// grows, the page scrolls as a whole. That is why the newest entry being
+// first is the whole mechanism — there is no scroll position to manage, to
+// restore, or to follow. What keeps the panel a readable length instead is
+// the initial cap of chatInitialLimit entries with the rest behind "show
+// more" (KANB-24).
 type ChatPanel struct {
 	Entries    []ChatEntry
 	Count      int
 	NextCursor string // keyset cursor for older messages; empty when exhausted
 }
 
-// NewChatPanel maps one ChatList page onto the panel view. now formats the
-// per-entry relative ages. ChatList returns msgs newest first; NewChatPanel
-// reverses that into the panel's oldest-first display order via
-// ChatEntriesOldestFirst — the same helper the "older messages" endpoint
-// uses for its pages, so the two rendering paths cannot drift apart on
-// ordering.
+// NewChatPanel maps one ChatList page onto the panel view. now anchors the
+// per-entry absolute-time formatting (see chatEntryTime). ChatList already
+// returns msgs newest first, which is now also the panel's own display
+// order, so NewChatPanel maps fields via ChatEntriesNewestFirst without
+// reordering — the same helper the "older messages" endpoint uses for its
+// pages, so the two rendering paths cannot drift apart.
 //
 // knownKeys is the set of task keys (canonical uppercase form) that the
 // caller has already confirmed exist, for exactly the messages in this page
@@ -221,7 +231,7 @@ type ChatPanel struct {
 // stale or made-up key from ever becoming a broken link. A nil map is valid
 // and simply means no message body gets a link, which is safe.
 func NewChatPanel(msgs []domain.ChatMessage, nextCursor string, now time.Time, knownKeys map[string]struct{}) *ChatPanel {
-	entries := ChatEntriesOldestFirst(msgs, now, knownKeys)
+	entries := ChatEntriesNewestFirst(msgs, now, knownKeys)
 	return &ChatPanel{
 		Entries:    entries,
 		Count:      len(entries),
@@ -229,28 +239,45 @@ func NewChatPanel(msgs []domain.ChatMessage, nextCursor string, now time.Time, k
 	}
 }
 
-// ChatEntriesOldestFirst maps a ChatList page (newest first, the service's
-// own order) onto entries in display order: oldest first, newest last. It is
-// exported because two call sites need the exact same mapping and must never
-// disagree about it — the initial board render (via NewChatPanel) and the
-// "GET /p/{key}/chat/older" pagination endpoint, which renders a page of
-// older messages to prepend above the panel's current first entry.
+// ChatEntriesNewestFirst maps a ChatList page (newest first, the service's
+// own order) onto entries in display order — which, since KANB-23, is the
+// same order: newest first, oldest last. It used to reverse the page (see
+// git history / the old ChatEntriesOldestFirst name); it no longer needs to,
+// but stays its own function because two call sites need the exact same
+// field mapping and must never disagree about it — the initial board render
+// (via NewChatPanel) and the "GET /p/{key}/chat/older" pagination endpoint,
+// which renders one page of older messages to append below the panel's
+// current last entry.
 //
 // See NewChatPanel for what knownKeys means.
-func ChatEntriesOldestFirst(msgs []domain.ChatMessage, now time.Time, knownKeys map[string]struct{}) []ChatEntry {
+func ChatEntriesNewestFirst(msgs []domain.ChatMessage, now time.Time, knownKeys map[string]struct{}) []ChatEntry {
 	entries := make([]ChatEntry, len(msgs))
 	for i, m := range msgs {
-		entries[len(msgs)-1-i] = ChatEntry{
+		entries[i] = ChatEntry{
 			ID:          m.ID,
 			Author:      m.Author,
 			AuthorColor: authorColorClass(m.Author),
-			When:        relTime(m.CreatedAt, now),
+			When:        chatEntryTime(m.CreatedAt, now),
 			FullTime:    m.CreatedAt.Format(time.RFC3339),
 			Text:        m.Body,
 			TextHTML:    linkifyChatText(m.Body, knownKeys),
 		}
 	}
 	return entries
+}
+
+// chatEntryTime renders one chat message's compact ABSOLUTE timestamp: hours
+// and minutes for a message posted the same calendar day as now, or a
+// date-qualified form for anything older. This reuses chart.go's own
+// formatChartTime — the exact "today vs older" rule the progress-history
+// chart's own axis labels already use — rather than inventing a second
+// formatting rule for the same distinction (KANB-25 item E is explicit that
+// there must be only one). now is UTC (the store's own convention; see
+// internal/store/scan.go), and so is every CreatedAt this is called with, so
+// the calendar-day comparison never crosses a timezone boundary.
+func chatEntryTime(t, now time.Time) string {
+	sameDay := t.Year() == now.Year() && t.YearDay() == now.YearDay()
+	return formatChartTime(t, sameDay)
 }
 
 // authorColorClass maps an author name to one of 8 fixed chat-colour CSS

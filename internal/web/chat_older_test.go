@@ -86,12 +86,15 @@ func TestChatOlder_Unauthenticated(t *testing.T) {
 	}
 }
 
-// TestChatOlder_RendersOldestFirstWithNextCursorHeader is the core
-// contract: the fragment body holds the page's messages reordered oldest
-// first (matching the initial panel's own order), and the next page's
-// cursor rides in X-Chat-Next-Cursor, not in the body — the body is meant
-// to be inserted straight into an <ol>, which only tolerates <li> children.
-func TestChatOlder_RendersOldestFirstWithNextCursorHeader(t *testing.T) {
+// TestChatOlder_RendersNewestFirstWithNextCursorHeader is the core contract:
+// the fragment body holds the page's messages in the service's own
+// newest-first order (matching the panel's own order since KANB-23 dropped
+// the reversal), and the next page's cursor rides in X-Chat-Next-Cursor, not
+// in the body — the body is meant to be inserted straight into an <ol>,
+// which only tolerates <li> children. This REPLACES
+// TestChatOlder_RendersOldestFirstWithNextCursorHeader, which pinned the
+// pre-KANB-23 reversed order on the same fixture; see REPORT.md.
+func TestChatOlder_RendersNewestFirstWithNextCursorHeader(t *testing.T) {
 	now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
 	svc := &chatOlderStubService{
 		result: &service.ChatListResult{
@@ -121,8 +124,8 @@ func TestChatOlder_RendersOldestFirstWithNextCursorHeader(t *testing.T) {
 	if older < 0 || newer < 0 {
 		t.Fatalf("page missing a message: %s", body)
 	}
-	if older > newer {
-		t.Fatal("older-page fragment is not oldest-first")
+	if newer > older {
+		t.Fatal("older-page fragment is not newest-first")
 	}
 	// It is a bare run of <li>s, not a second <ol>.
 	if strings.Contains(body, "<ol") {
@@ -131,6 +134,56 @@ func TestChatOlder_RendersOldestFirstWithNextCursorHeader(t *testing.T) {
 	wantCursor := svc.result.Cursor
 	if got := rw.Header().Get("X-Chat-Next-Cursor"); got != wantCursor {
 		t.Fatalf("X-Chat-Next-Cursor = %q, want %q", got, wantCursor)
+	}
+}
+
+// TestChatOlder_LimitQueryParamForwardsToService pins KANB-24's addition: an
+// explicit ?limit= is parsed and forwarded verbatim as
+// service.ChatListInput.Limit — this is what lets app.js's "show more"
+// request exactly chatInitialLimit (10) messages per click.
+func TestChatOlder_LimitQueryParamForwardsToService(t *testing.T) {
+	svc := &chatOlderStubService{result: &service.ChatListResult{Messages: nil}}
+	w, sess := newChatOlderTestWeb(t, svc)
+	rw := do(w, "GET", "/p/BMB/chat/older?before=2026-09-12T12%3A00%3A00Z%2Fm1&limit=10", nil, sessionCookie(sess))
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200\n%s", rw.Code, rw.Body.String())
+	}
+	if svc.lastIn.Limit != 10 {
+		t.Fatalf("ChatList called with Limit = %d, want 10", svc.lastIn.Limit)
+	}
+}
+
+// TestChatOlder_OmittedLimitLeavesServiceDefault: no ?limit= at all must
+// forward Limit == 0 (service.ChatList's own "<=0 defaults to 50"), not some
+// substituted value — KANB-24 only ADDS an optional parameter, it must not
+// change this endpoint's behaviour for a caller that never sends it.
+func TestChatOlder_OmittedLimitLeavesServiceDefault(t *testing.T) {
+	svc := &chatOlderStubService{result: &service.ChatListResult{Messages: nil}}
+	w, sess := newChatOlderTestWeb(t, svc)
+	rw := do(w, "GET", "/p/BMB/chat/older?before=2026-09-12T12%3A00%3A00Z%2Fm1", nil, sessionCookie(sess))
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200\n%s", rw.Code, rw.Body.String())
+	}
+	if svc.lastIn.Limit != 0 {
+		t.Fatalf("ChatList called with Limit = %d, want 0 (service default) when limit= is omitted", svc.lastIn.Limit)
+	}
+}
+
+// TestChatOlder_InvalidLimitIsBadRequest: a non-numeric or non-positive
+// limit is refused before ever reaching the service, the same "fail loud,
+// not silently substitute a default" treatment the missing-before case
+// already gets.
+func TestChatOlder_InvalidLimitIsBadRequest(t *testing.T) {
+	for _, bad := range []string{"0", "-1", "abc"} {
+		svc := &chatOlderStubService{}
+		w, sess := newChatOlderTestWeb(t, svc)
+		rw := do(w, "GET", "/p/BMB/chat/older?before=2026-09-12T12%3A00%3A00Z%2Fm1&limit="+bad, nil, sessionCookie(sess))
+		if rw.Code != http.StatusBadRequest {
+			t.Fatalf("limit=%q: status = %d, want 400\n%s", bad, rw.Code, rw.Body.String())
+		}
+		if svc.calls != 0 {
+			t.Fatalf("limit=%q: ChatList called %d times, want 0: an invalid limit must not reach the service", bad, svc.calls)
+		}
 	}
 }
 

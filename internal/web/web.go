@@ -145,9 +145,11 @@ func (w *Web) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /{$}", w.handleOverview)
 	mux.HandleFunc("GET /p/{key}", w.handleBoard)
 	mux.HandleFunc("GET /p/{key}/activity", w.handleActivity)
-	// JS-driven fragment, not a page: the thoughts panel's upward
-	// pagination (scroll-to-top loads older chat history). See
-	// handleChatOlder's doc comment for the response shape.
+	// JS-driven fragment, not a page: the thoughts panel's pagination into
+	// older chat history, driven by the panel's "show more" link. The panel
+	// has no scroll region, so nothing loads from scrolling to an edge —
+	// only an explicit click. See handleChatOlder's doc comment for the
+	// response shape.
 	mux.HandleFunc("GET /p/{key}/chat/older", w.handleChatOlder)
 	// JS-driven fragment, not a page: a progress bar's history chart,
 	// fetched the first time it is clicked open. See handleProgressChart's

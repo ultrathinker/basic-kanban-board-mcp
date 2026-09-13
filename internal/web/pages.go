@@ -13,6 +13,13 @@ import (
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/web/view"
 )
 
+// chatInitialLimit is how many of the most recent chat messages the board
+// page's thoughts panel opens with (KANB-24: "10 last, the rest behind show
+// more"). It is also the page size app.js requests from /chat/older on every
+// "show more" click, so the panel always grows by the same round number the
+// owner asked for, whichever direction the messages entered the page.
+const chatInitialLimit = 10
+
 // knownChatTaskKeys resolves which of the task-key-shaped tokens mentioned in
 // one page of chat messages are real tasks, in exactly one batched call to
 // the service — never one call per message. This is the "which keys exist"
@@ -142,8 +149,17 @@ func (w *Web) handleBoard(rw http.ResponseWriter, r *http.Request) {
 	// The thoughts panel reads one ChatList page (newest first) — a single
 	// call for the whole feed, best-effort like the reads above: a failed
 	// chat read costs the panel, not the board.
+	//
+	// KANB-24: the panel opens showing only the 10 most recent messages, not
+	// every message the project has ever accumulated. That cap is enforced
+	// HERE, server-side, by asking ChatList for exactly 10 — not by fetching
+	// everything and slicing in the template or in app.js. ChatList already
+	// requests one extra row internally to detect "is there more" (see
+	// service.ChatList), so this single call also gives Chat.NextCursor,
+	// which is what makes the panel's "show more" control appear at all.
 	if chat, err := w.d.Service.ChatList(r.Context(), actorFor(tok), service.ChatListInput{
 		ProjectKey: key,
+		Limit:      chatInitialLimit,
 	}); err == nil {
 		known := knownChatTaskKeys(r.Context(), w.d.Service, actorFor(tok), chat.Messages)
 		model.Chat = view.NewChatPanel(chat.Messages, chat.Cursor, w.d.Now(), known)
@@ -155,9 +171,13 @@ func (w *Web) handleBoard(rw http.ResponseWriter, r *http.Request) {
 	w.render(rw, r, http.StatusOK, "page-board", page)
 }
 
-// handleChatOlder is "GET /p/{key}/chat/older?before=<cursor>": one older
-// page of the thoughts panel's chat feed, for the panel's upward pagination
-// (scrolling to the top loads more history).
+// handleChatOlder is "GET /p/{key}/chat/older?before=<cursor>[&limit=N]": one
+// older page of the thoughts panel's chat feed. It backs two client
+// behaviours that both reuse this same route rather than each growing their
+// own (KANB-23/KANB-24): the panel's "show more" control appends the next
+// chatInitialLimit-sized page below the feed's current last entry, and (were
+// it still wired) the old scroll-triggered pagination this replaced worked
+// the same way.
 //
 // It uses requireAPIAuth, not requireSessionPage: this is a JS-driven
 // fragment endpoint like /projects/search and the /fragments/* handlers, not
@@ -165,18 +185,24 @@ func (w *Web) handleBoard(rw http.ResponseWriter, r *http.Request) {
 // app.js to catch, not a redirect to /login.
 //
 // The response body is only the "chat-entries" fragment (bare <li> markup,
-// oldest first — the same order and the same shared "chat-entry" template
-// the initial panel render uses, via view.ChatEntriesOldestFirst), so
-// app.js can insert it verbatim above the panel's current first entry with
-// insertAdjacentHTML: an <ol> only tolerates <li> children in that
-// position, so the next cursor cannot also ride in the body. It travels in
-// the X-Chat-Next-Cursor response header instead (empty when history is
+// newest first within the page — the same order and the same shared
+// "chat-entry" template the initial panel render uses, via
+// view.ChatEntriesNewestFirst), so app.js can insert it verbatim with
+// insertAdjacentHTML: an <ol> only tolerates <li> children there, so the
+// next cursor cannot also ride in the body. It travels in the
+// X-Chat-Next-Cursor response header instead (empty when history is
 // exhausted, which is also the signal for app.js to stop asking).
 //
 // "before" is required and is service.ChatListInput's own cursor encoding
 // (domain.ChatCursor.String()); the caller (app.js) always has one because
 // the initial board render seeds it from ChatPanel.NextCursor, and this
 // handler's own response reseeds it for the next call.
+//
+// "limit" is optional and, when present, must be a positive integer — app.js
+// always passes chatInitialLimit (10) explicitly so a "show more" click grows
+// the panel by the same round number the initial render used. Omitting it
+// keeps this endpoint's pre-KANB-24 default (50 via service.ChatList) for any
+// other caller, so this is an additive change, not a behaviour break.
 func (w *Web) handleChatOlder(rw http.ResponseWriter, r *http.Request) {
 	tok, ok := w.requireAPIAuth(rw, r, domain.ScopeRead)
 	if !ok {
@@ -192,17 +218,27 @@ func (w *Web) handleChatOlder(rw http.ResponseWriter, r *http.Request) {
 		apiError(rw, domain.Invalid("before", "before is required", "Pass the panel's next-cursor value."))
 		return
 	}
+	limit := 0
+	if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+		n, convErr := strconv.Atoi(raw)
+		if convErr != nil || n <= 0 {
+			apiError(rw, domain.Invalid("limit", "limit must be a positive integer", "Omit it, or pass a positive integer."))
+			return
+		}
+		limit = n
+	}
 
 	result, err := w.d.Service.ChatList(r.Context(), actorFor(tok), service.ChatListInput{
 		ProjectKey: key,
 		Cursor:     before,
+		Limit:      limit,
 	})
 	if err != nil {
 		apiError(rw, err)
 		return
 	}
 	known := knownChatTaskKeys(r.Context(), w.d.Service, actorFor(tok), result.Messages)
-	entries := view.ChatEntriesOldestFirst(result.Messages, w.d.Now(), known)
+	entries := view.ChatEntriesNewestFirst(result.Messages, w.d.Now(), known)
 	rw.Header().Set("X-Chat-Next-Cursor", result.Cursor)
 	w.renderFragment(rw, r, http.StatusOK, "chat-entries", entries)
 }

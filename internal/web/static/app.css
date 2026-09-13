@@ -201,6 +201,11 @@ a.mark { text-decoration: none; }
 
 /* --- layout primitives --------------------------------------------------- */
 .container { width: 100%; max-width: 84rem; margin: 0 auto; padding: 0 1.25rem; }
+/* KANB-25 D2: the board-header "Full width" toggle drops the page's
+   centered max-width, the same html[data-*]-driven pattern the theme
+   toggle already uses (see applyTheme in app.js) so the choice is applied
+   before first paint, with no flash of the layout the owner did not pick. */
+html[data-board-wide="true"] .container { max-width: none; }
 .row { display: flex; align-items: center; gap: 0.6rem; }
 .row.wrap { flex-wrap: wrap; }
 .spacer { flex: 1 1 auto; }
@@ -828,12 +833,18 @@ select, .field input, .field textarea {
    same share — the whole board shrinks, no column is favoured, nothing
    scrolls horizontally and nothing is pushed off-screen. A column that
    would drop below its floor width wraps to the next row instead, which
-   keeps every column visible; see the numbers in the feature notes. The
-   panel itself is the fixed-ish left column. */
+   keeps every column visible; see the numbers in the feature notes.
+   KANB-25 D1: the panel's own column width is a CSS custom property,
+   declared with its default right here (18rem — the pre-KANB-25 fixed
+   width) so it renders sanely before any JS runs; app.js (initChatSplitter)
+   overrides it with an inline style once it applies a persisted or dragged
+   value, which always wins over this class-level default. The 6px middle
+   column is the splitter handle (see .chat-splitter below). */
 .board-split.is-open {
+  --chat-panel-w: 18rem;
   display: grid;
-  grid-template-columns: minmax(15rem, 20rem) minmax(0, 1fr);
-  gap: 1.25rem;
+  grid-template-columns: var(--chat-panel-w) 6px minmax(0, 1fr);
+  gap: 0.75rem;
   align-items: start;
 }
 .chat-panel {
@@ -841,11 +852,6 @@ select, .field input, .field textarea {
   background: var(--paper);
   display: flex;
   flex-direction: column;
-  max-height: calc(100vh - 9rem);
-  /* Anchors the "new thoughts" marker, which is positioned relative to the
-     whole panel rather than the scrolling feed so it stays put regardless
-     of where content is being prepended or appended inside .chat-feed. */
-  position: relative;
 }
 .chat-panel-head {
   display: flex;
@@ -854,16 +860,54 @@ select, .field input, .field textarea {
   padding: 0.5rem 0.75rem;
   border-bottom: 1px solid var(--rule);
 }
+/* The owner does not want the panel to scroll internally at all: no
+   max-height, no overflow-y — the feed simply grows as tall as its content
+   and the PAGE scrolls, the same as any other part of the board. Long
+   unbroken text (a URL, a hash, a path) must still never force a
+   horizontal scrollbar; see .chat-author/.chat-text's overflow-wrap below. */
 .chat-feed {
   list-style: none;
   margin: 0;
   padding: 0 0.75rem;
-  overflow-y: auto;
-  /* app.js prepends older pages and adjusts scrollTop itself by exactly the
-     height gained, so the browser's own scroll-anchoring must stay out of
-     the way — the two corrections stacking is what produces a visible
-     jump instead of a stable read position. */
-  overflow-anchor: none;
+}
+/* KANB-25 D1: the draggable/keyboard-resizable splitter between the panel
+   and the board. It carries no colour of its own — only a hairline that
+   darkens on hover/focus, same vocabulary as every other rule in this
+   file — and it stretches the full height of the grid row so it is
+   reachable anywhere along the panel, not just near the top. */
+.chat-splitter {
+  align-self: stretch;
+  background: var(--rule);
+  cursor: col-resize;
+}
+.chat-splitter:hover,
+.chat-splitter:focus-visible {
+  background: var(--rule-strong);
+  outline: none;
+}
+/* KANB-24: "show more" / "hide all history". Understated text links, not
+   buttons — the owner asked for a link, not a button — sitting in the same
+   quiet, greyscale vocabulary as .pager's links. */
+.chat-history-controls {
+  display: flex;
+  gap: 0.9rem;
+  padding: 0.5rem 0.75rem;
+  border-top: 1px solid var(--rule);
+}
+.chat-history-controls button {
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  font-size: var(--fs-2);
+  color: var(--ink-muted);
+  text-decoration: underline;
+  text-decoration-color: var(--rule-strong);
+  cursor: pointer;
+}
+.chat-history-controls button:hover {
+  color: var(--ink);
+  text-decoration-color: currentColor;
 }
 .chat-entry {
   padding: 0.5rem 0;
@@ -956,26 +1000,6 @@ select, .field input, .field textarea {
   white-space: pre-wrap;
 }
 .chat-empty { padding: 0.75rem; }
-/* The "new thoughts" marker: unobtrusive (a small tab, not a banner), the
-   same inverted-block treatment ".mark"/".wip.full" already use elsewhere
-   for "do not miss this" — paper on ink, square corners like the rest of
-   the portal, no colour. Hidden by default; app.js reveals it only when a
-   message arrives while the owner has scrolled away from the bottom. */
-.chat-new-marker {
-  position: absolute;
-  left: 50%;
-  bottom: 0.6rem;
-  transform: translateX(-50%);
-  border: 1px solid var(--rule-strong);
-  background: var(--invert-bg);
-  color: var(--invert-fg);
-  font-size: var(--fs-2);
-  font-weight: 600;
-  padding: 0.3rem 0.85rem;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.chat-new-marker:hover { opacity: 0.85; }
 /* With the panel eating width, a 15rem column floor would push late
    columns onto a second row on common screens; an 11rem floor keeps a
    four-column board on one row down to ~1100px of remaining board width
@@ -985,7 +1009,9 @@ select, .field input, .field textarea {
 }
 @media (max-width: 40rem) {
   .board-split.is-open { grid-template-columns: 1fr; }
-  .chat-panel { max-height: 40vh; }
+  /* The layout stacks (panel above board) instead of sitting side by side,
+     so there is nothing left for the splitter to resize between. */
+  .chat-splitter { display: none; }
 }
 /* --- progress forecast badge ----------------------------------------------
    Rides next to a summary progress metric (project header "assessed" and

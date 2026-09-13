@@ -12,6 +12,7 @@ import (
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/events"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/service"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/web/templates"
+	"github.com/ultrathinker/basic-kanban-board-mcp/internal/web/view"
 )
 
 // progressCountingService answers the board page's reads and counts them.
@@ -160,9 +161,14 @@ func TestBoardPage_ProgressReadsDoNotScale(t *testing.T) {
 	}
 
 	body := rw.Body.String()
-	// Cards actually carry their bars, painted from the batch data.
-	if !strings.Contains(body, `data-filled="4"`) {
-		t.Fatal("the 45% card did not paint 4 squares")
+	// Cards actually carry their bars, painted from the batch data. The count
+	// is derived from the cell count rather than written out: the owner has
+	// already changed that number once, and a literal here would pin the old
+	// decision instead of the behaviour under test (that the card paints at
+	// all, from batched data).
+	wantFilled := 45 * view.ProgressSquares / 100
+	if !strings.Contains(body, `data-filled="`+strconv.Itoa(wantFilled)+`"`) {
+		t.Fatalf("the 45%% card did not paint %d cells", wantFilled)
 	}
 	if !strings.Contains(body, "45% · 3 assessments") {
 		t.Fatal("the 45% card does not carry its label with the track count")
