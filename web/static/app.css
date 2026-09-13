@@ -782,6 +782,22 @@ select, .field input, .field textarea {
   margin-top: 0.35rem;
 }
 .card .progress-chart { margin-top: 0.25rem; }
+
+/* In the header row the chart must drop to a line of its own instead of
+   opening INSIDE the row. .progress-metric is display:contents, so the chart
+   div is a direct flex child of .page-subhead: without this it lands between
+   "assessed 73%" and "tasks done 73%" and shoves the two metrics to opposite
+   ends of the screen with the chart wedged in the gap. A full-basis item in a
+   wrapping flex row takes the whole next line, which is where a chart of the
+   metric above it belongs. `order` keeps it after both metrics even though it
+   is emitted inside the first one. Task cards are plain block flow and are
+   not affected. */
+.page-subhead .progress-chart {
+  flex: 0 0 100%;
+  order: 1;
+  display: flex;
+  justify-content: center;
+}
 .progress-chart-inner {
   border: 1px solid var(--rule);
   padding: 0.35rem;

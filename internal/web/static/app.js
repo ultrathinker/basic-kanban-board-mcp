@@ -1158,14 +1158,21 @@
   // never disagree about the current value.
 
   var CHAT_WIDTH_STORAGE_KEY = 'kanban.chatPanelWidth';
-  var CHAT_WIDTH_MIN = 200;     // px — narrower than this stops being legible
-  var CHAT_WIDTH_MAX = 480;     // px — wide enough for a long author + time line, no wider
   var CHAT_WIDTH_DEFAULT = 288; // px — the pre-KANB-25 fixed width (18rem at the 16px root)
   var CHAT_WIDTH_STEP = 16;     // px moved per arrow-key press
 
+  // The splitter travels the whole window: the owner asked for no minimum on
+  // either side, so either the panel or the board may be dragged down to
+  // nothing. An earlier version clamped to 200..480px on the reasoning that a
+  // narrower panel stops being legible, which is true and not ours to decide
+  // — the owner is the one looking at it, and a splitter that refuses to move
+  // is more annoying than a panel he made too narrow on purpose and can drag
+  // back in one gesture. Zero is still a floor, because a negative width is
+  // not a layout, and the window's own width is the other end.
   function clampChatWidth(px) {
     if (typeof px !== 'number' || isNaN(px)) return CHAT_WIDTH_DEFAULT;
-    return Math.min(CHAT_WIDTH_MAX, Math.max(CHAT_WIDTH_MIN, Math.round(px)));
+    var max = window.innerWidth || px;
+    return Math.min(max, Math.max(0, Math.round(px)));
   }
 
   function savedChatWidth() {
