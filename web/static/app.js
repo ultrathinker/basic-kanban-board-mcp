@@ -1591,14 +1591,25 @@
   // client, so the modal and the inline panel can never disagree about the
   // data — there is one renderer, and the difference between the two is only
   // how much furniture it draws around the same marks.
-  function openChartDetail() {
+  // openChartDetail loads ONE enlarged chart into the modal — whichever
+  // panel was clicked ("progress" or "items"), never both. The modal fills
+  // the viewport so a chart never has to be scrolled, and two charts stacked
+  // in that space is exactly the scrolling this avoids.
+  //
+  // It asks the SAME endpoint the inline panel came from, with detail=<which>,
+  // rather than re-rendering anything on the client: there is one renderer,
+  // and the difference between the two views is only how much furniture it
+  // draws around the same marks. They cannot disagree about the data.
+  function openChartDetail(which) {
     var dlg = document.getElementById('chart-dialog');
     if (!dlg || typeof dlg.showModal !== 'function' || !chartSlot.project) return;
     var body = dlg.querySelector('[data-chart-dialog-body]');
+    var titleEl = dlg.querySelector('#chart-dialog-title');
     if (!body) return;
     body.innerHTML = '<p class="text-subtle">Loading the full chart…</p>';
     if (!dlg.open) dlg.showModal();
-    var url = '/p/' + encodeURIComponent(chartSlot.project) + '/progress/chart?detail=1' +
+    var url = '/p/' + encodeURIComponent(chartSlot.project) + '/progress/chart' +
+      '?detail=' + encodeURIComponent(which) +
       (chartSlot.task ? '&task=' + encodeURIComponent(chartSlot.task) : '');
     fetch(url, { credentials: 'same-origin', cache: 'no-store', headers: { 'Accept': 'text/html' } })
       .then(function (r) {
@@ -1607,6 +1618,10 @@
       })
       .then(function (html) {
         body.innerHTML = html || '<p class="text-subtle">There is no history to chart yet.</p>';
+        // The heading is the server's, carried up from the panel rather than
+        // duplicated as a string literal here.
+        var sec = body.querySelector('[data-chart-title]');
+        if (titleEl && sec) titleEl.textContent = sec.getAttribute('data-chart-title');
       })
       .catch(function () {
         body.innerHTML = '<p class="text-subtle">Could not load the full chart.</p>';
@@ -1618,8 +1633,9 @@
       // The zoom target is checked FIRST: a chart panel sits inside the
       // slot, never inside a bar, so the two cannot both match — but
       // checking the panel first keeps that independent of future markup.
-      if (e.target.closest && e.target.closest('[data-chart-zoom]')) {
-        openChartDetail();
+      var zoom = e.target.closest && e.target.closest('[data-chart-zoom]');
+      if (zoom) {
+        openChartDetail(zoom.getAttribute('data-chart-zoom'));
         return;
       }
       var bar = e.target.closest && e.target.closest('[data-progress-chart-toggle]');
@@ -1631,9 +1647,10 @@
     // the ProgressSquares cells app.css positions as flex children).
     document.addEventListener('keydown', function (e) {
       if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
-      if (e.target.closest && e.target.closest('[data-chart-zoom]')) {
+      var zoomKey = e.target.closest && e.target.closest('[data-chart-zoom]');
+      if (zoomKey) {
         e.preventDefault();
-        openChartDetail();
+        openChartDetail(zoomKey.getAttribute('data-chart-zoom'));
         return;
       }
       var bar = e.target.closest && e.target.closest('[data-progress-chart-toggle]');

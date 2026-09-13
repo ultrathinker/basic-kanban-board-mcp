@@ -292,39 +292,70 @@ func renderCases() []renderCase {
 				`data-series="items-total"`,
 				`data-series="items-open"`,
 				"7 total · 2 open",
+				// Each panel names WHICH chart it opens: one click, one
+				// chart, and the two must not both open the same one.
+				`data-chart-zoom="progress"`,
+				`data-chart-zoom="items"`,
 			},
 			notWants: []string{"<no value>"},
 		},
 		{
-			// The enlarged charts the modal shows. Same data as the inline
-			// panel, plus the furniture that panel has no room for: a
+			// The enlarged assessment chart the modal shows. Same data as the
+			// inline panel, plus the furniture that panel has no room for: a
 			// labelled percent axis, a legend naming every line, and the
-			// range each line covered.
-			name:     "chart-detail-fragment/both-panels",
+			// range each line covered. ONE chart per response — the modal
+			// fills the viewport so nothing inside it has to be scrolled.
+			name:     "chart-detail-fragment/progress",
 			template: "chart-detail-fragment",
-			data: &view.ChartDetailFragment{
-				Progress: view.NewProgressChartDetail([]domain.ProgressMark{
-					{ID: "m1", Assessor: "alpha", Percent: 91, CreatedAt: time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local)},
-					{ID: "m2", Assessor: "beta", Percent: 60, CreatedAt: time.Date(2026, 9, 12, 11, 0, 0, 0, time.Local)},
-					{ID: "m3", Assessor: "alpha", Percent: 72, CreatedAt: time.Date(2026, 9, 12, 12, 0, 0, 0, time.Local)},
-				}),
-				Items: view.NewItemsChartDetail([]service.ItemCountPoint{
-					{At: time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local), Total: 4, Open: 4},
-					{At: time.Date(2026, 9, 12, 12, 0, 0, 0, time.Local), Total: 9, Open: 3},
-				}),
-			},
+			data: view.NewProgressChartDetail([]domain.ProgressMark{
+				{ID: "m1", Assessor: "alpha", Percent: 91, CreatedAt: time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local)},
+				{ID: "m2", Assessor: "beta", Percent: 60, CreatedAt: time.Date(2026, 9, 12, 11, 0, 0, 0, time.Local)},
+				{ID: "m3", Assessor: "alpha", Percent: 72, CreatedAt: time.Date(2026, 9, 12, 12, 0, 0, 0, time.Local)},
+			}),
 			wants: []string{
-				"Assessed progress",
-				"Items on the board",
+				`data-chart-title="Assessed progress"`,
 				"chart-legend",
 				// The axis is labelled at both ends, not just at the midline.
 				">0%<", ">100%<",
 				// Every line is named, and says what it did.
 				"alpha", "beta", "composite",
 				"91% -&gt; 72%",
-				"6 of 9 done, 3 still open",
-				// Both swatch dashes come from the same rule as the lines.
 				"chart-legend-swatch",
+			},
+			// The item panel must NOT come along: one click, one chart.
+			notWants: []string{"<no value>", "Items on the board", `data-series="items-total"`},
+		},
+		{
+			// The item-count chart, opened from the other panel.
+			name:     "chart-detail-fragment/items",
+			template: "chart-detail-fragment",
+			data: view.NewItemsChartDetail([]service.ItemCountPoint{
+				{At: time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local), Total: 4, Open: 4},
+				{At: time.Date(2026, 9, 12, 12, 0, 0, 0, time.Local), Total: 9, Open: 3},
+			}),
+			wants: []string{
+				`data-chart-title="Items on the board"`,
+				"vertical: number of tasks, 0 to 9",
+				"6 of 9 done, 3 still open",
+				`data-series="items-total"`,
+				`data-series="items-open"`,
+			},
+			notWants: []string{"<no value>", "Assessed progress"},
+		},
+		{
+			// The panel define on its own, so it stays covered even if the
+			// fragment above changes shape.
+			name:     "chart-detail-panel/items-only",
+			template: "chart-detail-panel",
+			data: view.NewItemsChartDetail([]service.ItemCountPoint{
+				{At: time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local), Total: 2, Open: 2},
+				{At: time.Date(2026, 9, 12, 11, 0, 0, 0, time.Local), Total: 2, Open: 0},
+			}),
+			wants: []string{
+				`data-chart-title="Items on the board"`,
+				"vertical: number of tasks, 0 to 2",
+				"2 of 2 done, 0 still open",
+				`data-series="items-open"`,
 			},
 			notWants: []string{"<no value>"},
 		},
@@ -334,25 +365,8 @@ func renderCases() []renderCase {
 			// around nothing.
 			name:      "chart-detail-fragment/nil",
 			template:  "chart-detail-fragment",
-			data:      (*view.ChartDetailFragment)(nil),
+			data:      (*view.ChartDetailView)(nil),
 			wantEmpty: true,
-		},
-		{
-			// The panel define on its own, so it is covered even if the
-			// fragment above stops using one of its branches.
-			name:     "chart-detail-panel/items-only",
-			template: "chart-detail-panel",
-			data: view.NewItemsChartDetail([]service.ItemCountPoint{
-				{At: time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local), Total: 2, Open: 2},
-				{At: time.Date(2026, 9, 12, 11, 0, 0, 0, time.Local), Total: 2, Open: 0},
-			}),
-			wants: []string{
-				"Items on the board",
-				"vertical: number of tasks, 0 to 2",
-				"2 of 2 done, 0 still open",
-				`data-series="items-open"`,
-			},
-			notWants: []string{"<no value>"},
 		},
 		{
 			// A vanished/never-existed history (the marks were deleted, or

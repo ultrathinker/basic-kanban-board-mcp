@@ -254,14 +254,3 @@ func spanNote(from, to time.Time) string {
 	}
 	return formatChartTime(from, sameDay) + " – " + formatChartTime(to, sameDay)
 }
-
-// ChartDetailFragment is the modal's whole body: one or both enlarged charts.
-type ChartDetailFragment struct {
-	Progress *ChartDetailView
-	Items    *ChartDetailView
-}
-
-// Empty reports whether there is nothing to show.
-func (f *ChartDetailFragment) Empty() bool {
-	return f == nil || (f.Progress == nil && f.Items == nil)
-}

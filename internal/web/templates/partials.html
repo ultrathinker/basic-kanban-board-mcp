@@ -77,30 +77,34 @@
 {{end}}
 
 {{define "chart-detail-fragment"}}
-{{- /* Response body of "GET /p/{key}/progress/chart?detail=1" — the enlarged
-       charts the modal shows when either inline panel is clicked. Expects .
-       (dot) to be *view.ChartDetailFragment, or nil.
+{{- /* Response body of "GET /p/{key}/progress/chart?detail=progress|items" —
+       ONE enlarged chart, the one whose inline panel was clicked. Expects .
+       (dot) to be *view.ChartDetailView, or nil.
 
-       Each chart is followed by its legend rather than carrying one inside
-       the SVG: in a design with no colour a line is named by its dash, and
-       those swatches have to sit in the document flow where they can wrap.
-       The swatch is a two-point inline SVG drawn with the same dash and
-       stroke width as the line it names — view.assessorDash is the single
-       rule behind both, so a swatch cannot come to mean a different line. */ -}}
-{{- if .}}{{if .Progress}}{{template "chart-detail-panel" .Progress}}{{end}}
-{{- if .Items}}{{template "chart-detail-panel" .Items}}{{end}}{{end}}
+       One chart per response, never both: the modal fills the viewport so a
+       chart never has to be scrolled, and two of them stacked in that space
+       is the scrolling this is avoiding.
+
+       The legend follows the chart rather than living inside the SVG: in a
+       design with no colour a line is named by its dash, and those swatches
+       have to sit in the document flow where they can wrap. The swatch is a
+       two-point inline SVG drawn with the same dash and stroke width as the
+       line it names — view.assessorDash is the single rule behind both, so a
+       swatch cannot come to mean a different line. */ -}}
+{{- if .}}{{template "chart-detail-panel" .}}{{end}}
 {{end}}
 
 {{define "chart-detail-panel"}}
-<section class="chart-detail">
+{{- /* data-chart-title carries the heading up to the modal's own <h2>
+       (app.js reads it after inserting): one visible heading, and the name
+       of the chart is still decided by the server rather than duplicated as
+       a string literal in the client. */ -}}
+<section class="chart-detail" data-chart-title="{{.Title}}">
   <header class="chart-detail-head">
-    <h3>{{.Title}}</h3>
     <span class="mono">{{.Subtitle}}</span>
+    <span class="text-subtle text-xs">vertical: {{.Axis}}</span>
+    <span class="text-subtle text-xs">horizontal: {{.Span}}</span>
   </header>
-  <p class="chart-detail-axes text-subtle text-xs">
-    <span>vertical: {{.Axis}}</span>
-    <span>horizontal: {{.Span}}</span>
-  </p>
   <div class="chart-detail-plot">{{.SVG}}</div>
   <ul class="chart-legend">
     {{range .Legend}}
@@ -141,9 +145,9 @@
        carry an axis and a legend, so the small panel shows the shape and the
        modal shows the numbers. role/tabindex make it a real keyboard target,
        the same way .pbar itself is. */ -}}
-{{- if .}}{{if .Progress}}<div class="progress-chart-inner" data-chart-zoom role="button" tabindex="0"
+{{- if .}}{{if .Progress}}<div class="progress-chart-inner" data-chart-zoom="progress" role="button" tabindex="0"
      title="Open the full chart" aria-label="Open the full assessed-progress chart">{{.Progress.SVG}}</div>{{end}}
-{{- if .Items}}<div class="progress-chart-inner items-chart" data-chart-zoom role="button" tabindex="0"
+{{- if .Items}}<div class="progress-chart-inner items-chart" data-chart-zoom="items" role="button" tabindex="0"
      title="Open the full chart" aria-label="Open the full item-count chart">
   <div class="items-chart-caption">
     <span class="caps text-subtle">items</span>

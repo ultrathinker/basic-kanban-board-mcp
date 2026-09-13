@@ -170,3 +170,118 @@ func TestProgressChart_InvalidProjectKey(t *testing.T) {
 		t.Fatalf("ProgressHistory called %d times, want 0: an invalid key must never reach the service", svc.calls)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// detail=<which>: the modal's enlarged chart.
+//
+// One click opens ONE chart, because the modal is sized to fill the viewport
+// so nothing inside it has to be scrolled, and two charts sharing that height
+// would each get half of it — which is the scrolling being removed. So the
+// routing from "which panel was clicked" to "which chart comes back" is
+// load-bearing, and neither half of it is visible in a rendered SVG: a
+// mis-wired case would simply open the wrong chart, with no error anywhere.
+// ---------------------------------------------------------------------------
+
+func chartDetailFixture() *service.ProgressHistoryResult {
+	base := time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local)
+	return &service.ProgressHistoryResult{
+		ProjectKey: "BMB",
+		Marks: []domain.ProgressMark{
+			{ID: "m1", Assessor: "alpha", Percent: 91, CreatedAt: base},
+			{ID: "m2", Assessor: "alpha", Percent: 72, CreatedAt: base.Add(2 * time.Hour)},
+		},
+		Total: 2,
+		Items: []service.ItemCountPoint{
+			{At: base, Total: 4, Open: 4},
+			{At: base.Add(2 * time.Hour), Total: 9, Open: 3},
+		},
+	}
+}
+
+func TestProgressChartDetail_ProgressOpensOnlyTheAssessmentChart(t *testing.T) {
+	svc := &progressChartStubService{result: chartDetailFixture()}
+	w, sess := newProgressChartTestWeb(t, svc)
+
+	rw := do(w, "GET", "/p/BMB/progress/chart?detail=progress", nil, sessionCookie(sess))
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200\n%s", rw.Code, rw.Body.String())
+	}
+	body := rw.Body.String()
+	if !strings.Contains(body, `data-chart-title="Assessed progress"`) {
+		t.Errorf("detail=progress did not return the assessment chart:\n%s", body)
+	}
+	if strings.Contains(body, "Items on the board") || strings.Contains(body, `data-series="items-total"`) {
+		t.Errorf("detail=progress also returned the item chart; one click must open one chart:\n%s", body)
+	}
+	// The enlarged version is the one with a real axis, not the inline
+	// panel's single midline.
+	if !strings.Contains(body, ">0%<") || !strings.Contains(body, ">100%<") {
+		t.Errorf("the enlarged chart is missing its labelled percent axis:\n%s", body)
+	}
+}
+
+func TestProgressChartDetail_ItemsOpensOnlyTheItemChart(t *testing.T) {
+	svc := &progressChartStubService{result: chartDetailFixture()}
+	w, sess := newProgressChartTestWeb(t, svc)
+
+	rw := do(w, "GET", "/p/BMB/progress/chart?detail=items", nil, sessionCookie(sess))
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200\n%s", rw.Code, rw.Body.String())
+	}
+	body := rw.Body.String()
+	if !strings.Contains(body, `data-chart-title="Items on the board"`) {
+		t.Errorf("detail=items did not return the item chart:\n%s", body)
+	}
+	if !strings.Contains(body, `data-series="items-total"`) || !strings.Contains(body, `data-series="items-open"`) {
+		t.Errorf("the item chart is missing one of its two curves:\n%s", body)
+	}
+	if strings.Contains(body, "Assessed progress") {
+		t.Errorf("detail=items also returned the assessment chart:\n%s", body)
+	}
+}
+
+// TestProgressChartDetail_ItemsAreReadOnlyForTheProjectScope: an item count
+// is a property of a project, not of one task, so the second read must not
+// be requested on a per-task chart.
+func TestProgressChartDetail_ItemsAreReadOnlyForTheProjectScope(t *testing.T) {
+	svc := &progressChartStubService{result: chartDetailFixture()}
+	w, sess := newProgressChartTestWeb(t, svc)
+
+	do(w, "GET", "/p/BMB/progress/chart", nil, sessionCookie(sess))
+	if !svc.lastIn.IncludeItems {
+		t.Error("the project-scope chart did not ask for the item counts")
+	}
+	do(w, "GET", "/p/BMB/progress/chart?task=BMB-1", nil, sessionCookie(sess))
+	if svc.lastIn.IncludeItems {
+		t.Error("a per-task chart asked for the project's item counts, paying for a read it cannot use")
+	}
+}
+
+// TestProgressChartDetail_UnknownDetailIsRefused: a typo must not silently
+// fall through to the inline panels, which would look like the modal
+// mysteriously showing the small chart.
+func TestProgressChartDetail_UnknownDetailIsRefused(t *testing.T) {
+	svc := &progressChartStubService{result: chartDetailFixture()}
+	w, sess := newProgressChartTestWeb(t, svc)
+
+	rw := do(w, "GET", "/p/BMB/progress/chart?detail=1", nil, sessionCookie(sess))
+	if rw.Code == http.StatusOK {
+		t.Fatalf("an unknown detail value was accepted: status = %d, body=%s", rw.Code, rw.Body.String())
+	}
+}
+
+// TestProgressChartDetail_NoHistoryRendersNothing: app.js prints its own
+// "no history yet" into the modal, so the server must send an empty body
+// rather than a frame around nothing.
+func TestProgressChartDetail_NoHistoryRendersNothing(t *testing.T) {
+	svc := &progressChartStubService{result: &service.ProgressHistoryResult{ProjectKey: "BMB"}}
+	w, sess := newProgressChartTestWeb(t, svc)
+
+	rw := do(w, "GET", "/p/BMB/progress/chart?detail=progress", nil, sessionCookie(sess))
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rw.Code)
+	}
+	if strings.TrimSpace(rw.Body.String()) != "" {
+		t.Errorf("an empty history rendered a frame:\n%s", rw.Body.String())
+	}
+}

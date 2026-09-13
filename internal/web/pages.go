@@ -274,10 +274,15 @@ func (w *Web) handleProgressChart(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	taskKey := strings.TrimSpace(r.URL.Query().Get("task"))
-	// detail=1 asks for the enlarged version the modal shows: same data,
-	// same projections, with the axis ticks, midpoint tick and legend the
-	// 600x200 inline panel has no room for.
-	detail := r.URL.Query().Get("detail") == "1"
+	// detail names ONE enlarged chart for the modal: "progress" or "items".
+	// Same data and same projections as the inline panel, with the axis
+	// ticks, midpoint tick and legend the 600x200 panel has no room for.
+	//
+	// One chart per request, never both: the modal is sized to fill the
+	// viewport so the reader never has to scroll a chart, and two of them
+	// stacked in that space is exactly the scrolling this avoids. Which one
+	// opens is decided by which panel was clicked.
+	detail := strings.TrimSpace(r.URL.Query().Get("detail"))
 
 	result, err := w.d.Service.ProgressHistory(r.Context(), actorFor(tok), service.ProgressHistoryInput{
 		ProjectKey: key,
@@ -293,16 +298,19 @@ func (w *Web) handleProgressChart(rw http.ResponseWriter, r *http.Request) {
 		apiError(rw, err)
 		return
 	}
-	if detail {
-		big := &view.ChartDetailFragment{
-			Progress: view.NewProgressChartDetail(result.Marks),
-			Items:    view.NewItemsChartDetail(result.Items),
-		}
-		if big.Empty() {
-			w.renderFragment(rw, r, http.StatusOK, "chart-detail-fragment", nil)
-			return
-		}
-		w.renderFragment(rw, r, http.StatusOK, "chart-detail-fragment", big)
+	switch detail {
+	case "":
+		// The inline panels, handled below.
+	case "progress":
+		w.renderChartDetail(rw, r, view.NewProgressChartDetail(result.Marks))
+		return
+	case "items":
+		w.renderChartDetail(rw, r, view.NewItemsChartDetail(result.Items))
+		return
+	default:
+		apiError(rw, domain.Invalid("detail",
+			fmt.Sprintf("unknown chart %q", detail),
+			`Ask for "progress" or "items", or omit detail for the inline panels.`))
 		return
 	}
 	frag := &view.ProgressChartFragment{
@@ -316,6 +324,17 @@ func (w *Web) handleProgressChart(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.renderFragment(rw, r, http.StatusOK, "progress-chart-fragment", frag)
+}
+
+// renderChartDetail writes one enlarged chart, or an empty body when there
+// is nothing to chart — app.js prints its own "no history yet" rather than
+// opening a frame around nothing.
+func (w *Web) renderChartDetail(rw http.ResponseWriter, r *http.Request, chart *view.ChartDetailView) {
+	if chart == nil {
+		w.renderFragment(rw, r, http.StatusOK, "chart-detail-fragment", nil)
+		return
+	}
+	w.renderFragment(rw, r, http.StatusOK, "chart-detail-fragment", chart)
 }
 
 // handleDrawer is "/t/{key}": the full task detail view.
