@@ -15,6 +15,35 @@
   <h1>{{.Project.Name}}</h1>
   <span class="key mono">{{.Project.Key}}</span>
   <span class="spacer"></span>
+  {{- /* KANB-19: the visible LIVE dot/word is gone; live-status now renders
+       sr-only and stays only as the page's one polite live-region announcer
+       (see the "live-status" partial's own comment). The static "Update"
+       link takes its old visual slot: with JS it re-runs the exact same
+       fetch-and-swap refreshLiveRegions() does (data-live-refresh, wired in
+       app.js), immediately rather than on the debounce; without JS it is a
+       plain link back to this same page. Auto-refresh over SSE is
+       unchanged. */ -}}
+  {{template "live-status" .}}
+  <a class="btn btn-sm" href="{{boardURL .Project.Key}}" data-live-refresh>Update</a>
+  {{if .HideDone}}<a class="btn btn-sm" href="?hide_done=0">Show done</a>
+  {{else}}<a class="btn btn-sm" href="?hide_done=1">Hide done</a>{{end}}
+  <a class="btn btn-sm" href="{{activityURL .Project.Key}}">Activity</a>
+  <form method="post" action="/p/{{.Project.Key}}/export" class="inline-form">
+    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+    <button type="submit" class="btn btn-sm">Export</button>
+  </form>
+</header>
+
+{{- /* KANB-20: the two project-level progress metrics ("assessed" / "tasks
+     done") plus the Thoughts toggle move to their own centered row under
+     the header, per the owner's request — the header itself is otherwise
+     untouched. #project-progress keeps its id (KANB-12's live-refresh
+     target) and .proj-progress-group keeps display:contents so the two bars
+     still sit side by side exactly as before; only the row that contains
+     them moved. Rendered only when there is something to show — an empty
+     centered row would be visual noise nobody asked for. */ -}}
+{{if or .ManualProgress .AutoProgress .Chat}}
+<div class="page-subhead">
   {{- /* Two project-level progress metrics, side by side and labelled so
        they can never be mistaken for each other: "assessed" is what the
        AIs said about the project as a whole, "tasks done" is what the
@@ -24,7 +53,7 @@
        progress.recorded event fires for this project — neither bar lives
        inside #board, so without this wrapper a project-level assessment
        would have nowhere to land without a full page reload. display:contents
-       (app.css) keeps the wrapper invisible to the header's flex layout, so
+       (app.css) keeps the wrapper invisible to this row's flex layout, so
        the two bars still sit side by side exactly as before. */ -}}
   <span id="project-progress" class="proj-progress-group">
   {{- if .ManualProgress}}<span class="proj-progress" title="Manual progress: the mean of the latest AI assessments of this project. Task-level marks are not included."><span class="caps text-subtle">assessed</span>{{template "progress-bar" (dict "Progress" .ManualProgress)}}</span>{{end}}
@@ -32,15 +61,8 @@
   </span>
   {{if .Chat}}<button type="button" class="btn btn-sm" data-chat-toggle
         aria-expanded="false" aria-controls="chat-panel">Thoughts</button>{{end}}
-  {{template "live-status" .}}
-  {{if .HideDone}}<a class="btn btn-sm" href="?hide_done=0">Show done</a>
-  {{else}}<a class="btn btn-sm" href="?hide_done=1">Hide done</a>{{end}}
-  <a class="btn btn-sm" href="{{activityURL .Project.Key}}">Activity</a>
-  <form method="post" action="/p/{{.Project.Key}}/export" class="inline-form">
-    <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
-    <button type="submit" class="btn btn-sm">Export</button>
-  </form>
-</header>
+</div>
+{{end}}
 
 {{template "focus-banner" (dict "Focus" .Focus)}}
 
@@ -252,7 +274,11 @@
   <h1>Activity</h1>
   <span class="key mono">{{.Project.Key}}</span>
   <span class="spacer"></span>
+  {{- /* KANB-19: same treatment as the board header — live-status is the
+       sr-only announcer, Update is the visible, static replacement for the
+       old LIVE dot/word. */ -}}
   {{template "live-status" .}}
+  <a class="btn btn-sm" href="{{activityURL .Project.Key}}" data-live-refresh>Update</a>
   <a class="btn btn-sm" href="{{boardURL .Project.Key}}">← board</a>
 </header>
 

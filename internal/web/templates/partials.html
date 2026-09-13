@@ -262,11 +262,18 @@
 {{end}}
 
 {{define "live-status"}}
-{{- /* The connection indicator. app.js owns .Text and data-state; this is
-       only the initial, JavaScript-off rendering. */ -}}
-<span class="live-status" data-live-status data-state="idle" role="status" aria-live="polite">
-  <span class="dot" aria-hidden="true"></span><span data-live-label>live</span>
-</span>
+{{- /* KANB-19: the owner wanted the visible LIVE dot/word gone entirely, but
+       this element is also the page's ONE polite live region — the "small
+       live-status element in the page header" the "board-columns" comment
+       above points to, the only place app.js announces "updated" for a
+       screen reader (re-announcing the whole board on every agent write is
+       unusable). So the mechanism did not change: app.js still owns
+       data-state and this span's [data-live-label] text exactly as before.
+       Only its visibility changed — .live-status is sr-only in app.css, so
+       there is nothing left to see, but a screen reader still hears the
+       update. The visible replacement is the static "Update" link next to
+       it in pages.html. */ -}}
+<span class="live-status sr-only" data-live-status data-state="idle" role="status" aria-live="polite"><span data-live-label>live</span></span>
 {{end}}
 
 {{define "prompt-cards"}}

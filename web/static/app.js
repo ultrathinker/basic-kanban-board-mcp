@@ -9,6 +9,9 @@
  *   1. Applies the saved theme before paint, and wires the topbar toggle.
  *   2. Live updates: one EventSource per page, which refreshes the marked
  *      live regions from the server. See the LIVE UPDATES note below.
+ *      KANB-19: a static "Update" link (data-live-refresh) runs that exact
+ *      same fetch-and-swap immediately, for anyone who wants a refresh right
+ *      now rather than waiting on the next SSE event.
  *   3. Drag between columns (SortableJS), posting key + column + position +
  *      if_version.
  *   4. The keyboard move menu — same POST, no mouse required.
@@ -436,6 +439,22 @@
       }
       setLiveState('connecting', 'reconnecting');
     };
+  }
+
+  // initLiveRefresh wires the static "Update" link (KANB-19's replacement
+  // for the visible LIVE indicator): a click runs the exact same
+  // fetch-and-swap refreshLiveRegions() runs on an SSE event, immediately
+  // instead of on the next debounced tick. preventDefault stops the browser
+  // from also following the link's own href — that href is the progressive-
+  // enhancement fallback for when this script never runs at all, and must
+  // stay a plain link to the current page for that case.
+  function initLiveRefresh() {
+    document.addEventListener('click', function (e) {
+      var link = e.target.closest && e.target.closest('[data-live-refresh]');
+      if (!link) return;
+      e.preventDefault();
+      refreshLiveRegions();
+    });
   }
 
   // -- 3. drag between columns -------------------------------------------
@@ -1333,6 +1352,7 @@
     initChatPanel();
     initProgressTrackDelete();
     initProgressChart();
+    initLiveRefresh();
     startLive();
   }
 

@@ -6,8 +6,11 @@ import (
 	"time"
 )
 
-// ProgressSquares is the bar's only size: ten cells, painted left to right.
-const ProgressSquares = 10
+// ProgressSquares is the bar's only size: twenty cells, painted left to
+// right. Twenty, not ten, because the owner wanted a finer reading; the
+// cells are narrower than they are tall (app.css) so twice the count does
+// not make the bar twice as long.
+const ProgressSquares = 20
 
 // ProgressView is one rendered progress bar: ten square cells plus the label
 // printed next to them.
@@ -176,13 +179,15 @@ func (v *ProgressView) Clickable() bool {
 	return v != nil && v.ProjectKey != ""
 }
 
-// squaresFilled maps an already-aggregated percent onto the ten-square bar:
-// floor division, so 45% paints 4 squares and 100% paints all 10. The clamp
-// is defensive — the schema CHECK already holds percent inside 0..100 — but
-// an out-of-range value must not paint a negative or overflowing number of
-// squares on a rendered page.
+// squaresFilled maps an already-aggregated percent onto the bar: floor
+// division by the step one cell is worth, so with twenty cells 45% paints 9
+// and 100% paints all 20. There is no partial fill, and at a 5% step the
+// rounding it would have smoothed is half what it was. The clamp is
+// defensive — the schema CHECK already holds percent inside 0..100 — but an
+// out-of-range value must not paint a negative or overflowing number of
+// cells on a rendered page.
 func squaresFilled(percent int) int {
-	return clampPercent(percent) / 10
+	return clampPercent(percent) * ProgressSquares / 100
 }
 
 // progressCells builds the template's paint plan: exactly ProgressSquares
