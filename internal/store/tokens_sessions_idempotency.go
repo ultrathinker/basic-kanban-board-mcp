@@ -93,6 +93,21 @@ func (r *tokenRepo) GetByName(tx Tx, name string) (*domain.Token, error) {
 	return t, err
 }
 
+func (r *tokenRepo) GetByID(tx Tx, id string) (*domain.Token, error) {
+	if id == "" {
+		return nil, domain.Invalid("id", "token id is empty", "Pass the token UUID.")
+	}
+	tw := tx.(*txWrap)
+	row := tw.tx.QueryRowContext(tw.ctx(), `
+		SELECT id, name, hash, scopes, project_keys, created_at, last_used_at, revoked_at
+		FROM tokens WHERE id = ?`, id)
+	t, err := scanToken(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, domain.NotFound("token", id)
+	}
+	return t, err
+}
+
 // GetByHash is the auth hot path; the caller does the constant-time
 // compare before calling this lookup. The unique index on `hash` keeps it
 // to a single row fetch.

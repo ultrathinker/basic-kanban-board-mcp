@@ -57,6 +57,9 @@ func (searchSvc) ProjectUpsert(context.Context, service.Actor, service.ProjectUp
 func (searchSvc) ChatAdd(context.Context, service.Actor, service.ChatAddInput) (*domain.ChatMessage, error) {
 	return nil, ErrServiceUnavailable
 }
+func (searchSvc) ChatFeed(context.Context, service.Actor, service.ChatFeedInput) (*service.ChatFeedResult, error) {
+	return nil, ErrServiceUnavailable
+}
 func (searchSvc) ChatList(context.Context, service.Actor, service.ChatListInput) (*service.ChatListResult, error) {
 	return nil, ErrServiceUnavailable
 }

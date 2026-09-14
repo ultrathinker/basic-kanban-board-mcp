@@ -5,6 +5,7 @@ package domain
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -181,9 +182,14 @@ type Project struct {
 	EnforceDependencies bool
 	StrictDone          bool
 	ClaimTTLSeconds     int // clamped to [ClaimTTLMin, ClaimTTLMax]
-	ArchivedAt          *time.Time
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
+	// CoordinatorTokenID names the project's coordinator (KANB-44). It is a
+	// tokens.id, never a display name: the id is the stable identity that
+	// survives secret rotation, while a name is a label that can be reused by
+	// a different token. Empty = no coordinator appointed.
+	CoordinatorTokenID string
+	ArchivedAt         *time.Time
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // Column belongs to a project. Names are unique per project because tools
@@ -314,14 +320,108 @@ type ProgressMark struct {
 	CreatedAt time.Time
 }
 
+// MessageKind classifies a chat message for the communication protocol
+// (KANB-45..47): plain updates, scope changes, questions and commands. The
+// default everywhere is update — a caller that sends none of the new
+// arguments behaves exactly as before the protocol existed.
+type MessageKind string
+
+const (
+	MessageUpdate      MessageKind = "update"
+	MessageScopeChange MessageKind = "scope_change"
+	MessageQuestion    MessageKind = "question"
+	MessageCommand     MessageKind = "command"
+)
+
+var AllMessageKinds = []MessageKind{MessageUpdate, MessageScopeChange, MessageQuestion, MessageCommand}
+
+func (k MessageKind) Valid() bool {
+	for _, v := range AllMessageKinds {
+		if v == k {
+			return true
+		}
+	}
+	return false
+}
+
+// ParseMessageKind accepts the canonical names case-insensitively, the same
+// concession every other enum in this package makes to hand-typed callers.
+func ParseMessageKind(s string) (MessageKind, bool) {
+	for _, v := range AllMessageKinds {
+		if equalFold(s, string(v)) {
+			return v, true
+		}
+	}
+	return MessageUpdate, false
+}
+
 // ChatMessage represents a project-scoped AI conversation entry.
 // Messages are append-only and never pruned.
+//
+// Author is the human-facing display name — a signature, not an identity. The
+// authorized source is AuthorTokenID: the tokens.id of the token that posted,
+// taken from the authenticated caller and never chosen by the client. The
+// addressing fields (Recipient, ResolvedExecutor) also hold tokens.id values;
+// ResolvedExecutor is fixed at send time and deliberately frozen afterwards.
 type ChatMessage struct {
 	ID        string
 	ProjectID string
 	Author    string
 	Body      string
 	CreatedAt time.Time
+
+	Kind          MessageKind
+	AuthorTokenID string
+	// Recipient is what the sender asked for: a tokens.id or "all". Empty
+	// means unset — for question/command that resolves to the project's
+	// coordinator AT SEND TIME (see ResolvedExecutor).
+	Recipient string
+	// ResolvedExecutor is the tokens.id fixed at send time for a question or
+	// command addressed to exactly one executor; empty for update,
+	// scope_change, "all" and unanswered-addressing refusals. A coordinator
+	// change later must not readdress old commands: this value is written
+	// once and never recomputed.
+	ResolvedExecutor string
+	// ReplyToID names the message this one answers, always within the same
+	// project.
+	ReplyToID string
+	// IdempotencyKey deduplicates retries of one send, per authorized sender,
+	// for the message's whole lifetime.
+	IdempotencyKey string
+	// Seq is the message's position in the feed: the rowid chat_messages
+	// assigned at INSERT, filled by the store and never rewritten. It is the
+	// feed's ordering authority. CreatedAt cannot serve: it has millisecond
+	// precision and arrivals routinely share one millisecond (200 sequential
+	// posts measured at 36 distinct milliseconds), so ordering ties inside a
+	// bucket would fall to the random UUID id — and a message could then sort
+	// BEFORE an already-issued cursor and be lost to every later page. Seq is
+	// monotonic for as long as the feed exists (chat rows are never pruned;
+	// the anchor check in the feed read catches any freed-and-reused position
+	// loudly instead of silently skipping it).
+	Seq int64
+}
+
+// CommandAcceptance is the durable link "command message -> created tasks ->
+// accepting agent" (KANB-47). One command can be accepted exactly once per
+// project: the uniqueness lives here, keyed by the message, not in any
+// per-token idempotency table — so the binding survives consumer restarts and
+// outlives every retry window.
+type CommandAcceptance struct {
+	ID                string
+	MessageID         string
+	ProjectID         string
+	AcceptedByTokenID string
+	// TaskIDs and TaskKeys name the batch the acceptance created. Keys are
+	// denormalized beside ids because task keys are immutable (PROJ-N): the
+	// acceptance can answer "which tasks came of this command" without a
+	// join, even after a restart.
+	TaskIDs  []string
+	TaskKeys []string
+	// RequestHash fingerprints the accepted batch content, so a retried
+	// acceptance with DIFFERENT content is a loud conflict, not a silent
+	// second package.
+	RequestHash string
+	CreatedAt   time.Time
 }
 
 // ChatCursor identifies a point in chat history for backward pagination
@@ -358,6 +458,49 @@ func ParseChatCursor(s string) (*ChatCursor, error) {
 		return nil, Invalid("cursor", fmt.Sprintf("invalid cursor timestamp %q", tsStr), "Cursor format is <timestamp>/<id>.")
 	}
 	return &ChatCursor{CreatedAt: t.UTC(), ID: id}, nil
+}
+
+// FeedCursor identifies a position in a project's forward feed. It carries
+// the message's Seq — the monotonic insertion key the feed is ordered and
+// paged by — plus the message id as an integrity check: if the row at that
+// position is not the named message (possible only if rows were deleted
+// underneath a held cursor, which the product never does), the reader must
+// refuse loudly instead of silently paging past history.
+type FeedCursor struct {
+	Seq int64
+	ID  string
+}
+
+// String encodes the cursor as "<seq>/<id>". The cursor is opaque to
+// consumers by contract — the encoding exists only so the position survives
+// as a plain string across restarts, and it may change between releases for
+// exactly that reason.
+func (c FeedCursor) String() string {
+	if c.Seq == 0 && c.ID == "" {
+		return ""
+	}
+	return strconv.FormatInt(c.Seq, 10) + "/" + c.ID
+}
+
+// ParseFeedCursor parses "<seq>/<id>" as issued by FeedCursor.String. A
+// cursor the server cannot parse is a loud validation error, never an empty
+// page: guessing at a malformed position would silently skip or repeat
+// history.
+func ParseFeedCursor(s string) (*FeedCursor, error) {
+	if s == "" {
+		return nil, nil
+	}
+	seqStr, id, ok := strings.Cut(s, "/")
+	if !ok || id == "" {
+		return nil, Invalid("cursor", fmt.Sprintf("malformed feed cursor %q", s),
+			"The cursor is issued by the server; pass back a next_cursor you were given, or omit after to read from the beginning.")
+	}
+	seq, err := strconv.ParseInt(seqStr, 10, 64)
+	if err != nil || seq <= 0 {
+		return nil, Invalid("cursor", fmt.Sprintf("malformed feed cursor %q", s),
+			"The cursor is issued by the server; pass back a next_cursor you were given, or omit after to read from the beginning.")
+	}
+	return &FeedCursor{Seq: seq, ID: id}, nil
 }
 
 // EventType enumerates everything that can appear in the activity feed.

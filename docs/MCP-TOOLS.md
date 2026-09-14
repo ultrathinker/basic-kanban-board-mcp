@@ -10,7 +10,7 @@ Every task write is a batch, every read defaults to a token-efficient compact te
 
 | Tool | Purpose | Output Shape | Write Type |
 |---|---|---|---|
-| [`board_get`](#1-board_get) | Read full board or project summary (compact text default) | Compact text / JSON (`data.projects[]`) | Read-only |
+| [`board_get`](#1-board_get) | Read full board or project summary (compact text default), or the project's message feed (`view:"messages"`) | Compact text / JSON (`data.projects[]` or `messages[]`) | Read-only |
 | [`task_next`](#2-task_next) | Peek, claim, or start the highest-priority ready task | `data.tasks[]` | Read / Mutation |
 | [`task_get`](#3-task_get) | Fetch tasks by key in request order (preserves missing keys) | `data.items[]` (`{key, ok, task}`) | Read-only |
 | [`task_create`](#4-task_create) | Create tasks atomically (all-or-nothing) with `@<ref>` links | `data.tasks[]` | Atomic batch |
@@ -149,8 +149,8 @@ Reads the board. Emits compact text by default; `structuredContent` always conta
 
 | Name | Type | Required | Default | Bounds / Enum | Description |
 |---|---|---|---|---|---|
-| `project` | string | Optional | `""` | 2–8 chars | Project key (e.g. `"BMB"`). When omitted, returns summary of all accessible projects. |
-| `view` | string | Optional | `"tasks"` (or `"summary"`) | `"tasks"`, `"summary"` | `"tasks"` returns column tasks; `"summary"` returns counts only. Defaults to `"summary"` if `project` is omitted. |
+| `project` | string | Optional | `""` | 2–8 chars | Project key (e.g. `"BMB"`). When omitted, returns summary of all accessible projects. REQUIRED for `view:"messages"`. |
+| `view` | string | Optional | `"tasks"` (or `"summary"`) | `"tasks"`, `"summary"`, `"messages"` | `"tasks"` returns column tasks; `"summary"` returns counts only. Defaults to `"summary"` if `project` is omitted. `"messages"` returns the project's communication feed — see below. |
 | `done_limit` | integer | Optional | `0` | `0`–`200` | Max number of completed tasks to include (most recently done first). |
 | `filter` | object | Optional | `null` | — | Filter criteria applied to tasks. |
 | `filter.columns` | string[] | Optional | `null` | — | Column names to include (OR match). |
@@ -164,6 +164,20 @@ Reads the board. Emits compact text by default; `structuredContent` always conta
 | `filter.updated_since`| string | Optional | `null` | RFC3339 | Only tasks updated on or after timestamp. |
 | `include` | string[] | Optional | `[]` | `"body"`, `"acceptance"`, `"notes"`, `"links"`, `"metadata"` | Additional fields to expand on each task in JSON output. Selected fields come back whole — `board_get` has no bounded tier. |
 | `format` | string | Optional | `"compact"` | `"compact"`, `"json"` | `"compact"` renders compact text grammar; `"json"` returns indented JSON text. |
+| `after` | string | Optional | `""` | opaque cursor | `view:"messages"` only: the `next_cursor` a previous page returned. Without it the feed starts at the BEGINNING of history — never at the current moment — so a command written before your session started is still delivered. |
+| `limit` | integer | Optional | `50` | `1`–`100` | `view:"messages"` only: page size. |
+
+#### The messages view
+
+`view:"messages"` reads one project's feed forward through history: `messages[]` in chronological
+order (each with `id`, `created_at`, `author`, `author_token_id` — the authorized source, which the
+caller never chooses, `kind`, `recipient`/`recipient_name`, `resolved_executor`/
+`resolved_executor_name`, `reply_to`, `body` and the `task_keys` created by accepting that command),
+plus `next_cursor` and `has_more`. The board itself and task bodies are NOT part of the response.
+Chat history is never pruned, so a cursor never goes stale; a cursor from another project, a cursor
+naming a missing message, or an unparseable cursor is rejected with an actionable error instead of
+a silent empty page. Feed participants and the project's coordinator are published by
+`view:"summary"` (`projects[].participants[]`, `projects[].coordinator`).
 
 #### Project fields
 
@@ -473,6 +487,17 @@ Within a single batch, items can reference each other before database keys exist
 | `tasks[].metadata` | object | Optional | `null` | ≤16 KB | Arbitrary JSON key-value store. |
 | `tasks[].ref` | string | Optional | `""` | — | Symbolic identifier for intra-batch links. |
 | `tasks[].idempotency_key` | string | Optional | `""` | — | Deduplication key valid for 24 hours. |
+| `source_message` | string | Optional | `""` | message id | Accepts a `kind:"command"` feed message ATOMICALLY: only the command's `resolved_executor` may accept, the whole batch must belong to the command's project, and the "command → tasks → acceptor" link commits in the same transaction as the tasks. A repeat by the same executor with the same content returns the original task keys with `meta.already_accepted=true` and creates nothing; different content is an explicit conflict; another token is refused. The link is durable — it survives restarts — and lives as long as the message, not for a retry window. |
+
+#### Accepting a command: what the guarantee covers — and what it does not
+
+`source_message` makes "the tasks exist" and "the message is accepted" one atomic, exactly-once
+fact **about the board**: no half-accepted command can exist, a command is accepted once per
+project (not once per token), and the acceptance link is durable across restarts. It does **not**
+deduplicate the *effects* of the work itself: if your tasks run an external command, a deploy or
+any other side effect outside this board, this guarantee does NOT prevent that side effect from
+running twice. Guard external actions separately. Also note a pure question never needs a task —
+answer it with `project_post(reply_to: ...)`.
 
 #### Example Call & Response
 
@@ -864,4 +889,4 @@ Every tool error returns an error envelope with a machine-readable code, an expl
 | `cycle` | Link creation would introduce a circular dependency or parent-child conflict. | Dependencies must form a Directed Acyclic Graph (DAG); subtasks cannot block their parents. | Delete an existing conflicting link with `task_link` before creating new dependencies. |
 | `rate_limited` | Exceeded 600 req/min per token or 20 req/min on login. | Too many HTTP requests were dispatched. | Wait for the period specified in the `Retry-After` header. Note: A 100-item batch counts as only 1 request. |
 | `payload_too_large` | Request body exceeds 1 MB (`MaxRequestBodyBytes`). | The batch size or body contents exceeded the transport limit. | Reduce batch size or trim large markdown descriptions. |
-| `idempotency_mismatch` | Reused an `idempotency_key` within 24 hours with a different payload. | An idempotency key was reused for a different mutation. | Generate a fresh UUID for distinct requests, or ensure identical payload on retries. |
+| `idempotency_mismatch` | Reused an `idempotency_key` with a different payload (task items expire after 24 hours; message send keys and command acceptances live as long as the message). | An idempotency key was reused for a different mutation — the original is intact and named in the message. | Replay the exact original request to receive the original response, or use a new key for the new content. |

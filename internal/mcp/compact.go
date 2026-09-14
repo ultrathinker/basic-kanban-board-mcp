@@ -62,6 +62,14 @@ func renderProject(sb *strings.Builder, p *service.BoardProject, now time.Time) 
 	} else {
 		fmt.Fprintf(sb, "focus %s", p.FocusKey)
 	}
+	// The coordinator segment names who commands to this project default to
+	// (KANB-44). It appears only when one is appointed, so boards that do not
+	// use the communication feature pay zero tokens for it. It carries the
+	// display name — the structured form carries the stable tokens.id; the
+	// compact grammar is for reading, not for keying writes.
+	if p.Coordinator != nil {
+		fmt.Fprintf(sb, " · coord %s", p.Coordinator.Name)
+	}
 	for i := range p.Columns {
 		col := &p.Columns[i]
 		// Done is rendered as its own trailing segment, not as a column

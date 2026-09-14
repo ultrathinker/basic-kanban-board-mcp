@@ -29,6 +29,10 @@ type chatOlderStubService struct {
 	calls    int
 }
 
+func (s *chatOlderStubService) ChatFeed(_ context.Context, _ service.Actor, _ service.ChatFeedInput) (*service.ChatFeedResult, error) {
+	return nil, ErrServiceUnavailable
+}
+
 func (s *chatOlderStubService) ChatList(_ context.Context, a service.Actor, in service.ChatListInput) (*service.ChatListResult, error) {
 	s.calls++
 	s.lastIn = in

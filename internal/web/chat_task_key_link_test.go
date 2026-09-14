@@ -48,6 +48,10 @@ func (s *chatKeyLinkService) TaskProgress(_ context.Context, _ service.Actor, _ 
 	return nil, nil
 }
 
+func (s *chatKeyLinkService) ChatFeed(_ context.Context, _ service.Actor, _ service.ChatFeedInput) (*service.ChatFeedResult, error) {
+	return nil, ErrServiceUnavailable
+}
+
 func (s *chatKeyLinkService) ChatList(_ context.Context, _ service.Actor, in service.ChatListInput) (*service.ChatListResult, error) {
 	s.lastChatListIn = in
 	return &service.ChatListResult{Messages: s.chatMsgs}, nil

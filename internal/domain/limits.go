@@ -19,6 +19,11 @@ const (
 	MaxAcceptanceText  = 500
 	MaxAssigneeLen     = 80
 	MaxChatMessageLen  = 4000
+	// MaxChatIdempotencyKeyLen bounds one send's retry key. A key is a lookup
+	// handle the client invents, not content — 255 characters (a common index
+	// key bound) is orders of magnitude above any sane nonce, and the schema
+	// publishes the same number so every layer enforces it identically.
+	MaxChatIdempotencyKeyLen = 255
 
 	MaxBatchTasks   = 100 // task_create / task_update / task_remove
 	MaxGetKeys      = 50  // task_get

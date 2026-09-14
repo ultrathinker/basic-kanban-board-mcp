@@ -68,6 +68,7 @@ type Store interface {
 	Notes() NoteRepo
 	Progress() ProgressRepo
 	Chat() ChatRepo
+	Acceptances() CommandAcceptanceRepo
 	Events() EventRepo
 	// TaskHistory is the permanent task lifecycle journal (KANB-30). It is
 	// written by the store itself inside each mutation's transaction; callers
@@ -277,6 +278,9 @@ type ProgressRepo interface {
 // ChatCursor identifies a point in chat history for backward pagination.
 type ChatCursor = domain.ChatCursor
 
+// FeedCursor identifies a position in the forward feed (insertion order).
+type FeedCursor = domain.FeedCursor
+
 // ChatFilter specifies query parameters for reading chat messages.
 type ChatFilter struct {
 	// ProjectID restricts messages to one project. When nil or empty,
@@ -284,7 +288,13 @@ type ChatFilter struct {
 	ProjectID  *string
 	ProjectIDs []string
 	Limit      int
-	Before     *domain.ChatCursor
+	// Ascending selects the read direction: true = insertion order with
+	// After as the position (the feed's shape, which starts at the beginning
+	// of history even before any cursor exists); false = newest first with
+	// Before as the position (the panel's shape).
+	Ascending bool
+	Before    *domain.ChatCursor
+	After     *domain.FeedCursor
 }
 
 // ChatRepo persists project AI chat messages. Rows are append-only
@@ -292,9 +302,35 @@ type ChatFilter struct {
 type ChatRepo interface {
 	// Add appends one message to the project chat.
 	Add(tx Tx, m *domain.ChatMessage) error
-	// List returns a page of chat messages, newest first, with optional
-	// project filtering and tie-breaking cursor pagination.
+	// Get resolves one message by id.
+	Get(tx Tx, id string) (*domain.ChatMessage, error)
+	// GetBySeq resolves the message at one feed position, or NotFound. The
+	// feed cursor names a position plus the id expected there; the caller
+	// checks both, so a stale or foreign position is refused loudly instead
+	// of paging from silence.
+	GetBySeq(tx Tx, seq int64) (*domain.ChatMessage, error)
+	// GetBySenderKey resolves the message an (author token, idempotency key)
+	// pair already produced, or NotFound. The pair is unique among keyed
+	// messages for the message's whole lifetime.
+	GetBySenderKey(tx Tx, tokenID, key string) (*domain.ChatMessage, error)
+	// List returns a page of chat messages with optional project filtering
+	// and cursor pagination: newest first (Before, the panel's shape), or in
+	// insertion order (After + Ascending, the feed's shape).
 	List(tx Tx, f ChatFilter) ([]domain.ChatMessage, error)
+}
+
+// CommandAcceptanceRepo persists the "command -> tasks -> acceptor" link
+// (KANB-47). One acceptance per command message, for the message's whole
+// lifetime — this is NOT the 24h idempotency table.
+type CommandAcceptanceRepo interface {
+	// GetByMessage returns the acceptance of one command message, or NotFound.
+	GetByMessage(tx Tx, messageID string) (*domain.CommandAcceptance, error)
+	// ByMessages resolves acceptances for a batch of message ids in one read;
+	// messages without an acceptance are absent from the map.
+	ByMessages(tx Tx, messageIDs []string) (map[string]domain.CommandAcceptance, error)
+	// Put records an acceptance. A duplicate message_id is a hard error — the
+	// service must check GetByMessage first, inside the same transaction.
+	Put(tx Tx, a *domain.CommandAcceptance) error
 }
 
 // EventRepo is append-only and backs SSE replay.
@@ -313,6 +349,11 @@ type EventRepo interface {
 type TokenRepo interface {
 	Create(tx Tx, t *domain.Token) error
 	GetByName(tx Tx, name string) (*domain.Token, error)
+	// GetByID resolves a token by its stable identifier. tokens.id — not the
+	// name — is the identity that survives secret rotation and renaming of
+	// everything human-readable, so every stored reference to "who" (project
+	// coordinator, message executor) resolves through here.
+	GetByID(tx Tx, id string) (*domain.Token, error)
 	// GetByHash is the authentication hot path; the comparison against the
 	// candidate hash must be constant-time at the call site.
 	GetByHash(tx Tx, hash []byte) (*domain.Token, error)

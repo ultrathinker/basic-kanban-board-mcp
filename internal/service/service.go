@@ -45,6 +45,10 @@ type Service interface {
 	ProgressSet(ctx context.Context, a Actor, in ProgressSetInput) (*ProgressSetResult, error)
 	ChatAdd(ctx context.Context, a Actor, in ChatAddInput) (*domain.ChatMessage, error)
 	ChatList(ctx context.Context, a Actor, in ChatListInput) (*ChatListResult, error)
+	// ChatFeed reads a project's message feed FORWARD, from the beginning of
+	// history (KANB-45) — the read a consumer uses to find commands that were
+	// written before it started.
+	ChatFeed(ctx context.Context, a Actor, in ChatFeedInput) (*ChatFeedResult, error)
 }
 
 // Include names an optional expansion on a read. One parameter name across all
@@ -174,8 +178,9 @@ func FullProjection(fields Includes) Projection {
 type BoardView string
 
 const (
-	ViewTasks   BoardView = "tasks"
-	ViewSummary BoardView = "summary"
+	ViewTasks    BoardView = "tasks"
+	ViewSummary  BoardView = "summary"
+	ViewMessages BoardView = "messages"
 )
 
 type BoardGetInput struct {
@@ -227,9 +232,25 @@ type BoardProject struct {
 	ClaimTTLSeconds     int
 	Archived            bool
 
+	// Coordinator is the appointed coordinator, nil when none is set, and
+	// Participants is everyone who MAY participate — every active token with
+	// access to the project (KANB-44). Having access says "may participate",
+	// not "is working right now"; nothing here tracks presence. No secrets
+	// travel with either: a Participant is an id and a display name only.
+	Coordinator  *Participant
+	Participants []Participant
+
 	Columns   []BoardColumn
 	DoneTotal int
 	DoneShown int
+}
+
+// Participant names one actor who may take part in a project's
+// communication. TokenID is the stable identity (tokens.id); Name is the
+// display label. The token's secret never appears in this shape.
+type Participant struct {
+	TokenID string
+	Name    string
 }
 
 type BoardColumn struct {
@@ -362,6 +383,20 @@ type TaskGetResult struct {
 
 type TaskCreateInput struct {
 	Tasks []NewTask
+	// SourceMessage optionally names a kind:command chat message this batch
+	// ACCEPTS (KANB-47). Empty means the call behaves exactly as before.
+	//
+	// When set, the whole call becomes an atomic acceptance: only the
+	// command's resolved executor (fixed at send time) may accept, the batch
+	// must belong to the command's project, and the "command -> tasks ->
+	// acceptor" link is written in the SAME transaction as the tasks — either
+	// the tasks exist AND the message is accepted, or nothing happened. A
+	// repeated acceptance returns the original task_keys with
+	// AlreadyAccepted=true and creates nothing; a repeated acceptance with
+	// different content is a loud conflict. The guarantee is durable (it
+	// survives restarts), and it covers the BOARD only: it cannot prevent an
+	// external command or deploy from running twice.
+	SourceMessage string
 }
 
 // NewTask uses symbolic refs, not positional indices: an LLM building a batch
@@ -392,6 +427,10 @@ type TaskCreateResult struct {
 	Tasks []domain.TaskView
 	// Replayed is true when an idempotency key returned the original response.
 	Replayed bool
+	// AlreadyAccepted is true when a source_message acceptance replayed the
+	// original acceptance: Tasks then carries the CURRENT views of the
+	// originally created task keys, and nothing new was created (KANB-47).
+	AlreadyAccepted bool
 }
 
 // ---------------------------------------------------------------------------
@@ -612,6 +651,12 @@ type ProjectSettings struct {
 	EnforceDependencies *bool
 	StrictDone          *bool
 	ClaimTTLSeconds     *int
+	// Coordinator appoints the project's coordinator (KANB-44). The value is
+	// a tokens.id — the identity that survives secret rotation — or an empty
+	// string to clear the appointment. nil leaves it unchanged. There is
+	// deliberately no participant list to set: participants are derived from
+	// the tokens that have access to the project.
+	Coordinator *string
 }
 
 type ProjectUpsertResult struct {
@@ -623,10 +668,32 @@ type ProjectUpsertResult struct {
 // chat
 // ---------------------------------------------------------------------------
 
+// ChatAddInput posts one message to a project feed. Project/Author/Body are
+// the original trio and behave exactly as before; the remaining fields are
+// the communication protocol (KANB-46). Their names and types are a frozen
+// wire contract — the next stage's adapter and external clients bind to
+// them.
 type ChatAddInput struct {
 	ProjectKey string
 	Author     string // optional: defaults to Actor.Name
 	Body       string
+	// Kind is one of update | scope_change | question | command. Empty
+	// means update — a call that predates the protocol is indistinguishable
+	// from one that chose its default.
+	Kind string
+	// Recipient is a participant's tokens.id or the literal "all". Empty is
+	// legal and, for question/command, means "the project's coordinator" —
+	// resolved ONCE, at send time.
+	Recipient string
+	// ReplyTo names the message this one answers. It must exist in the same
+	// project; a reply across projects is refused.
+	ReplyTo string
+	// IdempotencyKey deduplicates retries of one send, per authorized
+	// sender. The same key with the same content returns the existing
+	// message; with different content it is an explicit error. Unlike
+	// task_create's 24h idempotency window, the key lives as long as the
+	// message does.
+	IdempotencyKey string
 }
 
 type ChatMessageAddInput = ChatAddInput
@@ -647,6 +714,46 @@ type ChatListResult struct {
 }
 
 type ChatMessageListResult = ChatListResult
+
+// ---------------------------------------------------------------------------
+// chat feed — forward reading (KANB-45)
+// ---------------------------------------------------------------------------
+
+// ChatFeedInput reads a project's feed chronologically from the beginning.
+// After is the opaque cursor a previous page returned; WITHOUT it the read
+// starts at the OLDEST available message, never at "now" — a consumer that
+// starts at the current moment would silently miss every command written
+// before it launched, which is exactly the message class the feed exists to
+// deliver.
+type ChatFeedInput struct {
+	ProjectKey string
+	After      string
+	Limit      int // <= 0 defaults to 50; capped at 100
+}
+
+// ChatFeedMessage is one feed entry with the display names resolved against
+// the token registry. Token ids stay canonical (they are the addressing
+// contract); the *Name fields are conveniences for humans.
+type ChatFeedMessage struct {
+	Message              domain.ChatMessage
+	RecipientName        string // "" when the recipient is unset or "all"
+	ResolvedExecutorName string // "" when no single executor was fixed
+	// TaskKeys are the tasks created by accepting this command (KANB-47).
+	// Empty for every other message and for an unaccepted command.
+	TaskKeys []string
+}
+
+type ChatFeedResult struct {
+	Messages []ChatFeedMessage
+	// NextCursor is the position of the last message returned; pass it back
+	// as `after` for the next page. On an empty page past a position it
+	// echoes that position back, so the documented polling loop
+	// (`cursor = next_cursor`) never loses its place; it is empty only when
+	// the feed holds no message at or after the request (an empty first page
+	// included).
+	NextCursor string
+	HasMore    bool
+}
 
 // ---------------------------------------------------------------------------
 // progress — the one place the metrics arithmetic lives

@@ -89,6 +89,9 @@ func (s *svc) projectCreate(tx store.Tx, pending *[]domain.Event, a Actor, key s
 		return nil, nil, err
 	}
 	applyProjectSettings(p, in.Settings)
+	if err := s.validateCoordinator(tx, p, in.Settings); err != nil {
+		return nil, nil, err
+	}
 	if err := s.store.Projects().Create(tx, p); err != nil {
 		return nil, nil, err
 	}
@@ -132,6 +135,9 @@ func (s *svc) projectUpdate(tx store.Tx, pending *[]domain.Event, a Actor, key s
 		return nil, nil, err
 	}
 	applyProjectSettings(p, in.Settings)
+	if err := s.validateCoordinator(tx, p, in.Settings); err != nil {
+		return nil, nil, err
+	}
 	wasArchiving := false
 	if in.Archived != nil {
 		if *in.Archived && p.ArchivedAt == nil {
@@ -232,6 +238,50 @@ func applyProjectSettings(p *domain.Project, in *ProjectSettings) {
 	if in.ClaimTTLSeconds != nil {
 		p.ClaimTTLSeconds = int(domain.ClampClaimTTL(time.Duration(*in.ClaimTTLSeconds) * time.Second).Seconds())
 	}
+	if in.Coordinator != nil {
+		p.CoordinatorTokenID = strings.TrimSpace(*in.Coordinator)
+	}
+}
+
+// validateCoordinator checks a coordinator appointment the caller just made.
+// It runs inside ProjectUpsert's transaction, so a refused value rolls the
+// whole upsert back — an appointment never half-lands.
+//
+// The rules: the token must exist, must not be revoked, and must have access
+// to the project it is supposed to coordinate. The third rule is what keeps
+// "coordinator" from becoming a privilege escalation: appointing a token that
+// cannot read the project would hand it a role in a conversation it is
+// explicitly scoped away from.
+//
+// Only a caller that SET the field is refused for a bad value: an appointment
+// made earlier can age into revocation, and that must not turn every
+// unrelated settings update into a failure (the send path refuses a revoked
+// coordinator loudly when it actually matters).
+func (s *svc) validateCoordinator(tx store.Tx, p *domain.Project, in *ProjectSettings) error {
+	if in == nil || in.Coordinator == nil {
+		return nil
+	}
+	id := p.CoordinatorTokenID
+	if id == "" {
+		return nil // explicit clear is always valid
+	}
+	tok, err := s.store.Tokens().GetByID(tx, id)
+	if err != nil {
+		return domain.Invalid("settings.coordinator",
+			fmt.Sprintf("coordinator token %q does not exist", id),
+			"Pass the tokens.id of an active token that can access this project, or an empty string to clear the coordinator.")
+	}
+	if !tok.Active() {
+		return domain.Invalid("settings.coordinator",
+			fmt.Sprintf("coordinator token %q (%s) is revoked", id, tok.Name),
+			"Appoint an active token, or clear the coordinator with an empty string.")
+	}
+	if !tok.MayAccessProject(p.Key) {
+		return domain.Invalid("settings.coordinator",
+			fmt.Sprintf("coordinator token %q (%s) has no access to project %s", id, tok.Name, p.Key),
+			"Appoint a token whose project scope includes this project.")
+	}
+	return nil
 }
 
 func validateColumnSpecs(specs []ColumnSpec) error {

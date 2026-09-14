@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"strings"
 
 	gomcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -25,12 +26,18 @@ type boardFilterIn struct {
 }
 
 type boardGetInput struct {
-	Project   string         `json:"project,omitempty" jsonschema:"project key; omitted = every accessible project"`
-	View      string         `json:"view,omitempty" jsonschema:"tasks = full board, summary = counts only; default depends on whether project is set"`
+	Project   string         `json:"project,omitempty" jsonschema:"project key; omitted = every accessible project; REQUIRED for view:messages"`
+	View      string         `json:"view,omitempty" jsonschema:"tasks = full board, summary = counts only, messages = the communication feed read forward from the beginning; default depends on whether project is set"`
 	DoneLimit int            `json:"done_limit,omitempty" jsonschema:"how many done tasks to include, most recently done first"`
 	Filter    *boardFilterIn `json:"filter,omitempty"`
 	Include   []string       `json:"include,omitempty" jsonschema:"widen the per-task fields returned"`
 	Format    string         `json:"format,omitempty" jsonschema:"compact = the token-cheap text grammar, json = pretty JSON text (structuredContent is always JSON either way)"`
+	// After pages the messages view FORWARD: it is the opaque next_cursor a
+	// previous page returned. Without it the feed starts at the OLDEST
+	// message, never at "now" — a consumer must not miss commands written
+	// before it started (KANB-45).
+	After string `json:"after,omitempty" jsonschema:"messages view only: the next_cursor of a previous page; omit to read the feed from the beginning"`
+	Limit int    `json:"limit,omitempty" jsonschema:"messages view only: page size"`
 }
 
 type boardColumnOut struct {
@@ -41,6 +48,32 @@ type boardColumnOut struct {
 	Tasks    []taskOut   `json:"tasks,omitempty"`
 }
 
+// participantOut is one actor who may take part in the project's
+// communication (KANB-44): the stable tokens.id plus the display name. The
+// secret never travels — there is no field for it.
+type participantOut struct {
+	TokenID string `json:"token_id"`
+	Name    string `json:"name"`
+}
+
+func participantOuts(ps []service.Participant) []participantOut {
+	if len(ps) == 0 {
+		return nil
+	}
+	out := make([]participantOut, len(ps))
+	for i, p := range ps {
+		out[i] = participantOut{TokenID: p.TokenID, Name: p.Name}
+	}
+	return out
+}
+
+func participantOutPtr(p *service.Participant) *participantOut {
+	if p == nil {
+		return nil
+	}
+	return &participantOut{TokenID: p.TokenID, Name: p.Name}
+}
+
 // boardProjectOut publishes the project's whole configuration, not just its
 // identity. `version` in particular closes a loop that was open: project_upsert
 // (mode:"update") requires if_version and this is the only tool that reads a
@@ -49,19 +82,25 @@ type boardColumnOut struct {
 // can send a modified copy of what it read instead of guessing at the values
 // it is about to overwrite.
 type boardProjectOut struct {
-	Key                 string           `json:"key"`
-	Name                string           `json:"name"`
-	Description         string           `json:"description,omitempty"`
-	Version             int              `json:"version" jsonschema:"the project configuration version; send it back as project_upsert's if_version"`
-	FocusKey            string           `json:"focus_key,omitempty"`
-	EstimateUnit        string           `json:"estimate_unit" jsonschema:"the unit every estimate on this project is expressed in, e.g. h or d"`
-	EnforceDependencies bool             `json:"enforce_dependencies"`
-	StrictDone          bool             `json:"strict_done"`
-	ClaimTTLSeconds     int              `json:"claim_ttl_seconds"`
-	Archived            bool             `json:"archived,omitempty"`
-	Columns             []boardColumnOut `json:"columns"`
-	DoneTotal           int              `json:"done_total"`
-	DoneShown           int              `json:"done_shown"`
+	Key                 string `json:"key"`
+	Name                string `json:"name"`
+	Description         string `json:"description,omitempty"`
+	Version             int    `json:"version" jsonschema:"the project configuration version; send it back as project_upsert's if_version"`
+	FocusKey            string `json:"focus_key,omitempty"`
+	EstimateUnit        string `json:"estimate_unit" jsonschema:"the unit every estimate on this project is expressed in, e.g. h or d"`
+	EnforceDependencies bool   `json:"enforce_dependencies"`
+	StrictDone          bool   `json:"strict_done"`
+	ClaimTTLSeconds     int    `json:"claim_ttl_seconds"`
+	Archived            bool   `json:"archived,omitempty"`
+	// Coordinator names the appointed coordinator (nil/absent when none),
+	// Participants everyone who MAY participate: every active token with
+	// access to the project. Access is permission, not presence (KANB-44).
+	// Pass coordinator as project_upsert's settings.coordinator (tokens.id).
+	Coordinator  *participantOut  `json:"coordinator,omitempty"`
+	Participants []participantOut `json:"participants,omitempty" jsonschema:"derived from tokens with access to this project; may participate, not is-present"`
+	Columns      []boardColumnOut `json:"columns"`
+	DoneTotal    int              `json:"done_total"`
+	DoneShown    int              `json:"done_shown"`
 }
 
 type boardGetData struct {
@@ -69,16 +108,20 @@ type boardGetData struct {
 }
 
 type boardGetOutput struct {
-	OK    bool           `json:"ok"`
-	Op    string         `json:"op"`
-	Data  *boardGetData  `json:"data,omitempty"`
-	Meta  *toolMeta      `json:"meta,omitempty"`
-	Error *errorEnvelope `json:"error,omitempty"`
+	OK   bool          `json:"ok"`
+	Op   string        `json:"op"`
+	Data *boardGetData `json:"data,omitempty"`
+	// Messages carries the view:"messages" payload. It is a sibling of Data,
+	// not inside it, so the two shapes cannot be confused: a feed page is
+	// never a board projection.
+	Messages *boardMessagesData `json:"messages,omitempty"`
+	Meta     *toolMeta          `json:"meta,omitempty"`
+	Error    *errorEnvelope     `json:"error,omitempty"`
 }
 
 func boardGetTool() *gomcp.Tool {
 	s := schemaFor[boardGetInput]()
-	setEnum(prop(s, "view"), string(service.ViewTasks), string(service.ViewSummary))
+	setEnum(prop(s, "view"), string(service.ViewTasks), string(service.ViewSummary), string(service.ViewMessages))
 	setDefault(prop(s, "done_limit"), 0)
 	setMin(prop(s, "done_limit"), 0)
 	setMax(prop(s, "done_limit"), float64(domain.MaxDoneLimit))
@@ -87,6 +130,9 @@ func boardGetTool() *gomcp.Tool {
 	setDefault(inc, []string{})
 	setEnum(prop(s, "format"), "compact", "json")
 	setDefault(prop(s, "format"), "compact")
+	setDefault(prop(s, "limit"), 50)
+	setMin(prop(s, "limit"), 1)
+	setMax(prop(s, "limit"), 100)
 
 	filter := prop(s, "filter")
 	setEnum(prop(filter, "types"), typeNames()...)
@@ -172,6 +218,41 @@ func registerBoardGet(s *gomcp.Server, svc service.Service) {
 			}
 		}
 
+		// view:"messages" is a different payload, not a board projection:
+		// it reads the feed forward and returns messages + cursor only — the
+		// board, its columns and task bodies are deliberately absent
+		// (KANB-45). It stays inside board_get so the tool count does not
+		// grow.
+		if view == service.ViewMessages {
+			if strings.TrimSpace(in.Project) == "" {
+				derr := domain.Invalid("project", "project is required for view:messages",
+					"Pass the project key whose feed you are reading, e.g. {\"project\":\"KANB\",\"view\":\"messages\"}.")
+				return errorResult(opBoardGet, derr), boardGetOutput{OK: false, Op: opBoardGet, Error: newErrorEnvelope(derr)}, nil
+			}
+			key, kerr := domain.ValidateProjectKey(in.Project)
+			if kerr != nil {
+				derr := domain.AsError(kerr)
+				return errorResult(opBoardGet, derr), boardGetOutput{OK: false, Op: opBoardGet, Error: newErrorEnvelope(derr)}, nil
+			}
+			res, err := svc.ChatFeed(ctx, actor, service.ChatFeedInput{
+				ProjectKey: key,
+				After:      in.After,
+				Limit:      in.Limit,
+			})
+			if err != nil {
+				derr := asDomainError(err)
+				return errorResult(opBoardGet, derr), boardGetOutput{OK: false, Op: opBoardGet, Error: newErrorEnvelope(derr)}, nil
+			}
+			md := &boardMessagesData{
+				Project:    key,
+				Messages:   feedMessagesOut(res),
+				NextCursor: res.NextCursor,
+				HasMore:    res.HasMore,
+			}
+			mout := boardGetOutput{OK: true, Op: opBoardGet, Messages: md, Meta: &toolMeta{Count: len(md.Messages)}}
+			return &gomcp.CallToolResult{Content: []gomcp.Content{&gomcp.TextContent{Text: renderMessagesFeed(md)}}}, mout, nil
+		}
+
 		board, err := svc.BoardGet(ctx, actor, service.BoardGetInput{
 			ProjectKey: in.Project,
 			View:       view,
@@ -214,6 +295,8 @@ func registerBoardGet(s *gomcp.Server, svc service.Service) {
 				StrictDone:          p.StrictDone,
 				ClaimTTLSeconds:     p.ClaimTTLSeconds,
 				Archived:            p.Archived,
+				Coordinator:         participantOutPtr(p.Coordinator),
+				Participants:        participantOuts(p.Participants),
 				Columns:             cols,
 				DoneTotal:           p.DoneTotal,
 				DoneShown:           p.DoneShown,
