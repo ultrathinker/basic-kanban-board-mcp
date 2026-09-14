@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -31,6 +32,25 @@ type webExportDoc struct {
 	Projects      []service.BoardProject  `json:"projects"`
 	ProgressMarks []webExportProgressMark `json:"progress_marks"`
 	ChatMessages  []webExportChatMessage  `json:"chat_messages"`
+
+	// Truncated names every project whose done tasks did not all fit, the
+	// same field cmd/kanban's exportDocument carries and for the same
+	// reason: the board read behind this document caps done tasks at
+	// domain.MaxDoneLimit, and KANB-29 exists against loss nobody notices.
+	// The web path used to be the silent one -- it produced a document
+	// missing done tasks and said nothing at all -- which is the exact
+	// failure the card was filed about, just on the other surface.
+	Truncated []webExportTruncationNotice `json:"truncated,omitempty"`
+}
+
+// webExportTruncationNotice is cmd/kanban's exportTruncationNotice, field
+// for field: one project whose done tasks exceeded the export's capacity.
+// Total is every done task the project has (BoardProject.DoneTotal);
+// Included is how many reached this document (BoardProject.DoneShown).
+type webExportTruncationNotice struct {
+	Project  string `json:"project"`
+	Included int    `json:"included"`
+	Total    int    `json:"total"`
 }
 
 type webExportProgressMark struct {
@@ -79,6 +99,21 @@ func buildWebExportDoc(ctx context.Context, svc service.Service, actor service.A
 
 	out := &webExportDoc{Projects: board.Projects}
 	for _, bp := range board.Projects {
+		// Symmetric with runExport: name the gap in the document AND say it
+		// out loud. The CLI writes its warning to stderr, which is where the
+		// person who typed the command is looking; the browser gives the
+		// caller no such channel, so the equivalent here is the server log
+		// the operator reads plus the "truncated" block that travels inside
+		// the downloaded file itself.
+		if bp.DoneTotal > bp.DoneShown {
+			out.Truncated = append(out.Truncated, webExportTruncationNotice{
+				Project:  bp.Key,
+				Included: bp.DoneShown,
+				Total:    bp.DoneTotal,
+			})
+			log.Printf("web: export: project %s exports only %d of %d done tasks (see \"truncated\" in the document; the rest are still on the board, just not in this export)", bp.Key, bp.DoneShown, bp.DoneTotal)
+		}
+
 		projMarks, err := svc.ProgressHistory(ctx, actor, service.ProgressHistoryInput{
 			ProjectKey: bp.Key,
 		})
