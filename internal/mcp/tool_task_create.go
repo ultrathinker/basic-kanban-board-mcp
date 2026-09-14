@@ -97,7 +97,8 @@ func taskCreateTool() *gomcp.Tool {
 			"the tasks and the acceptance link commit atomically, and a repeat returns the original task keys with " +
 			"meta.already_accepted=true instead of creating a second batch. " +
 			"NOTE: this acceptance guarantee is about the BOARD only — it does not prevent an external command, deploy or " +
-			"side effect from running twice; guard those separately.\n" +
+			"side effect from running twice; guard those separately. " +
+			"A pure question needs no task at all — answer it with `project_post(reply_to: ...)`.\n" +
 			"Returns `data.tasks[]`: the created tasks, in request order, each carrying its assigned `key` and `version`.",
 		InputSchema: s,
 	}

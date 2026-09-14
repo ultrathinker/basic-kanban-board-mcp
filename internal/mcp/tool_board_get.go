@@ -142,8 +142,10 @@ func boardGetTool() *gomcp.Tool {
 	setMaxLen(prop(filter, "tags").Items, domain.MaxTagLen)
 
 	return &gomcp.Tool{
-		Name:        opBoardGet,
-		Description: "Read the board. Compact text by default — about 1,000 tokens for 30 active tasks, roughly 90% smaller than the same board as indented JSON, so it is cheap enough to call at the start of every session. structuredContent is always full JSON.",
+		Name: opBoardGet,
+		Description: "Read the board. Compact text by default — about 1,000 tokens for 30 active tasks, roughly 90% smaller than the same board as indented JSON, so it is cheap enough to call at the start of every session. structuredContent is always full JSON.\n" +
+			"`view:\"messages\"` reads one project's communication feed forward through history instead of the board: `messages[]` in chronological order (each with `id`, `created_at`, `author`, `author_token_id` — the authorized source, which the caller never chooses — `kind`, `recipient`/`recipient_name`, `resolved_executor`/`resolved_executor_name`, `reply_to`, `body`, and the `task_keys` created by accepting that command), plus `next_cursor` and `has_more`. The board itself and task bodies are NOT part of that response. Chat history is never pruned, so a cursor never goes stale; a cursor from another project, a cursor naming a message that does not exist, or an unparseable cursor is refused with an actionable error rather than a silent empty page.\n" +
+			"Feed participants and the project's coordinator are published by `view:\"summary\"` as `projects[].participants[]` and `projects[].coordinator` — token ids and display names only, never secrets.",
 		InputSchema: s,
 	}
 }

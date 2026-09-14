@@ -19,7 +19,7 @@ Every task write is a batch, every read defaults to a token-efficient compact te
 | [`task_claim`](#7-task_claim) | Claim, renew or release the lease on a single task with an atomic compare-and-swap. |
 | [`task_remove`](#8-task_remove) | Archive (or restore) tasks. |
 | [`project_upsert`](#9-project_upsert) | Create or update one project: identity, columns and settings. |
-| [`project_post`](#10-project_post) | Post a live progress update to the project chat feed. |
+| [`project_post`](#10-project_post) | Post a live message to the project chat feed. |
 | [`progress_set`](#11-progress_set) | Record a progress assessment and completion forecast for a task or an entire project. |
 | [`progress_history`](#12-progress_history) | Read the full progress-mark history behind one metric: a project's manual estimate (project only) or one task's summary estimate (task). |
 | [`board_guide`](#13-board_guide) | Read the operating guide for this kanban board: identity rules, the canonical read-modify-write loop, lease behaviour, the compact grammar version, and the error envelope. |
@@ -146,22 +146,26 @@ compact_version=1
 ### 1. `board_get`
 
 Read the board. Compact text by default — about 1,000 tokens for 30 active tasks, roughly 90% smaller than the same board as indented JSON, so it is cheap enough to call at the start of every session. structuredContent is always full JSON.
+`view:"messages"` reads one project's communication feed forward through history instead of the board: `messages[]` in chronological order (each with `id`, `created_at`, `author`, `author_token_id` — the authorized source, which the caller never chooses — `kind`, `recipient`/`recipient_name`, `resolved_executor`/`resolved_executor_name`, `reply_to`, `body`, and the `task_keys` created by accepting that command), plus `next_cursor` and `has_more`. The board itself and task bodies are NOT part of that response. Chat history is never pruned, so a cursor never goes stale; a cursor from another project, a cursor naming a message that does not exist, or an unparseable cursor is refused with an actionable error rather than a silent empty page.
+Feed participants and the project's coordinator are published by `view:"summary"` as `projects[].participants[]` and `projects[].coordinator` — token ids and display names only, never secrets.
 
 #### Parameters
 
 | Name | Type | Required | Description |
 |---|---|---|---|
+| `after` | string | Optional | messages view only: the next_cursor of a previous page; omit to read the feed from the beginning |
 | `done_limit` | integer | Optional | how many done tasks to include, most recently done first |
 | `filter` | any | Optional |  |
 | `format` | string | Optional | compact = the token-cheap text grammar, json = pretty JSON text (structuredContent is always JSON either way) |
 | `include` | any | Optional | widen the per-task fields returned |
-| `project` | string | Optional | project key; omitted = every accessible project |
-| `view` | string | Optional | tasks = full board, summary = counts only; default depends on whether project is set |
+| `limit` | integer | Optional | messages view only: page size |
+| `project` | string | Optional | project key; omitted = every accessible project; REQUIRED for view:messages |
+| `view` | string | Optional | tasks = full board, summary = counts only, messages = the communication feed read forward from the beginning; default depends on whether project is set |
 
 #### Example Call
 
 ```jsonc
-board_get({ "done_limit": <value> })
+board_get({ "after": <value> })
 ```
 
 ---
@@ -212,13 +216,16 @@ task_get({ "keys": <value> })
 
 ### 4. `task_create`
 
-Create one or more tasks in a single atomic batch (all-or-nothing). To link items of the same batch, give one a `ref` and point at it from another by prefixing that name with a single @: an item created as `{"ref": "scaffold", ...}` is referenced as `"blocked_by": ["@scaffold"]`. Returns `data.tasks[]`: the created tasks, in request order, each carrying its assigned `key` and `version`.
+Create one or more tasks in a single atomic batch (all-or-nothing). To link items of the same batch, give one a `ref` and point at it from another by prefixing that name with a single @: an item created as `{"ref": "scaffold", ...}` is referenced as `"blocked_by": ["@scaffold"]`.
+Pass `source_message` to ACCEPT a command from the project feed: only the command's resolved_executor may, the tasks and the acceptance link commit atomically, and a repeat returns the original task keys with meta.already_accepted=true instead of creating a second batch. NOTE: this acceptance guarantee is about the BOARD only — it does not prevent an external command, deploy or side effect from running twice; guard those separately. A pure question needs no task at all — answer it with `project_post(reply_to: ...)`.
+Returns `data.tasks[]`: the created tasks, in request order, each carrying its assigned `key` and `version`.
 
 #### Parameters
 
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `project` | any | Optional | do NOT set this: project is a per-item field — put it inside each element of tasks[] |
+| `source_message` | string | Optional | id of a kind:command message you (its resolved_executor) are accepting; omit for an ordinary create |
 | `tasks` | any | Required | all-or-nothing: either every task is created, or none are |
 
 #### Example Call
@@ -340,15 +347,21 @@ project_upsert({ "key": <value>, "mode": <value> })
 
 ### 10. `project_post`
 
-Post a live progress update to the project chat feed. This is a real-time broadcast for the human watching the board right now, not a post-mortem or final report for posterity. Post short messages periodically during your work (approximately every 5 minutes), not just once at the end: share what is being done now, what is planned next, and what went wrong or surprised you. Reference tasks by their key directly in the text (e.g. KANB-7) — they become clickable links on the board. Returns `data`: the posted message with its id, author, body and timestamp.
+Post a live message to the project chat feed. This is a real-time broadcast for the human watching the board right now, not a post-mortem or final report for posterity. Post short messages periodically during your work (approximately every 5 minutes), not just once at the end: share what is being done now, what is planned next, and what went wrong or surprised you. Reference tasks by their key directly in the text (e.g. KANB-7) — they become clickable links on the board.
+kind picks the message class: "update" (the default — everything above), "scope_change", "question" and "command". A question or command is addressed: pass recipient (a participant's tokens.id, or "all"), or omit it to address the project's coordinator (both are resolved to a single resolved_executor AT SEND TIME — a later coordinator change never readdresses an old command). A command's executor turns it into work atomically with task_create(source_message). A reply references the message it answers with reply_to. Send idempotency_key to make retries safe: the same key of yours with the same content returns the existing message.
+Returns `data`: the posted message with its id, author, body, timestamp and, when addressed, its resolved_executor.
 
 #### Parameters
 
 | Name | Type | Required | Description |
 |---|---|---|---|
-| `author` | string | Required | agent identity / display name (e.g. Claude, Codex, Zoë) |
+| `author` | string | Required | agent identity / display name (e.g. Claude, Codex, Zoë). Signature only — attribution always follows your token, this cannot change who you are. |
 | `body` | string | Required | message text; mention task keys like KANB-7 for clickable links |
+| `idempotency_key` | string | Optional | stable key of ONE send: the same key with the same content returns the existing message, different content (including a different project) is an error; lives as long as the message; not blank, at most 255 characters |
+| `kind` | string | Optional | update = plain progress note (default), scope_change = the plan/scope changed, question = asks one recipient (default: the coordinator), command = an assignment one executor may accept via task_create(source_message) |
 | `project` | string | Required | project key, case-insensitive |
+| `recipient` | string | Optional | tokens.id of one participant, or "all"; empty = the project coordinator for question/command |
+| `reply_to` | string | Optional | id of the message this one answers, same project |
 
 #### Example Call
 
@@ -436,4 +449,4 @@ All failures return `{ok: false, error: {code, message, remediation}}` with `isE
 | `cycle` | The proposed link or parent chain would create a cycle. | Restructure the chain so it is acyclic. |
 | `rate_limited` | The token exceeded its per-minute budget. | Slow down; the budget resets every minute. |
 | `payload_too_large` | The request body exceeded 1 MiB. | Split the batch; the cap is `MaxRequestBodyBytes`. |
-| `idempotency_mismatch` | The `idempotency_key` was reused with a different request body. | Use a fresh `idempotency_key`. |
+| `idempotency_mismatch` | The `idempotency_key` was reused with different content. Task-item keys expire after 24 hours; a `project_post` send key and a command acceptance live as long as the message they belong to. The original is intact and is named in the message. | Replay the exact original request to get the original response back, or pick a fresh key for the new content. |

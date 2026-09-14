@@ -402,6 +402,6 @@ func buildErrorHandling() string {
 	b.WriteString("| `cycle` | The proposed link or parent chain would create a cycle. | Restructure the chain so it is acyclic. |\n")
 	b.WriteString("| `rate_limited` | The token exceeded its per-minute budget. | Slow down; the budget resets every minute. |\n")
 	b.WriteString("| `payload_too_large` | The request body exceeded 1 MiB. | Split the batch; the cap is `MaxRequestBodyBytes`. |\n")
-	b.WriteString("| `idempotency_mismatch` | The `idempotency_key` was reused with a different request body. | Use a fresh `idempotency_key`. |\n")
+	b.WriteString("| `idempotency_mismatch` | The `idempotency_key` was reused with different content. Task-item keys expire after 24 hours; a `project_post` send key and a command acceptance live as long as the message they belong to. The original is intact and is named in the message. | Replay the exact original request to get the original response back, or pick a fresh key for the new content. |\n")
 	return b.String()
 }
