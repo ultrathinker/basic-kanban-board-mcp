@@ -1082,8 +1082,14 @@ select, .field input, .field textarea {
    whole. The classes are set from app.js (panelState) and toggled by
    data-charts-toggle / data-thoughts-toggle buttons in the section
    headers. */
-.chat-panel.charts-hidden .panel-section-charts,
-.chat-panel.thoughts-hidden .panel-section-thoughts { display: none; }
+/* Hide the section's BODY, never the section itself. The toggle that brings a
+   section back lives in that section's header, so hiding the whole <section>
+   takes the "show" button down with the content it is meant to restore: the
+   user hides the charts once and there is nothing left to click, and the state
+   survives a reload because it is persisted. Same failure the panel-level
+   expand button was already written to avoid, one level further in. */
+.chat-panel.charts-hidden .panel-section-charts .panel-section-body,
+.chat-panel.thoughts-hidden .panel-section-thoughts .panel-section-body { display: none; }
 .panel-section {
   display: flex;
   flex-direction: column;
