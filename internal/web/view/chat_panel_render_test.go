@@ -116,8 +116,11 @@ func TestChatPanel_EmptyProjectShowsSaneEmptiness(t *testing.T) {
 	if strings.Contains(noneHTML, "No thoughts yet") || strings.Contains(noneHTML, `id="chat-feed"`) {
 		t.Error("a failed chat read rendered the feed or its empty-state text, which would claim there are no messages")
 	}
-	if !strings.Contains(noneHTML, "data-progress-chart-slot") {
-		t.Error("the chart slot went missing with the chat: the chart does not depend on the chat read")
+	// The charts render with the page now and only when there is something to
+	// draw, so their absence here is correct — SamplePage carries no history.
+	// What must not depend on the chat read is the charts SECTION itself.
+	if !strings.Contains(noneHTML, "panel-section-charts") {
+		t.Error("the charts section went missing with the chat: the charts do not depend on the chat read")
 	}
 	// KANB-33: the panel always renders its chrome (charts section +
 	// collapse control) so the user has somewhere to land an explicit

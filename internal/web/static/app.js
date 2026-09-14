@@ -207,8 +207,8 @@
   // swap, then restore it into the freshly swapped-in markup afterwards. The
   // chart's restore uses the HTML already fetched for it rather than firing
   // a second request: it was fetched once under the "fetch once, cache in
-  // the DOM" contract fetchProgressChart documents, and the swap just threw
-  // that cached DOM node away, not the fact that it was already fetched.
+  // charts render with the page and sit outside every live region, so the
+  // swap does not touch them at all.
   //
   // The one case that must NOT reuse the cache: the metric an open chart is
   // itself scoped to just recorded a new mark or lost a track (see
@@ -266,8 +266,7 @@
     // never touches it. So nothing about the chart's CONTENT has to survive
     // this swap. What does have to survive is which bar is marked as the
     // open one, because the bars themselves are replaced wholesale — that is
-    // re-applied by markOpenChartBar() after the swap, from state app.js
-    // already holds.
+    // outside every live region, so a board refresh never disturbs them.
     var armed = {};
     var rows = root.querySelectorAll('.progress-track.is-confirming');
     for (var j = 0; j < rows.length; j++) {
@@ -277,13 +276,6 @@
   }
 
   function restoreProgressState(root, state) {
-    markOpenChartBar();
-    // A metric that just recorded a mark or lost a track is showing stale
-    // markup in the slot; re-fetch that one chart rather than leaving a
-    // number on screen that the board has already moved past.
-    if (chartSlot.key && live.dirtyChartKeys[chartSlot.key]) {
-      fetchProgressChart();
-    }
     var rows = root.querySelectorAll('[data-progress-track]');
     for (var j = 0; j < rows.length; j++) {
       if (state.armed[trackKey(rows[j])]) rows[j].classList.add('is-confirming');
@@ -1278,6 +1270,36 @@
     savePanelState(panelProjectKey(), state);
   }
 
+  // scrollPageTo moves the window, honouring the reader's motion preference:
+  // the board already respects prefers-reduced-motion for card flight, and a
+  // long smooth scroll is exactly the kind of movement that setting is about.
+  function scrollPageTo(y) {
+    var target = Math.max(0, Math.round(y));
+    var reduced = false;
+    try {
+      reduced = window.matchMedia
+        && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    } catch (e) { /* no matchMedia: fall through to smooth */ }
+    try {
+      window.scrollTo({ top: target, behavior: reduced ? 'auto' : 'smooth' });
+    } catch (e) {
+      // Older engines reject the options object; a plain jump is still the
+      // action the user asked for.
+      window.scrollTo(0, target);
+    }
+  }
+
+  // openTracksDialog shows the per-assessor breakdown for one metric. The
+  // <dialog> is rendered next to its bar, so "which breakdown" is answered
+  // by the DOM rather than by a key this code would have to keep in step.
+  function openTracksDialog(bar) {
+    var metric = bar.closest && bar.closest('[data-progress-metric]');
+    if (!metric) return;
+    var dlg = metric.querySelector('[data-progress-tracks-dialog]');
+    if (!dlg || typeof dlg.showModal !== 'function') return;
+    if (!dlg.open) dlg.showModal();
+  }
+
   // initChatRefresh wires KANB-22's refresh icon in the panel header
   // (data-chat-refresh): it reuses refreshLiveRegions() verbatim — the exact
   // fetch-and-swap the SSE handler already triggers on every event, and the
@@ -1333,6 +1355,41 @@
       if (headerBtn) {
         e.preventDefault();
         setPanelField('collapsed', !currentPanelState().collapsed);
+        return;
+      }
+      // Two jumps along the panel's own length. The panel has no scroll
+      // region of its own (owner's call — see .chat-feed in app.css), so it
+      // is the PAGE that scrolls, and these move the page, not a container.
+      var topBtn = e.target.closest && e.target.closest('[data-panel-scroll-top]');
+      if (topBtn) {
+        e.preventDefault();
+        scrollPageTo(0);
+        return;
+      }
+      // The metric opens its own breakdown. The dialog is a sibling inside
+      // the same .progress-metric, already rendered by the server, so this
+      // only has to find and open it — no fetch, and the delete-track
+      // controls inside keep working through the same delegated handlers.
+      var tracksBar = e.target.closest && e.target.closest('[data-progress-tracks-open]');
+      if (tracksBar) {
+        e.preventDefault();
+        openTracksDialog(tracksBar);
+        return;
+      }
+      var bottomBtn = e.target.closest && e.target.closest('[data-panel-scroll-bottom]');
+      if (bottomBtn) {
+        e.preventDefault();
+        // The composer is the destination: "down" means "take me to where I
+        // write", not merely "take me to the last message". Falling back to
+        // the document's end keeps the button useful for a reader who may
+        // not post (no composer rendered).
+        var composer = document.querySelector('[data-chat-compose]');
+        if (composer) {
+          var y = composer.getBoundingClientRect().bottom + window.pageYOffset;
+          scrollPageTo(y - window.innerHeight + 24);
+        } else {
+          scrollPageTo(document.documentElement.scrollHeight);
+        }
         return;
       }
     });
@@ -1965,140 +2022,6 @@
       if (armed) cancelProgressDelete(armed);
     });
   }
-
-  // -- 9. progress chart toggle ---------------------------------------------
-  //
-  // Clicking a progress bar's .pbar span (data-progress-chart-toggle, see
-  // partials.html's "progress-bar" define) opens its history chart in the
-  // single shared slot at the top of the left-hand thoughts column; clicking
-  // the same bar again closes it, and clicking a different one replaces what
-  // the slot shows. Works on a task card and in the project header alike —
-  // both go through the same "progress-bar" define, so there is only one
-  // place this is wired. GET /p/{key}/progress/chart?task=<key> (task
-  // omitted selects the project-level scope) fetches the fragment; this
-  // mirrors loadOlderChatMessages's fetch-fragment shape rather than
-  // inventing a second convention, and KANB-13's REPORT.md has the measured
-  // argument for fetching instead of rendering every chart up front.
-  //
-  // The slot is where it is because the chart used to render inline under
-  // its own bar, which pushed the entire board down the moment it opened.
-  // One slot, off to the side, means opening a chart moves nothing the owner
-  // was looking at. It also means there is no per-bar cache to keep
-  // coherent: each open is a fresh read, which is the honest answer for a
-  // number other agents are still writing to.
-  //
-  // The toggle attribute lives ONLY on the .pbar span, never on anything
-  // that also contains the delete-track control's <ul
-  // class="progress-tracks">: the two are rendered as SIBLINGS (see
-  // partials.html), so a click on the delete cross or its confirm/cancel
-  // buttons never reaches closest('[data-progress-chart-toggle]') at all —
-  // the DOM shape keeps them apart without this code needing to special-
-  // case anything. A bar with no history (view.ProgressView.Clickable
-  // false) carries no data-progress-chart-toggle attribute at all, so it is
-  // simply never matched here: no dead click, and app.css paints the
-  // pointer-cursor affordance only on .pbar-clickable.
-
-  // chartSlot is the page's single open-chart state. There is exactly one
-  // chart slot — at the top of the left-hand thoughts column — so "which
-  // chart is open" is one value, not a per-bar flag. key is the bar's
-  // progressBarKey(); project/task are what the fetch needs.
-  var chartSlot = { key: '', project: '', task: '' };
-
-  function progressChartSlotEl() {
-    return document.querySelector('[data-progress-chart-slot]');
-  }
-
-  // markOpenChartBar keeps every bar's aria-expanded in step with the one
-  // open chart. It runs after a live refresh too, because the refresh
-  // replaces the bars but not the slot.
-  function markOpenChartBar() {
-    var bars = document.querySelectorAll('[data-progress-chart-toggle]');
-    for (var i = 0; i < bars.length; i++) {
-      bars[i].setAttribute('aria-expanded',
-        chartSlot.key && progressBarKey(bars[i]) === chartSlot.key ? 'true' : 'false');
-    }
-  }
-
-  function closeProgressChart() {
-    var slot = progressChartSlotEl();
-    if (slot) {
-      slot.hidden = true;
-      slot.innerHTML = '';
-    }
-    chartSlot.key = '';
-    chartSlot.project = '';
-    chartSlot.task = '';
-    markOpenChartBar();
-  }
-
-  // fetchProgressChart loads the fragment for whatever chartSlot currently
-  // names and puts it in the shared slot. Unlike the old per-bar version
-  // there is no "fetch once and toggle after" cache: one slot means one
-  // in-flight chart at a time, and re-opening a metric should show what the
-  // board says NOW rather than what it said when the bar was first clicked.
-  function fetchProgressChart() {
-    var slot = progressChartSlotEl();
-    if (!slot || !chartSlot.project) return;
-    var url = '/p/' + encodeURIComponent(chartSlot.project) + '/progress/chart' +
-      (chartSlot.task ? '?task=' + encodeURIComponent(chartSlot.task) : '');
-    var forKey = chartSlot.key;
-    fetch(url, { credentials: 'same-origin', cache: 'no-store', headers: { 'Accept': 'text/html' } })
-      .then(function (r) {
-        if (!r.ok) throw new Error('status ' + r.status);
-        return r.text();
-      })
-      .then(function (html) {
-        // The owner may have clicked another metric (or closed this one)
-        // while this was in flight; a late response must not overwrite it.
-        if (chartSlot.key !== forKey) return;
-        // An empty fragment means the history vanished between render and
-        // fetch (e.g. a track delete raced this click) — nothing to show,
-        // so close rather than open on emptiness.
-        if (!html) {
-          closeProgressChart();
-          return;
-        }
-        delete live.dirtyChartKeys[forKey];
-        slot.innerHTML = html;
-        slot.hidden = false;
-        markOpenChartBar();
-      })
-      .catch(function () {
-        toast('Could not load the progress chart.', 'error');
-      });
-  }
-
-  // toggleProgressChart opens the clicked metric's chart in the shared slot,
-  // or closes it if that metric is already the one on show. Opening also
-  // opens the left column: the chart lives in it, and a chart rendered into
-  // a hidden panel would look like a click that did nothing.
-  function toggleProgressChart(bar) {
-    var key = progressBarKey(bar);
-    if (chartSlot.key === key) {
-      closeProgressChart();
-      return;
-    }
-    chartSlot.key = key;
-    chartSlot.project = bar.getAttribute('data-project') || '';
-    chartSlot.task = bar.getAttribute('data-task') || '';
-    // KANB-33: the panel is visible by default; if the user has explicitly
-    // collapsed it, opening a chart must re-expand it (a chart rendered
-    // into a hidden panel would look like a click that did nothing — that
-    // is exactly what this fallback was for, before KANB-33 made the
-    // panel the default). The persisted state is updated so the next page
-    // load does not silently re-collapse the panel.
-    var state = currentPanelState();
-    if (state.collapsed) setPanelField('collapsed', false);
-    // The same reasoning one level in: the charts SECTION can be hidden on its
-    // own, and a chart rendered into a hidden section is just as invisible as
-    // one rendered into a collapsed panel. Without this the bar took the
-    // click, set aria-expanded="true" and filled the slot, and nothing
-    // whatsoever appeared on screen.
-    if (state.charts === 'hidden') setPanelField('charts', 'shown');
-    markOpenChartBar();
-    fetchProgressChart();
-  }
-
   // openChartDetail loads the enlarged charts into the modal. It asks the
   // SAME endpoint with detail=1 rather than rendering a second picture on the
   // client, so the modal and the inline panel can never disagree about the
@@ -2115,15 +2038,19 @@
   // draws around the same marks. They cannot disagree about the data.
   function openChartDetail(which) {
     var dlg = document.getElementById('chart-dialog');
-    if (!dlg || typeof dlg.showModal !== 'function' || !chartSlot.project) return;
+    if (!dlg || typeof dlg.showModal !== 'function') return;
+    // The scope used to come from whichever bar had been clicked. The charts
+    // are the project's now and render with the page, so the slot carries it.
+    var scopeEl = document.querySelector('[data-chart-project]');
+    var project = scopeEl ? scopeEl.getAttribute('data-chart-project') : '';
+    if (!project) return;
     var body = dlg.querySelector('[data-chart-dialog-body]');
     var titleEl = dlg.querySelector('#chart-dialog-title');
     if (!body) return;
     body.innerHTML = '<p class="text-subtle">Loading the full chart…</p>';
     if (!dlg.open) dlg.showModal();
-    var url = '/p/' + encodeURIComponent(chartSlot.project) + '/progress/chart' +
-      '?detail=' + encodeURIComponent(which) +
-      (chartSlot.task ? '&task=' + encodeURIComponent(chartSlot.task) : '');
+    var url = '/p/' + encodeURIComponent(project) + '/progress/chart' +
+      '?detail=' + encodeURIComponent(which);
     fetch(url, { credentials: 'same-origin', cache: 'no-store', headers: { 'Accept': 'text/html' } })
       .then(function (r) {
         if (!r.ok) throw new Error('status ' + r.status);
@@ -2151,13 +2078,11 @@
         openChartDetail(zoom.getAttribute('data-chart-zoom'));
         return;
       }
-      var bar = e.target.closest && e.target.closest('[data-progress-chart-toggle]');
-      if (!bar) return;
-      toggleProgressChart(bar);
     });
-    // role="button" on a <span> needs Enter/Space wired by hand — a real
-    // <button> gets both for free, but .pbar cannot be one (it also paints
-    // the ProgressSquares cells app.css positions as flex children).
+    // The zoom button is a real <button>, so Enter/Space come for free. The
+    // progress bar is no longer a control at all (owner, 14.09.2026: the
+    // charts are always shown and the section's own "hide" is the only thing
+    // that hides them), so there is nothing else here to key-activate.
     document.addEventListener('keydown', function (e) {
       if (e.key !== 'Enter' && e.key !== ' ' && e.key !== 'Spacebar') return;
       var zoomKey = e.target.closest && e.target.closest('[data-chart-zoom]');
@@ -2166,12 +2091,16 @@
         openChartDetail(zoomKey.getAttribute('data-chart-zoom'));
         return;
       }
-      var bar = e.target.closest && e.target.closest('[data-progress-chart-toggle]');
-      if (!bar) return;
-      // Space must not also scroll the page, the way it would with no
-      // handler at all on a focused, non-native "button".
-      e.preventDefault();
-      toggleProgressChart(bar);
+      // role="button" on a <span> needs Enter/Space wired by hand — a real
+      // <button> gets both for free, but .pbar cannot be one (it also paints
+      // the ProgressSquares cells app.css positions as flex children).
+      var tracksKey = e.target.closest && e.target.closest('[data-progress-tracks-open]');
+      if (tracksKey) {
+        // Space must not also scroll the page, the way it would with no
+        // handler at all on a focused, non-native "button".
+        e.preventDefault();
+        openTracksDialog(tracksKey);
+      }
     });
   }
 

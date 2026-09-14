@@ -808,6 +808,16 @@ select, .field input, .field textarea {
   background: var(--ink);
   border-color: var(--ink);
 }
+/* The metric that has a breakdown behind it is a control, and says so the
+   same way every other custom click target on this board does: a pointer and
+   a hairline emphasis on hover/focus, nothing more. The automatic done-share
+   bar has no tracks, gets none of this, and stays plain text. */
+.pbar-openstracks { cursor: pointer; }
+.pbar-openstracks:hover,
+.pbar-openstracks:focus-visible {
+  outline: 1px solid var(--rule-strong);
+  outline-offset: 2px;
+}
 .pbar-label {
   margin-left: 0.375rem;
   font-size: var(--fs-2);
@@ -841,14 +851,6 @@ select, .field input, .field textarea {
    already had. app.js wires the click/Enter/Space handler off
    data-progress-chart-toggle; this file only paints the affordance and the
    chart's own box, never the click itself. */
-.pbar-clickable {
-  cursor: pointer;
-}
-.pbar-clickable:hover,
-.pbar-clickable:focus-visible {
-  outline: 1px solid var(--rule-strong);
-  outline-offset: 2px;
-}
 /* --- the progress chart's slot ------------------------------------------- */
 /* The chart opens in ONE place: the top of the left-hand thoughts column
    (#progress-chart-slot in pages.html), never underneath the bar that was
@@ -893,7 +895,7 @@ select, .field input, .field textarea {
 .items-chart,
 .forecast-chart { margin-top: 0.4rem; }
 /* Both inline panels open the full chart. The affordance is the same one
-   .pbar-clickable uses, for the same reason: a click target with no cursor
+   the chart zoom button uses, for the same reason: a click target with no cursor
    change is a click target nobody finds. */
 [data-chart-zoom] { cursor: zoom-in; }
 [data-chart-zoom]:hover { border-color: var(--rule-strong); }

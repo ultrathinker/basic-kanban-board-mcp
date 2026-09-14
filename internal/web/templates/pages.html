@@ -145,7 +145,11 @@
         <button type="button" class="section-toggle" data-charts-toggle aria-controls="panel-section-charts-body" aria-expanded="true">hide</button>
       </header>
       <div class="panel-section-body" id="panel-section-charts-body">
-        <div class="chart-slot" id="progress-chart-slot" data-progress-chart-slot hidden></div>
+        {{- /* Rendered with the page, not fetched on click: the charts are
+             always shown (owner, 14.09.2026). data-chart-project carries the
+             scope the zoom modal asks for, which used to come from whichever
+             bar had been clicked. Nothing to draw renders no frame. */ -}}
+        {{if .Charts}}<div class="chart-slot" id="progress-chart-slot" data-chart-project="{{.Project.Key}}">{{template "progress-chart-fragment" .Charts}}</div>{{end}}
       </div>
     </section>
     {{if .Chat}}
@@ -175,6 +179,10 @@
              — there is no last activity to report, not "0s ago". */ -}}
         {{if .Chat.Silence}}<span class="mono text-subtle chat-panel-silence" title="Last activity time and silence">last {{.Chat.LatestAt.Format "15:04"}} · {{.Chat.Silence}}</span>{{end}}
         <span class="spacer"></span>
+        {{- /* The mirror of the footer's "top": the feed is long and the
+             composer is at its very end, so this jumps straight to where a
+             reply is written instead of scrolling past every message. */ -}}
+        <button type="button" class="section-toggle" data-panel-scroll-bottom title="Scroll down to the message composer" aria-label="Scroll down to the message composer">down</button>
         <button type="button" class="section-toggle" data-thoughts-toggle aria-controls="panel-section-thoughts-body" aria-expanded="true">hide</button>
       </header>
       <div class="panel-section-body" id="panel-section-thoughts-body">
@@ -253,6 +261,11 @@
          a footer always sits — the user expects collapse actions at the
          end, not interleaved with the content they collapse. */ -}}
     <div class="panel-footer">
+      {{- /* "top" sits beside collapse because this footer is where a reader
+           ends up after scrolling the whole panel: having come this far to
+           reach collapse, the other thing they want is back to the start of
+           the page, without scrolling all the way up by hand. */ -}}
+      <button type="button" class="btn btn-sm" data-panel-scroll-top title="Scroll back to the top of the page" aria-label="Scroll back to the top of the page">top</button>
       <button type="button" class="btn btn-sm" data-panel-collapse aria-controls="chat-panel" aria-expanded="true" title="Collapse the panel" aria-label="Collapse the panel">collapse</button>
     </div>
   </aside>

@@ -29,6 +29,14 @@ type chatOlderStubService struct {
 	calls    int
 }
 
+// The board page renders its charts server-side now (they are no longer
+// fetched when a progress bar is clicked), so every stub that answers a board
+// render has to answer this read too. Empty history is enough: what these
+// tests assert is elsewhere on the page.
+func (s *chatOlderStubService) ProgressHistory(_ context.Context, _ service.Actor, _ service.ProgressHistoryInput) (*service.ProgressHistoryResult, error) {
+	return &service.ProgressHistoryResult{}, nil
+}
+
 func (s *chatOlderStubService) ChatFeed(_ context.Context, _ service.Actor, _ service.ChatFeedInput) (*service.ChatFeedResult, error) {
 	return nil, ErrServiceUnavailable
 }

@@ -79,21 +79,21 @@ func TestAppJS_PanelIsVisibleByDefault(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// KANB-33 item 5: clicking the progress bar still opens the chart.
+// The progress bar must not show or hide the charts.
 //
-// The panel and the charts section can each be hidden on their own, and the
-// chart is rendered INTO that section. toggleProgressChart already re-expanded
-// a collapsed panel, for exactly the stated reason that "a chart rendered into
-// a hidden panel would look like a click that did nothing" — but it did not
-// check the section. With the charts section hidden the click was fully
-// processed: the bar took aria-expanded="true" and the slot was filled, and
-// nothing appeared on screen, because the element holding it was display:none.
+// It used to: clicking it filled a chart slot and, because a chart rendered
+// into a hidden section is invisible, it also force-expanded the panel and
+// the charts section. That made the bar a second control for the same thing
+// the section's own "hide" button does, a few pixels away.
 //
-// Go cannot click the bar, so the guard reads the handler instead: both ways
-// of hiding the chart must be undone before it is fetched.
+// Owner, 14.09.2026: the charts are always shown, "hide" is the only control
+// that hides them, and clicking the bar shows the per-assessor breakdown in a
+// dialog instead. This guards the removal: nothing in app.js may reach for
+// the panel's collapsed/charts state from a progress-bar click again, and the
+// bar's own toggle attribute must be gone from the stylesheet-facing wiring.
 // ---------------------------------------------------------------------------
 
-func TestAppJS_OpeningAChartRevealsWhateverIsHidingIt(t *testing.T) {
+func TestAppJS_TheProgressBarNoLongerTouchesTheChartsSection(t *testing.T) {
 	sub, err := fs.Sub(staticFS, "static")
 	if err != nil {
 		t.Fatalf("fs.Sub: %v", err)
@@ -104,27 +104,33 @@ func TestAppJS_OpeningAChartRevealsWhateverIsHidingIt(t *testing.T) {
 	}
 	js := string(raw)
 
-	const marker = "function toggleProgressChart("
-	at := strings.Index(js, marker)
-	if at < 0 {
-		t.Fatal("toggleProgressChart not found in app.js; if it was renamed, move this guard with it")
-	}
-	// The handler ends where the next top-level function begins.
-	rest := js[at+len(marker):]
-	end := strings.Index(rest, "\n  function ")
-	if end < 0 {
-		end = len(rest)
-	}
-	body := rest[:end]
-
-	for _, want := range []struct{ needle, why string }{
-		{"state.collapsed", "a collapsed panel must be re-expanded before the chart is fetched"},
-		{"state.charts", "a hidden charts SECTION must be revealed too, or the chart lands in display:none"},
+	for _, gone := range []string{
+		"function toggleProgressChart(",
+		"data-progress-chart-toggle",
 	} {
-		if !strings.Contains(body, want.needle) {
-			t.Errorf("toggleProgressChart never looks at %s.\nKANB-33 item 5: %s.\n"+
-				"Without it the click is processed in full — the bar takes aria-expanded=\"true\" and the "+
-				"slot is filled — and the reader sees nothing happen at all.", want.needle, want.why)
+		if strings.Contains(js, gone) {
+			t.Errorf("app.js still carries %q: the bar is a chart toggle again, which the owner removed", gone)
+		}
+	}
+
+	// The opener that replaced it must exist and must open a dialog, not
+	// mutate panel state.
+	if !strings.Contains(js, "data-progress-tracks-open") {
+		t.Fatal("app.js does not wire [data-progress-tracks-open]: the bar renders as a control and does nothing")
+	}
+	at := strings.Index(js, "function openTracksDialog(")
+	if at < 0 {
+		t.Fatal("openTracksDialog not found in app.js; if it was renamed, move this guard with it")
+	}
+	rest := js[at:]
+	end := strings.Index(rest[10:], "function ")
+	if end < 0 {
+		end = len(rest) - 10
+	}
+	body := rest[:end+10]
+	for _, forbidden := range []string{"setPanelField", "currentPanelState"} {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("openTracksDialog calls %s: opening the breakdown must not move the panel or the charts section", forbidden)
 		}
 	}
 }

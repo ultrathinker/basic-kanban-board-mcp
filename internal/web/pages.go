@@ -363,6 +363,8 @@ func (w *Web) handleBoard(rw http.ResponseWriter, r *http.Request) {
 			coordinatorName(board.Projects[0]), chatParticipants(board.Projects[0]))
 	}
 
+	model.Charts = w.projectChartFragment(r.Context(), actorFor(tok), board.Projects[0].Key)
+
 	page := w.newPage(r.Context(), rw, r, tok, "board")
 	page.Title = board.Projects[0].Name + " · basic-kanban-board-mcp"
 	page.Model = model
@@ -493,6 +495,42 @@ func (w *Web) handleChatPost(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSONIndent(rw, map[string]any{"ok": true, "id": m.ID})
+}
+
+// projectChartFragment builds the panel's chart set for a project scope. It
+// exists because the charts are now rendered WITH the board page instead of
+// fetched when a progress bar is clicked (owner, 14.09.2026: the bar is no
+// longer a control over the charts). The fragment handler still uses the same
+// pieces for the per-task scope and for the live refresh, so the projections
+// live in exactly one place and the page and the fragment cannot disagree.
+//
+// A failed read costs the charts, not the page: the board renders without
+// them rather than not at all, the same best-effort rule the chat read
+// already follows.
+func (w *Web) projectChartFragment(ctx context.Context, a service.Actor, key string) *view.ProgressChartFragment {
+	result, err := w.d.Service.ProgressHistory(ctx, a, service.ProgressHistoryInput{
+		ProjectKey:    key,
+		IncludeReplay: true,
+	})
+	if err != nil {
+		return nil
+	}
+	notes, truncated := scopeChangeNotes(ctx, w.d.Service, a, key)
+	items := view.NewItemsChartView(result.Replay, view.DefaultChartWidth, view.DefaultChartHeight,
+		view.ScopeChangeMarks(notes)...)
+	if items != nil && truncated {
+		items.Note = scopeChangeTruncatedNote()
+	}
+	frag := &view.ProgressChartFragment{
+		Progress:  view.NewProgressChartView(result.Marks, view.DefaultChartWidth, view.DefaultChartHeight),
+		Forecast:  view.NewForecastChartView(result.Marks, view.DefaultChartWidth, view.DefaultChartHeight),
+		Items:     items,
+		Readiness: view.NewReadinessChartView(result.Replay, view.DefaultChartWidth, view.DefaultChartHeight),
+	}
+	if frag.Empty() {
+		return nil
+	}
+	return frag
 }
 
 // handleProgressChart is "GET /p/{key}/progress/chart?task=<key>": the

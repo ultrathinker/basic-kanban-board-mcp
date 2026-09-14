@@ -26,6 +26,14 @@ type doneToggleService struct {
 	boards map[string]*service.Board
 }
 
+// The board page renders its charts server-side now (they are no longer
+// fetched when a progress bar is clicked), so every stub that answers a board
+// render has to answer this read too. Empty history is enough: what these
+// tests assert is elsewhere on the page.
+func (s *doneToggleService) ProgressHistory(_ context.Context, _ service.Actor, _ service.ProgressHistoryInput) (*service.ProgressHistoryResult, error) {
+	return &service.ProgressHistoryResult{}, nil
+}
+
 func (s *doneToggleService) BoardGet(_ context.Context, _ service.Actor, in service.BoardGetInput) (*service.Board, error) {
 	if b, ok := s.boards[in.ProjectKey]; ok {
 		return b, nil

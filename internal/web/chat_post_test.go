@@ -196,6 +196,13 @@ type chatBoardStubService struct {
 	taskGetInputs []service.TaskGetInput
 }
 
+// The board page renders the charts itself now (they are no longer fetched on
+// a bar click), so it makes this read too. No history is answer enough: this
+// test is about the composer and the acceptance mark.
+func (s *chatBoardStubService) ProgressHistory(_ context.Context, _ service.Actor, _ service.ProgressHistoryInput) (*service.ProgressHistoryResult, error) {
+	return &service.ProgressHistoryResult{}, nil
+}
+
 func (s *chatBoardStubService) BoardGet(_ context.Context, _ service.Actor, in service.BoardGetInput) (*service.Board, error) {
 	return &service.Board{Projects: []service.BoardProject{{
 		Key:  "BMB",

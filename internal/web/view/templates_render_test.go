@@ -219,37 +219,42 @@ func renderCases() []renderCase {
 			// chart container of its own any more: there is one shared slot
 			// at the top of the left-hand column (pages.html), because an
 			// inline container pushed the whole board down when it opened.
-			name:     "progress-bar/clickable-carries-the-toggle-scope",
+			name:     "progress-bar/opens-its-own-breakdown",
 			template: "progress-bar",
 			data: map[string]any{"Progress": view.NewAssessedProgress(percentPtr(60), 2, nil, "").
 				WithTracks("BMB", "BMB-1", []view.ProgressTrack{{Assessor: "alpha", Percent: 60, Count: 4}})},
 			wants: []string{
-				"pbar-clickable",
-				"data-progress-chart-toggle",
+				"pbar-openstracks",
+				"data-progress-tracks-open",
+				"data-progress-tracks-dialog",
 				`data-project="BMB"`,
 				`data-task="BMB-1"`,
 				`role="button"`,
 				`tabindex="0"`,
-				`aria-expanded="false"`,
+				`aria-haspopup="dialog"`,
 			},
 			// The bar must not carry a chart container: the one place a
 			// chart may land is the shared slot.
-			notWants: []string{"<no value>", "data-progress-chart-slot", `class="progress-chart"`},
+			// The bar must not carry the removed chart toggle, and must not
+			// draw a chart of its own: the charts render with the page into
+			// the panel, and this control only opens the breakdown.
+			notWants: []string{"<no value>", "data-progress-chart-toggle", "pbar-clickable", `class="progress-chart"`},
 		},
 		{
-			// The project-header manual metric is Clickable too (TaskKey
-			// empty selects the project-level scope, the same convention
-			// the delete-track control already uses).
-			name:     "progress-bar/clickable-project-scope-empty-task",
+			// A metric with NO assessor rows behind it is not a control at
+			// all: nothing to open, so no pointer, no role and no dead click.
+			// WithTracks("BMB", "", nil) is the project-header shape with an
+			// empty breakdown.
+			name:     "progress-bar/no-breakdown-is-inert",
 			template: "progress-bar",
 			data: map[string]any{"Progress": view.NewAssessedProgress(percentPtr(30), 2, nil, "").
 				WithTracks("BMB", "", nil)},
 			wants: []string{
-				"data-progress-chart-toggle",
 				`data-project="BMB"`,
 				`data-task=""`,
 			},
-			notWants: []string{"<no value>"},
+			notWants: []string{"<no value>", "data-progress-tracks-open", "pbar-openstracks",
+				"data-progress-tracks-dialog", `role="button"`},
 		},
 		{
 			// The fragment "GET /p/{key}/progress/chart" responds with:

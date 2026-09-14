@@ -584,6 +584,13 @@ type BoardModel struct {
 	// chat read failed — the page then renders without the panel rather
 	// than showing a lying "no messages yet".
 	Chat *ChatPanel
+	// Charts is the panel's chart set, rendered WITH the page. It used to be
+	// fetched on demand: clicking a progress bar filled an empty slot. The
+	// owner removed that click (14.09.2026 — the charts are always shown and
+	// the section's own "hide" is the only control that hides them), so the
+	// server has to put them there. Nil when there is nothing to draw, which
+	// renders no frame rather than an empty one.
+	Charts *ProgressChartFragment
 	// ChatOpen is the split-layout switch. The server always renders the
 	// page closed; app.js restores the persisted state from localStorage
 	// (best effort, guarded) and toggles this class plus the panel's

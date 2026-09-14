@@ -198,25 +198,31 @@ func TestProgressView_Clickable(t *testing.T) {
 // sibling .progress-tracks list) — this pins that shape so a future edit
 // cannot accidentally nest one inside the other, which would let a click
 // meant for the cross also (or instead) toggle the chart.
-func TestProgressBar_ChartClickTargetDoesNotSwallowTrackDelete(t *testing.T) {
+func TestProgressBar_OpenerDoesNotSwallowTrackDelete(t *testing.T) {
 	pv := view.NewAssessedProgress(percentPtr(60), 2, nil, "").
 		WithTracks("BMB", "BMB-1", []view.ProgressTrack{{Assessor: "alpha", Percent: 60, Count: 3}})
 	html := renderProgress(t, "progress-bar", map[string]any{"Progress": pv})
 
-	toggleIdx := strings.Index(html, "data-progress-chart-toggle")
+	openerIdx := strings.Index(html, "data-progress-tracks-open")
+	dialogIdx := strings.Index(html, "data-progress-tracks-dialog")
 	tracksListIdx := strings.Index(html, `<ul class="progress-tracks"`)
 	deleteArmIdx := strings.Index(html, "data-progress-delete-arm")
-	if toggleIdx < 0 || tracksListIdx < 0 || deleteArmIdx < 0 {
-		t.Fatalf("expected all three markers present: toggle=%d tracksList=%d arm=%d\n%s", toggleIdx, tracksListIdx, deleteArmIdx, html)
+	if openerIdx < 0 || dialogIdx < 0 || tracksListIdx < 0 || deleteArmIdx < 0 {
+		t.Fatalf("expected all four markers present: opener=%d dialog=%d tracksList=%d arm=%d; html=%s",
+			openerIdx, dialogIdx, tracksListIdx, deleteArmIdx, html)
 	}
-	// The chart toggle attribute must be written before the tracks <ul>
-	// even starts, and the delete cross must live after that <ul> opens —
-	// i.e. the two controls are siblings in document order, the cross is
-	// never inside the element the toggle attribute is on. A click handler
-	// scoped to [data-progress-chart-toggle] via closest() can therefore
-	// never match an event whose target is the cross.
-	if toggleIdx > tracksListIdx {
-		t.Fatalf("chart toggle attribute (%d) appears after the tracks list starts (%d): it must be on the earlier .pbar span", toggleIdx, tracksListIdx)
+	// The opener attribute must be written before the dialog even starts, and
+	// the delete cross must live inside the tracks <ul> within it — i.e. the
+	// two controls are siblings in document order and the cross is never
+	// inside the element the opener attribute sits on. A handler scoped to
+	// [data-progress-tracks-open] via closest() can therefore never match an
+	// event whose target is the cross, which would otherwise reopen the
+	// dialog the user is deleting a track in.
+	if openerIdx > dialogIdx {
+		t.Fatalf("opener attribute (%d) appears after the dialog starts (%d): it must be on the earlier .pbar span", openerIdx, dialogIdx)
+	}
+	if tracksListIdx < dialogIdx {
+		t.Fatalf("tracks list (%d) starts before the dialog (%d): the breakdown must live INSIDE the dialog, not inline in the metric row", tracksListIdx, dialogIdx)
 	}
 	if deleteArmIdx < tracksListIdx {
 		t.Fatalf("delete-arm marker (%d) appears before the tracks list starts (%d): expected it inside <ul class=\"progress-tracks\">", deleteArmIdx, tracksListIdx)

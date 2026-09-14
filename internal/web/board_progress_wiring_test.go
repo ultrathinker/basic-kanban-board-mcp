@@ -37,6 +37,18 @@ func (s *progressBoardStub) BoardGet(_ context.Context, _ service.Actor, _ servi
 	}}}, nil
 }
 
+// The board page now renders the charts itself (they are no longer fetched
+// on a bar click), so it makes this read too. Answering with no history is
+// enough: this test is about the wiring on the assembled page, and the chart
+// content has its own tests.
+func (s *progressBoardStub) ProgressHistory(_ context.Context, _ service.Actor, _ service.ProgressHistoryInput) (*service.ProgressHistoryResult, error) {
+	return &service.ProgressHistoryResult{}, nil
+}
+
+func (s *progressBoardStub) ChatFeed(_ context.Context, _ service.Actor, _ service.ChatFeedInput) (*service.ChatFeedResult, error) {
+	return &service.ChatFeedResult{}, nil
+}
+
 func (s *progressBoardStub) ProjectProgress(_ context.Context, _ service.Actor, in service.ProjectProgressInput) (*service.ProjectProgressResult, error) {
 	manual := 55
 	eta := time.Now().UTC().Add(72 * time.Hour)
@@ -51,10 +63,6 @@ func (s *progressBoardStub) ProjectProgress(_ context.Context, _ service.Actor, 
 			{Assessor: "beta", Percent: 50, Count: 2},
 		},
 	}, nil
-}
-
-func (s *progressBoardStub) ChatFeed(_ context.Context, _ service.Actor, _ service.ChatFeedInput) (*service.ChatFeedResult, error) {
-	return &service.ChatFeedResult{}, nil
 }
 
 func (s *progressBoardStub) ChatList(_ context.Context, _ service.Actor, _ service.ChatListInput) (*service.ChatListResult, error) {
@@ -76,8 +84,9 @@ func TestBoardPage_ChartWiringReachesTheAssembledPage(t *testing.T) {
 	}
 	body := rec.Body.String()
 	for _, want := range []string{
-		`pbar-clickable`,
-		`data-progress-chart-toggle`,
+		`pbar-openstracks`,
+		`data-progress-tracks-open`,
+		`data-progress-tracks-dialog`,
 		`data-project="BMB" data-task=""`,
 		// The delete arm rides each assessor's row, and the confirmation
 		// names the point count that would be lost.
