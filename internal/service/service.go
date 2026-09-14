@@ -746,7 +746,11 @@ type ChatFeedMessage struct {
 type ChatFeedResult struct {
 	Messages []ChatFeedMessage
 	// NextCursor is the position of the last message returned; pass it back
-	// as `after` for the next page. Empty when the feed is fully read.
+	// as `after` for the next page. On an empty page past a position it
+	// echoes that position back, so the documented polling loop
+	// (`cursor = next_cursor`) never loses its place; it is empty only when
+	// the feed holds no message at or after the request (an empty first page
+	// included).
 	NextCursor string
 	HasMore    bool
 }

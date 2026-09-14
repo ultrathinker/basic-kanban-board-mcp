@@ -263,6 +263,79 @@ func TestChatFeed_ForeignCursorRejected(t *testing.T) {
 	}
 }
 
+// TestChatFeed_EmptyPageKeepsPosition: the documented polling loop is
+// `cursor = next_cursor`; an empty page must therefore echo the requested
+// `after` back as next_cursor, never return an empty string — an empty string
+// would reset the consumer to the beginning of the history and re-deliver
+// everything it already saw. Written against the cursor as an OPAQUE string
+// on purpose: the wire contract is "the position survives an empty page",
+// whatever the cursor's internal format is.
+func TestChatFeed_EmptyPageKeepsPosition(t *testing.T) {
+	env := openTestEnv(t)
+	ctx := context.Background()
+	postFeedMessage(t, env, env.actor, "first")
+	postFeedMessage(t, env, env.actor, "second")
+
+	page, err := env.svc.ChatFeed(ctx, env.actor, ChatFeedInput{ProjectKey: env.proj.Key})
+	if err != nil {
+		t.Fatalf("first read: %v", err)
+	}
+	if page.NextCursor == "" {
+		t.Fatal("non-empty page carried no next_cursor")
+	}
+	held := page.NextCursor
+
+	// Poll with the held cursor until nothing new arrives; the position must
+	// survive every empty page.
+	for poll := 0; poll < 3; poll++ {
+		res, err := env.svc.ChatFeed(ctx, env.actor, ChatFeedInput{ProjectKey: env.proj.Key, After: held})
+		if err != nil {
+			t.Fatalf("poll %d: %v", poll, err)
+		}
+		if len(res.Messages) != 0 {
+			t.Fatalf("poll %d returned %d messages over a static feed", poll, len(res.Messages))
+		}
+		if res.NextCursor != held {
+			t.Fatalf("empty poll %d returned next_cursor %q, want the requested position %q echoed back", poll, res.NextCursor, held)
+		}
+	}
+
+	// The held position still works as an insertion point: a message that
+	// arrives afterwards is delivered exactly once, and the page after that
+	// is empty again WITH the position kept.
+	postFeedMessage(t, env, env.actor, "arrived later")
+	res, err := env.svc.ChatFeed(ctx, env.actor, ChatFeedInput{ProjectKey: env.proj.Key, After: held})
+	if err != nil {
+		t.Fatalf("poll after arrival: %v", err)
+	}
+	if got := feedBodies(res.Messages); len(got) != 1 || got[0] != "arrived later" {
+		t.Fatalf("poll after arrival delivered %v, want exactly [arrived later]", got)
+	}
+	if res.NextCursor == "" || res.NextCursor == held {
+		t.Fatalf("page after arrival returned next_cursor %q, want a new position past the new message", res.NextCursor)
+	}
+	advanced := res.NextCursor
+
+	empty, err := env.svc.ChatFeed(ctx, env.actor, ChatFeedInput{ProjectKey: env.proj.Key, After: advanced})
+	if err != nil {
+		t.Fatalf("final poll: %v", err)
+	}
+	if len(empty.Messages) != 0 || empty.NextCursor != advanced {
+		t.Fatalf("final poll = %v, cursor %q; want an empty page echoing %q", feedBodies(empty.Messages), empty.NextCursor, advanced)
+	}
+
+	// An empty FIRST page has no position to keep: "" is the honest
+	// "start from the top" answer there.
+	fresh := seedSecondProject(t, env)
+	emptyFirst, err := env.svc.ChatFeed(ctx, env.actor, ChatFeedInput{ProjectKey: fresh.Key})
+	if err != nil {
+		t.Fatalf("empty first page: %v", err)
+	}
+	if len(emptyFirst.Messages) != 0 || emptyFirst.NextCursor != "" {
+		t.Fatalf("empty first page = %v, cursor %q; want an empty page and no position", feedBodies(emptyFirst.Messages), emptyFirst.NextCursor)
+	}
+}
+
 // TestChatFeed_Scoping: the feed is project-scoped and the actor's project
 // scope applies; a token scoped away from the project cannot read its feed,
 // and another project's messages never leak into the page.

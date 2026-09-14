@@ -37,10 +37,16 @@ type feedMessageOut struct {
 
 // boardMessagesData is the data block board_get returns for view:"messages".
 type boardMessagesData struct {
-	Project    string           `json:"project"`
-	Messages   []feedMessageOut `json:"messages"`
-	NextCursor string           `json:"next_cursor,omitempty" jsonschema:"opaque position: pass back as after for the next page; present on every non-empty page so a consumer can also poll it for later arrivals"`
-	HasMore    bool             `json:"has_more"`
+	Project  string           `json:"project"`
+	Messages []feedMessageOut `json:"messages"`
+	// NextCursor deliberately carries no omitempty: a polling consumer does
+	// `cursor = next_cursor` and re-asks. If the field vanished on an empty
+	// page, the consumer would read "" and restart from the beginning of the
+	// history, re-delivering everything it already saw. On an empty page the
+	// service echoes the requested after back; "" means only "the feed is
+	// empty from the requested position on" (an empty first page).
+	NextCursor string `json:"next_cursor" jsonschema:"opaque position: pass back as after for the next page; present on every page — on an empty page it echoes the requested after so a polling consumer never loses its position; empty only before the first message"`
+	HasMore    bool   `json:"has_more"`
 }
 
 func feedMessagesOut(res *service.ChatFeedResult) []feedMessageOut {
@@ -104,6 +110,11 @@ func renderMessagesFeed(d *boardMessagesData) string {
 		}
 		sb.WriteByte('\n')
 	}
+	// The footer prints whenever a position exists. It is absent only on an
+	// empty first page — the one case where "no cursor" cannot lose data,
+	// because there is nothing after the start to re-read. Once the service
+	// echoes the position back on empty pages (see boardMessagesData), a
+	// consumer that already holds a cursor always sees it again here.
 	if d.NextCursor != "" {
 		fmt.Fprintf(&sb, "next_cursor %s\n", d.NextCursor)
 	}

@@ -412,6 +412,15 @@ func (s *svc) ChatFeed(ctx context.Context, a Actor, in ChatFeedInput) (*ChatFee
 		if len(msgs) > 0 {
 			last := msgs[len(msgs)-1]
 			result.NextCursor = (&domain.ChatCursor{CreatedAt: last.CreatedAt, ID: last.ID}).String()
+		} else if in.After != "" {
+			// Empty page past a position: echo the requested cursor back.
+			// The documented polling loop is `cursor = next_cursor`; leaving
+			// the field empty here would reset the consumer to the beginning
+			// of the history on its next poll and re-deliver everything
+			// already seen. An empty FIRST page (in.After == "") has no
+			// position to keep, and "" stays the honest "start from the top"
+			// value.
+			result.NextCursor = in.After
 		}
 
 		names := make(map[string]string)

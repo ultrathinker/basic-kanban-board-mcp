@@ -118,6 +118,69 @@ func TestBoardGet_MessagesView(t *testing.T) {
 	}
 }
 
+// TestBoardGet_MessagesViewEmptyPageKeepsCursor: next_cursor must be present
+// in the wire form on EVERY page, empty ones included. The polling consumer
+// does `cursor = next_cursor`; an omitted field (the old omitempty) reads as
+// an empty string and silently resets the consumer to the start of the
+// history, re-delivering everything it already saw. On an empty page the
+// service echoes the requested after back; on an empty FIRST page the value
+// is "" but the key itself must still travel.
+func TestBoardGet_MessagesViewEmptyPageKeepsCursor(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty page echoes the requested position", func(t *testing.T) {
+		t.Parallel()
+		cs, svc := roundtripServer(t, NewServer)
+		svc.DefaultChatFeed = &service.ChatFeedResult{
+			Messages:   []service.ChatFeedMessage{},
+			NextCursor: "echoed-position",
+		}
+		_, sc := callTool(t, cs, "board_get", map[string]any{
+			"project": "kanb", "view": "messages", "after": "held-position", "limit": 30,
+		})
+		expectOK(t, sc, "board_get")
+		msgsBlock, ok := sc["messages"].(map[string]any)
+		if !ok {
+			t.Fatalf("messages block is %T: %v", sc["messages"], sc)
+		}
+		cursor, has := msgsBlock["next_cursor"]
+		if !has {
+			t.Fatal("empty page omitted next_cursor from the wire form — the polling consumer loses its position")
+		}
+		if cursor != "echoed-position" {
+			t.Fatalf("empty page next_cursor = %v, want the requested position echoed back", cursor)
+		}
+	})
+
+	t.Run("empty first page still carries the key", func(t *testing.T) {
+		t.Parallel()
+		cs, svc := roundtripServer(t, NewServer)
+		svc.DefaultChatFeed = &service.ChatFeedResult{Messages: []service.ChatFeedMessage{}}
+		res, sc := callTool(t, cs, "board_get", map[string]any{"project": "kanb", "view": "messages"})
+		expectOK(t, sc, "board_get")
+		msgsBlock, ok := sc["messages"].(map[string]any)
+		if !ok {
+			t.Fatalf("messages block is %T: %v", sc["messages"], sc)
+		}
+		cursor, has := msgsBlock["next_cursor"]
+		if !has {
+			t.Fatal("empty first page omitted next_cursor from the wire form — the client cannot tell this page apart from a lost position")
+		}
+		if cursor != "" {
+			t.Fatalf("empty first page next_cursor = %v, want \"\"", cursor)
+		}
+		// The text form has no position to print here (nothing exists yet);
+		// it must not crash and must still announce the empty feed.
+		tc, ok := res.Content[0].(*gomcp.TextContent)
+		if !ok {
+			t.Fatalf("content[0] is %T, want TextContent", res.Content[0])
+		}
+		if !strings.Contains(tc.Text, "messages 0") {
+			t.Fatalf("text form of an empty feed = %q, want the zero-count header", tc.Text)
+		}
+	})
+}
+
 // TestBoardGet_MessagesViewRequiresProject: the feed is project-scoped; a
 // messages view without a project is a validation error that says so.
 func TestBoardGet_MessagesViewRequiresProject(t *testing.T) {
