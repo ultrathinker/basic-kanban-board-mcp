@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"errors"
 	"html"
 	"net/http"
 	"strings"
@@ -17,13 +18,19 @@ import (
 // progressChartStubService answers ProgressHistory with a canned result and
 // records what it was called with, so tests can pin exactly what the
 // handler forwards to the service layer (the project key and the "task"
-// query parameter as service.ProgressHistoryInput.TaskKey).
+// query parameter as service.ProgressHistoryInput.TaskKey). feedPages are
+// served in order, one per ChatFeed call (KANB-38's scope-change walk); an
+// exhausted list answers with an empty page.
 type progressChartStubService struct {
 	service.Service
-	result *service.ProgressHistoryResult
-	err    error
-	lastIn service.ProgressHistoryInput
-	calls  int
+	result    *service.ProgressHistoryResult
+	err       error
+	lastIn    service.ProgressHistoryInput
+	calls     int
+	feedPages []*service.ChatFeedResult
+	feedErr   error
+	feedIns   []service.ChatFeedInput
+	feedPage  int
 }
 
 func (s *progressChartStubService) ProgressHistory(_ context.Context, _ service.Actor, in service.ProgressHistoryInput) (*service.ProgressHistoryResult, error) {
@@ -33,6 +40,19 @@ func (s *progressChartStubService) ProgressHistory(_ context.Context, _ service.
 		return nil, s.err
 	}
 	return s.result, nil
+}
+
+func (s *progressChartStubService) ChatFeed(_ context.Context, _ service.Actor, in service.ChatFeedInput) (*service.ChatFeedResult, error) {
+	s.feedIns = append(s.feedIns, in)
+	if s.feedErr != nil {
+		return nil, s.feedErr
+	}
+	if s.feedPage < len(s.feedPages) {
+		res := s.feedPages[s.feedPage]
+		s.feedPage++
+		return res, nil
+	}
+	return &service.ChatFeedResult{}, nil
 }
 
 func newProgressChartTestWeb(t *testing.T, svc service.Service) (*Web, *domain.Session) {
@@ -385,5 +405,156 @@ func TestProgressChartDetail_ForecastAbsentWithoutETARendersEmpty(t *testing.T) 
 	}
 	if strings.TrimSpace(rw.Body.String()) != "" {
 		t.Errorf("a history with no ETA rendered a frame for detail=forecast:\n%s", rw.Body.String())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// KANB-38: the scope_change declarations ride the items chart's time axis.
+// These tests walk the real endpoint: the feed read, the mark in the markup,
+// and the two ways the feature must degrade (feed pages past the first, and
+// a feed read that fails).
+// ---------------------------------------------------------------------------
+
+// scopeChartFixture is a two-point items curve spanning three days, the
+// smallest axis a scope tick can honestly stand on.
+func scopeChartFixture() *service.ProgressHistoryResult {
+	base := time.Date(2026, 9, 1, 9, 0, 0, 0, time.Local)
+	return &service.ProgressHistoryResult{
+		ProjectKey: "BMB",
+		Replay: []service.HistoryPoint{
+			{At: base, TotalTasks: 1, OpenTasks: 1},
+			{At: base.Add(72 * time.Hour), TotalTasks: 4, OpenTasks: 3},
+		},
+	}
+}
+
+// TestProgressChart_ScopeChangeTickReachesTheFragment: a declared scope
+// change on the feed becomes a linked tick on the axis; an ordinary update
+// on the same page of the feed becomes nothing.
+func TestProgressChart_ScopeChangeTickReachesTheFragment(t *testing.T) {
+	base := time.Date(2026, 9, 1, 9, 0, 0, 0, time.Local)
+	svc := &progressChartStubService{
+		result: scopeChartFixture(),
+		feedPages: []*service.ChatFeedResult{{
+			Messages: []service.ChatFeedMessage{
+				{Message: domain.ChatMessage{
+					ID: "msg-scope", Author: "lead", Body: "we took on the export",
+					CreatedAt: base.Add(24 * time.Hour), Kind: domain.MessageScopeChange,
+				}},
+				{Message: domain.ChatMessage{
+					ID: "msg-plain", Author: "lead", Body: "status: fine",
+					CreatedAt: base.Add(24 * time.Hour), Kind: domain.MessageUpdate,
+				}},
+			},
+		}},
+	}
+	w, sess := newProgressChartTestWeb(t, svc)
+
+	rw := do(w, "GET", "/p/BMB/progress/chart", nil, sessionCookie(sess))
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200\n%s", rw.Code, rw.Body.String())
+	}
+	body := rw.Body.String()
+	for _, want := range []string{
+		`data-axis-mark="scope"`,
+		`<a href="/p/BMB#chat-msg-scope">`,
+		"we took on the export",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("items chart fragment is missing %q", want)
+		}
+	}
+	if strings.Contains(body, "msg-plain") || strings.Contains(body, "status: fine") {
+		t.Error("an ordinary update was drawn as a scope tick")
+	}
+	if len(svc.feedIns) == 0 {
+		t.Error("the feed was never asked for the scope declarations")
+	}
+}
+
+// TestProgressChart_ScopeWalkPagesTheWholeFeed: the marks must cover the
+// journal's whole span, and the feed's first page is the freshest, not the
+// oldest — the walk that stops after one page would draw only yesterday's
+// declarations and lose the project's early history.
+func TestProgressChart_ScopeWalkPagesTheWholeFeed(t *testing.T) {
+	base := time.Date(2026, 9, 1, 9, 0, 0, 0, time.Local)
+	svc := &progressChartStubService{
+		result: scopeChartFixture(),
+		feedPages: []*service.ChatFeedResult{
+			{
+				Messages: []service.ChatFeedMessage{
+					{Message: domain.ChatMessage{
+						ID: "msg-new", Author: "lead", Body: "recent chatter",
+						CreatedAt: base.Add(71 * time.Hour), Kind: domain.MessageUpdate,
+					}},
+				},
+				NextCursor: "10/msg-new",
+				HasMore:    true,
+			},
+			{
+				Messages: []service.ChatFeedMessage{
+					{Message: domain.ChatMessage{
+						ID: "msg-old", Author: "lead", Body: "we took on the export",
+						CreatedAt: base.Add(time.Hour), Kind: domain.MessageScopeChange,
+					}},
+				},
+			},
+		},
+	}
+	w, sess := newProgressChartTestWeb(t, svc)
+
+	rw := do(w, "GET", "/p/BMB/progress/chart", nil, sessionCookie(sess))
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200\n%s", rw.Code, rw.Body.String())
+	}
+	if !strings.Contains(rw.Body.String(), `<a href="/p/BMB#chat-msg-old">`) {
+		t.Errorf("the declaration on the second page never reached the axis:\n%s", rw.Body.String())
+	}
+	// The walk carried the cursor forward verbatim: page one started at the
+	// beginning of history, page two at where page one stopped.
+	if len(svc.feedIns) != 2 {
+		t.Fatalf("feed read %d times, want exactly the two pages", len(svc.feedIns))
+	}
+	if svc.feedIns[0].After != "" || svc.feedIns[1].After != "10/msg-new" {
+		t.Errorf("cursor walk = %q then %q, want empty then the returned cursor",
+			svc.feedIns[0].After, svc.feedIns[1].After)
+	}
+}
+
+// TestProgressChart_FailedFeedKeepsTheChart: the marks are best-effort, the
+// same vocabulary as every other chat read feeding a page — a failed feed
+// costs the ticks, never the chart itself.
+func TestProgressChart_FailedFeedKeepsTheChart(t *testing.T) {
+	svc := &progressChartStubService{
+		result:  scopeChartFixture(),
+		feedErr: errors.New("chat feed is down"),
+	}
+	w, sess := newProgressChartTestWeb(t, svc)
+
+	rw := do(w, "GET", "/p/BMB/progress/chart", nil, sessionCookie(sess))
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 — the chart must survive a failed feed read\n%s", rw.Code, rw.Body.String())
+	}
+	body := rw.Body.String()
+	if !strings.Contains(body, "<svg") {
+		t.Error("the items chart itself did not render")
+	}
+	if strings.Contains(body, `data-axis-mark="scope"`) {
+		t.Error("a failed feed read still produced ticks")
+	}
+}
+
+// TestProgressChart_TaskScopeNeverWalksTheFeed: the per-task charts have no
+// items panel, so the extra feed read must not happen there at all.
+func TestProgressChart_TaskScopeNeverWalksTheFeed(t *testing.T) {
+	svc := &progressChartStubService{result: scopeChartFixture()}
+	w, sess := newProgressChartTestWeb(t, svc)
+
+	rw := do(w, "GET", "/p/BMB/progress/chart?task=BMB-1", nil, sessionCookie(sess))
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200\n%s", rw.Code, rw.Body.String())
+	}
+	if len(svc.feedIns) != 0 {
+		t.Errorf("the feed was read %d times on a task scope, want 0", len(svc.feedIns))
 	}
 }

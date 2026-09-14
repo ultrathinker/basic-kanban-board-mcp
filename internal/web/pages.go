@@ -92,6 +92,55 @@ func chatAcceptanceDoneKeys(ctx context.Context, svc service.Service, a service.
 	return done
 }
 
+// scopeChangeFeedPage and scopeChangeFeedMaxPages bound the forward walk of
+// the whole feed that the chart's scope marks need: the marks must cover the
+// journal's entire span, not just the panel's freshest page, and ChatFeed is
+// the one read that starts at the beginning of history. One hundred pages of
+// one hundred messages is far past any feed this board has carried; at the
+// cap the oldest marks silently drop out rather than the chart hanging.
+const (
+	scopeChangeFeedPage     = 100
+	scopeChangeFeedMaxPages = 100
+)
+
+// scopeChangeNotes walks the project's whole feed and collects the
+// scope_change declarations for the items chart's axis (KANB-38). Each note
+// carries the message's own instant, author and body — the chart's tooltip
+// quotes the declaration, and the href leads to the entry in the Thoughts
+// feed, whose entries render with the matching id anchor. Best-effort like
+// every other chat read feeding a page (see knownChatTaskKeys): a failed
+// read costs the marks, not the chart.
+func scopeChangeNotes(ctx context.Context, svc service.Service, a service.Actor, projectKey string) []view.ScopeChangeNote {
+	after := ""
+	var notes []view.ScopeChangeNote
+	for page := 0; page < scopeChangeFeedMaxPages; page++ {
+		res, err := svc.ChatFeed(ctx, a, service.ChatFeedInput{
+			ProjectKey: projectKey,
+			After:      after,
+			Limit:      scopeChangeFeedPage,
+		})
+		if err != nil {
+			return notes
+		}
+		for _, m := range res.Messages {
+			if m.Message.Kind != domain.MessageScopeChange {
+				continue
+			}
+			notes = append(notes, view.ScopeChangeNote{
+				At:     m.Message.CreatedAt,
+				Author: m.Message.Author,
+				Body:   m.Message.Body,
+				Href:   "/p/" + projectKey + "#chat-" + m.Message.ID,
+			})
+		}
+		if !res.HasMore {
+			return notes
+		}
+		after = res.NextCursor
+	}
+	return notes
+}
+
 // chatEntryMetaView maps the service's resolved display data onto the view's
 // own meta type — the view package renders what it is handed and reaches
 // nowhere for data, so the field-by-field translation lives here, next to
@@ -452,6 +501,14 @@ func (w *Web) handleProgressChart(rw http.ResponseWriter, r *http.Request) {
 		apiError(rw, err)
 		return
 	}
+	// KANB-38: the scope_change declarations ride the items chart's time
+	// axis. They come from the feed, not the journal, so this is one extra
+	// read on the project scope only — the per-task charts have no items
+	// panel and ask for no replay either.
+	var scopeMarks []view.ChartAxisMark
+	if taskKey == "" {
+		scopeMarks = view.ScopeChangeMarks(scopeChangeNotes(r.Context(), w.d.Service, actorFor(tok), key))
+	}
 	switch detail {
 	case "":
 		// The inline panels, handled below.
@@ -466,7 +523,7 @@ func (w *Web) handleProgressChart(rw http.ResponseWriter, r *http.Request) {
 		w.renderChartDetail(rw, r, view.NewForecastChartDetail(result.Marks))
 		return
 	case "items":
-		w.renderChartDetail(rw, r, view.NewItemsChartDetail(result.Replay))
+		w.renderChartDetail(rw, r, view.NewItemsChartDetail(result.Replay, scopeMarks...))
 		return
 	default:
 		apiError(rw, domain.Invalid("detail",
@@ -482,7 +539,7 @@ func (w *Web) handleProgressChart(rw http.ResponseWriter, r *http.Request) {
 		// "render nothing" rule the percent chart already follows for
 		// missing data.
 		Forecast: view.NewForecastChartView(result.Marks, view.DefaultChartWidth, view.DefaultChartHeight),
-		Items:    view.NewItemsChartView(result.Replay, view.DefaultChartWidth, view.DefaultChartHeight),
+		Items:    view.NewItemsChartView(result.Replay, view.DefaultChartWidth, view.DefaultChartHeight, scopeMarks...),
 		// KANB-53: the historical readiness curve, from the same replay, so
 		// its caption (service's own sentence about point-in-time estimates)
 		// always has the curve beside it. Nil for a task scope (no replay is

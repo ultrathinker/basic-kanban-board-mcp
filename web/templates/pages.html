@@ -308,7 +308,7 @@
      machine. The reply button renders on every entry; CSS shows it only
      inside a [data-can-post] section, because whether one may post is the
      session's property, not the message's. */ -}}
-{{define "chat-entry"}}<li class="chat-entry" data-chat-id="{{.ID}}"{{if .AuthorTokenID}} data-author-token="{{.AuthorTokenID}}"{{end}}>
+{{define "chat-entry"}}<li class="chat-entry" id="chat-{{.ID}}" data-chat-id="{{.ID}}"{{if .AuthorTokenID}} data-author-token="{{.AuthorTokenID}}"{{end}}>
   <div class="chat-head"><span class="chat-author {{.AuthorColor}}">{{.Author}}</span>{{if or (eq .Kind "command") (eq .Kind "question")}} <span class="chat-kind">{{.Kind}}</span>{{end}} <span class="text-subtle text-xs" title="{{.FullTime}}">{{.When}}</span></div>
   {{- if .ReplyAuthor}}<div class="chat-reply-quote text-subtle text-xs" data-chat-quote>&#8627; {{.ReplyAuthor}}: &#8220;{{.ReplyText}}&#8221;</div>{{end}}
   <div class="chat-text">{{.TextHTML}}</div>

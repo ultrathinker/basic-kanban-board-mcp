@@ -1232,6 +1232,12 @@ select, .field input, .field textarea {
   border-bottom: 1px solid var(--rule);
 }
 .chat-entry:last-child { border-bottom: 0; }
+/* The chart's scope ticks link here by id (KANB-38); :target is what shows
+   the reader WHERE the jump landed, no script involved. */
+.chat-entry:target {
+  outline: 1px solid var(--ink);
+  outline-offset: 2px;
+}
 .chat-head {
   display: flex;
   align-items: baseline;

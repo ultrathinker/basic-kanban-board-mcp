@@ -62,6 +62,13 @@ type ChartAxisMark struct {
 	Label string
 	// Note is the full sentence carried in the tick's tooltip.
 	Note string
+	// Href, when set, turns the tick into a link to where the event is
+	// written down. The archival ticks have nowhere to go — the fall they
+	// explain is right there in the curve — but the scope_change ticks
+	// (KANB-38) point at the message in the Thoughts feed that declared the
+	// change, so the reader can read the author's own words instead of the
+	// chart's one-line summary of them.
+	Href string
 }
 
 // axisMarksFromPoints derives the archival ticks from the curve itself: any
@@ -89,18 +96,86 @@ func axisMarksFromPoints(points []service.HistoryPoint) []ChartAxisMark {
 	return marks
 }
 
+// scopeChangeMarkLabel is the scope_change tick's label. Deliberately a word,
+// not a number: unlike the archival tick's "-1" there is no count to name —
+// the message declares a change of plan, and the sizes live in its body, in
+// the author's own words.
+const scopeChangeMarkLabel = "scope"
+
+// ScopeChangeNote is one scope_change message a caller wants flagged on the
+// items chart's time axis (KANB-38). The chart asks for nothing beyond what
+// the message already says: the note explains the DECLARATION — it must never
+// claim to explain the neighbouring point of the curve, because not every
+// card creation is declared, and a declared change need not be what moved
+// the total.
+type ScopeChangeNote struct {
+	// At is the instant the message was posted; the tick stands there.
+	At time.Time
+	// Author is the message's display signature.
+	Author string
+	// Body is the message's full text; the tooltip carries an excerpt cut by
+	// the same rune rule as the feed's reply quotes.
+	Body string
+	// Href leads to the message itself — the Thoughts feed renders each
+	// entry with a matching id anchor.
+	Href string
+}
+
+// ScopeChangeMarks turns declared scope changes into axis ticks. The tick's
+// tooltip names the author and an excerpt of their body — the reader gets
+// the declaration's own words, and the link leads to the message for the
+// rest. Nil input renders nil.
+func ScopeChangeMarks(notes []ScopeChangeNote) []ChartAxisMark {
+	if len(notes) == 0 {
+		return nil
+	}
+	marks := make([]ChartAxisMark, 0, len(notes))
+	for _, n := range notes {
+		marks = append(marks, ChartAxisMark{
+			At:    n.At,
+			Label: scopeChangeMarkLabel,
+			Note: fmt.Sprintf("scope change declared here by %s: %q — a declared change of plan, not a proof of what moved the curve at this instant",
+				n.Author, chatQuoteExcerpt(n.Body)),
+			Href: n.Href,
+		})
+	}
+	return marks
+}
+
+// marksOnSpan keeps only the marks that stand on the drawn span. The x
+// mapping clamps out-of-range instants onto the edges, and a tick pinned to
+// an edge would date a declaration to an instant it did not happen at — a
+// scope_change posted after the last replayed point is simply off this
+// axis, not moved to its border.
+func marksOnSpan(marks []ChartAxisMark, tStart, tEnd time.Time) []ChartAxisMark {
+	kept := make([]ChartAxisMark, 0, len(marks))
+	for _, m := range marks {
+		if !m.At.Before(tStart) && !m.At.After(tEnd) {
+			kept = append(kept, m)
+		}
+	}
+	return kept
+}
+
 // writeAxisMarks draws each mark as a short vertical stroke rising from the
 // baseline at its instant, with the label beside it and the full sentence in
 // a tooltip. Everything is html-escaped; each group carries data-axis-mark so
-// a test can tell a tick from the data curves.
+// a test can tell a tick from the data curves. A mark with an Href wraps its
+// stroke and label in an SVG anchor — no script, the same plain link
+// vocabulary as the rest of the page.
 func writeAxisMarks(buf *bytes.Buffer, x func(time.Time) float64, yBaseline float64, marks []ChartAxisMark) {
 	for _, m := range marks {
 		mx := x(m.At)
 		fmt.Fprintf(buf, `<g data-axis-mark="%s">`, html.EscapeString(m.Label))
-		fmt.Fprintf(buf, `<line x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f" stroke="currentColor" stroke-width="1.5" stroke-opacity="0.9"/>`,
-			mx, yBaseline, mx, yBaseline-10.0)
-		fmt.Fprintf(buf, `<text x="%.1f" y="%.1f" font-size="8" fill="currentColor" fill-opacity="0.8">%s</text>`,
-			mx+2.0, yBaseline-12.0, html.EscapeString(m.Label))
+		open, close := "", ""
+		if m.Href != "" {
+			open = fmt.Sprintf(`<a href="%s">`, html.EscapeString(m.Href))
+			close = `</a>`
+		}
+		fmt.Fprintf(buf, `%s<line x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f" stroke="currentColor" stroke-width="1.5" stroke-opacity="0.9"/>`,
+			open, mx, yBaseline, mx, yBaseline-10.0)
+		fmt.Fprintf(buf, `<text x="%.1f" y="%.1f" font-size="8" fill="currentColor" fill-opacity="0.8">%s</text>%s`,
+			mx+2.0, yBaseline-12.0, html.EscapeString(m.Label), close)
 		fmt.Fprintf(buf, `<title>%s</title></g>`, html.EscapeString(m.Note))
 	}
 }
@@ -117,8 +192,10 @@ type ItemsChartView struct {
 
 // NewItemsChartView builds the item-count chart. Returns nil when the project
 // has no tasks at all — an empty panel would claim something was measured.
-func NewItemsChartView(points []service.HistoryPoint, width, height int) *ItemsChartView {
-	svg := RenderItemsChart(points, width, height)
+// extraMarks (KANB-38: scope_change ticks) pass straight through to the
+// renderer.
+func NewItemsChartView(points []service.HistoryPoint, width, height int, extraMarks ...ChartAxisMark) *ItemsChartView {
+	svg := RenderItemsChart(points, width, height, extraMarks...)
 	if svg == "" {
 		return nil
 	}
@@ -248,9 +325,12 @@ func decimateCountPoints(points []service.HistoryPoint, maxPoints int) []service
 }
 
 // RenderItemsChart draws the total/open step curves from journal replay
-// points, with a tick on the time axis at every archival. Empty input
+// points, with a tick on the time axis at every archival, plus any
+// extraMarks the caller hands in (KANB-38: the scope_change declarations —
+// they stand on the message's own instant, independent of where the curve
+// moved, because the tick explains a DECLARATION, not a point). Empty input
 // renders "".
-func RenderItemsChart(points []service.HistoryPoint, width, height int) template.HTML {
+func RenderItemsChart(points []service.HistoryPoint, width, height int, extraMarks ...ChartAxisMark) template.HTML {
 	if len(points) == 0 {
 		return ""
 	}
@@ -279,6 +359,12 @@ func RenderItemsChart(points []service.HistoryPoint, width, height int) template
 	tEnd := points[len(points)-1].At
 
 	series := decimateCountPoints(visiblePoints(points), MaxChartPoints)
+
+	// Archival ticks derive from the drawn points; scope ticks arrive from
+	// outside and are kept only where the axis can honestly place them. Both
+	// go on last so neither hides under a curve.
+	marks := axisMarksFromPoints(series)
+	marks = append(marks, marksOnSpan(extraMarks, tStart, tEnd)...)
 
 	b := newItemsBounds(width, height, tStart, tEnd, maxCount)
 
@@ -322,7 +408,7 @@ func RenderItemsChart(points []service.HistoryPoint, width, height int) template
 		// a multi-point chart shows at every point.
 		fmt.Fprintf(&buf, `<circle cx="%.1f" cy="%.1f" r="2.4" fill="currentColor" data-items-point><title>%s, total %d, open %d</title></circle>`,
 			b.x(p.At), b.y(p.TotalTasks), html.EscapeString(formatChartTime(p.At, sameDay)), p.TotalTasks, p.OpenTasks)
-		writeAxisMarks(&buf, b.x, yZero, axisMarksFromPoints(series))
+		writeAxisMarks(&buf, b.x, yZero, marks)
 		buf.WriteString(`</svg>`)
 		return template.HTML(buf.String())
 	}
@@ -344,7 +430,7 @@ func RenderItemsChart(points []service.HistoryPoint, width, height int) template
 
 	// Archival ticks go on last so a tick is never hidden under a curve it
 	// explains.
-	writeAxisMarks(&buf, b.x, yZero, axisMarksFromPoints(series))
+	writeAxisMarks(&buf, b.x, yZero, marks)
 
 	buf.WriteString(`</svg>`)
 	return template.HTML(buf.String())

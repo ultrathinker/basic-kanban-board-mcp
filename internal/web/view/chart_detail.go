@@ -343,8 +343,10 @@ func NewForecastChartDetail(history []domain.ProgressMark) *ChartDetailView {
 // is work LEAVING, and the modal is where there is room to say so in full.
 // The axis sentence also carries the scope: these counts cover every card in
 // the project, and the board's column filter does not apply to them.
-func NewItemsChartDetail(points []service.HistoryPoint) *ChartDetailView {
-	svg := RenderItemsChart(points, DetailChartWidth, DetailChartHeight)
+// extraMarks (KANB-38: scope_change ticks) pass straight through to the
+// renderer, the same as the inline panel's.
+func NewItemsChartDetail(points []service.HistoryPoint, extraMarks ...ChartAxisMark) *ChartDetailView {
+	svg := RenderItemsChart(points, DetailChartWidth, DetailChartHeight, extraMarks...)
 	if svg == "" {
 		return nil
 	}
