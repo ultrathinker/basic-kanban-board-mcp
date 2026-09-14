@@ -9,11 +9,136 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/domain"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/service"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/web/view"
 )
+
+// webExportDoc is the JSON shape the web Export button serves. It matches
+// cmd/kanban's exportDocument byte-for-byte (same field names, same JSON
+// tags) so an export downloaded from the web and one produced by
+// `kanban export --out ...` go through the same import path. The web
+// handler can't use cmd/kanban's struct directly because that would cycle
+// the package import graph, so the shape is kept in sync by convention
+// rather than by code.
+//
+// The progress and chat slices carry project / task keys (not internal
+// UUIDs) so an import against a fresh board can remap them — same reason
+// the CLI side uses keys.
+type webExportDoc struct {
+	Projects      []service.BoardProject  `json:"projects"`
+	ProgressMarks []webExportProgressMark `json:"progress_marks"`
+	ChatMessages  []webExportChatMessage  `json:"chat_messages"`
+}
+
+type webExportProgressMark struct {
+	ID        string     `json:"id"`
+	Project   string     `json:"project"`
+	Task      string     `json:"task,omitempty"`
+	Assessor  string     `json:"assessor"`
+	Percent   int        `json:"percent"`
+	ETA       *time.Time `json:"eta,omitempty"`
+	CreatedAt time.Time  `json:"created_at"`
+}
+
+type webExportChatMessage struct {
+	ID        string    `json:"id"`
+	Project   string    `json:"project"`
+	Author    string    `json:"author"`
+	Body      string    `json:"body"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// buildWebExportDoc mirrors cmd/kanban/export.go's exportBoard through the
+// public service.Service surface, so the web Export button and `kanban
+// export --out file.json` produce byte-for-byte the same document. The
+// limit is that the service caps chat pages at 100 (ChatList's own rule
+// for the UI) and progress_history at MaxProgressHistoryLimit, so a board
+// with more chat than 100 messages needs `kanban export` for the full
+// round-trip — and that is documented in KANB-29.
+//
+// The progress read passes Limit=0 to ProgressHistory, which the service
+// interprets as "the whole scope" (no Tail cap), so a long progress track
+// travels in full here too.
+func buildWebExportDoc(ctx context.Context, svc service.Service, actor service.Actor, projectKey string) (*webExportDoc, error) {
+	board, err := svc.BoardGet(ctx, actor, service.BoardGetInput{
+		ProjectKey: projectKey,
+		View:       service.ViewTasks,
+		DoneLimit:  domain.MaxDoneLimit,
+		Include: service.Includes{
+			service.IncludeBody,
+			service.IncludeAcceptance,
+			service.IncludeLinks,
+			service.IncludeMetadata,
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if projectKey != "" && len(board.Projects) == 0 {
+		return nil, domain.NotFound("project", projectKey)
+	}
+
+	out := &webExportDoc{Projects: board.Projects}
+	for _, bp := range board.Projects {
+		projMarks, err := svc.ProgressHistory(ctx, actor, service.ProgressHistoryInput{
+			ProjectKey: bp.Key,
+		})
+		if err != nil {
+			return nil, err
+		}
+		for _, m := range projMarks.Marks {
+			out.ProgressMarks = append(out.ProgressMarks, webExportProgressMark{
+				ID: m.ID, Project: bp.Key, Assessor: m.Assessor, Percent: m.Percent, ETA: m.ETA, CreatedAt: m.CreatedAt,
+			})
+		}
+		for _, col := range bp.Columns {
+			for _, tv := range col.Tasks {
+				taskMarks, err := svc.ProgressHistory(ctx, actor, service.ProgressHistoryInput{
+					ProjectKey: bp.Key,
+					TaskKey:    tv.Key,
+				})
+				if err != nil {
+					return nil, err
+				}
+				for _, m := range taskMarks.Marks {
+					out.ProgressMarks = append(out.ProgressMarks, webExportProgressMark{
+						ID: m.ID, Project: bp.Key, Task: tv.Key, Assessor: m.Assessor, Percent: m.Percent, ETA: m.ETA, CreatedAt: m.CreatedAt,
+					})
+				}
+			}
+		}
+
+		// ChatList pages backwards 100 at a time. The LastSeen / Cursor
+		// field of each result is the cursor for the older page; an empty
+		// Cursor terminates the loop. Cap of 100 matches ChatList's
+		// documented behavior (KANB-29: web Export gives a board the
+		// shape the CLI export would, modulo that documented 100-row cap).
+		cursor := ""
+		for {
+			list, err := svc.ChatList(ctx, actor, service.ChatListInput{
+				ProjectKey: bp.Key,
+				Limit:      100,
+				Cursor:     cursor,
+			})
+			if err != nil {
+				return nil, err
+			}
+			for _, m := range list.Messages {
+				out.ChatMessages = append(out.ChatMessages, webExportChatMessage{
+					ID: m.ID, Project: bp.Key, Author: m.Author, Body: m.Body, CreatedAt: m.CreatedAt,
+				})
+			}
+			if list.Cursor == "" || len(list.Messages) == 0 {
+				break
+			}
+			cursor = list.Cursor
+		}
+	}
+	return out, nil
+}
 
 // writeJSONIndent writes v as pretty-printed JSON. Used by the export
 // endpoints; PLAN §12 asks for "two-space indent for diffs".
