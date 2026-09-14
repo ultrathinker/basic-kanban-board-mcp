@@ -41,6 +41,10 @@ func (s *doneToggleService) TaskProgress(_ context.Context, _ service.Actor, in 
 	return &service.TaskProgressResult{ProjectKey: in.ProjectKey}, nil
 }
 
+func (s *doneToggleService) ChatFeed(_ context.Context, _ service.Actor, _ service.ChatFeedInput) (*service.ChatFeedResult, error) {
+	return nil, ErrServiceUnavailable
+}
+
 func (s *doneToggleService) ChatList(_ context.Context, _ service.Actor, _ service.ChatListInput) (*service.ChatListResult, error) {
 	return &service.ChatListResult{}, nil
 }

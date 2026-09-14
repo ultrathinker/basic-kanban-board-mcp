@@ -45,6 +45,10 @@ type Service interface {
 	ProgressSet(ctx context.Context, a Actor, in ProgressSetInput) (*ProgressSetResult, error)
 	ChatAdd(ctx context.Context, a Actor, in ChatAddInput) (*domain.ChatMessage, error)
 	ChatList(ctx context.Context, a Actor, in ChatListInput) (*ChatListResult, error)
+	// ChatFeed reads a project's message feed FORWARD, from the beginning of
+	// history (KANB-45) — the read a consumer uses to find commands that were
+	// written before it started.
+	ChatFeed(ctx context.Context, a Actor, in ChatFeedInput) (*ChatFeedResult, error)
 }
 
 // Include names an optional expansion on a read. One parameter name across all
@@ -174,8 +178,9 @@ func FullProjection(fields Includes) Projection {
 type BoardView string
 
 const (
-	ViewTasks   BoardView = "tasks"
-	ViewSummary BoardView = "summary"
+	ViewTasks    BoardView = "tasks"
+	ViewSummary  BoardView = "summary"
+	ViewMessages BoardView = "messages"
 )
 
 type BoardGetInput struct {
@@ -669,6 +674,42 @@ type ChatListResult struct {
 }
 
 type ChatMessageListResult = ChatListResult
+
+// ---------------------------------------------------------------------------
+// chat feed — forward reading (KANB-45)
+// ---------------------------------------------------------------------------
+
+// ChatFeedInput reads a project's feed chronologically from the beginning.
+// After is the opaque cursor a previous page returned; WITHOUT it the read
+// starts at the OLDEST available message, never at "now" — a consumer that
+// starts at the current moment would silently miss every command written
+// before it launched, which is exactly the message class the feed exists to
+// deliver.
+type ChatFeedInput struct {
+	ProjectKey string
+	After      string
+	Limit      int // <= 0 defaults to 50; capped at 100
+}
+
+// ChatFeedMessage is one feed entry with the display names resolved against
+// the token registry. Token ids stay canonical (they are the addressing
+// contract); the *Name fields are conveniences for humans.
+type ChatFeedMessage struct {
+	Message              domain.ChatMessage
+	RecipientName        string // "" when the recipient is unset or "all"
+	ResolvedExecutorName string // "" when no single executor was fixed
+	// TaskKeys are the tasks created by accepting this command (KANB-47).
+	// Empty for every other message and for an unaccepted command.
+	TaskKeys []string
+}
+
+type ChatFeedResult struct {
+	Messages []ChatFeedMessage
+	// NextCursor is the position of the last message returned; pass it back
+	// as `after` for the next page. Empty when the feed is fully read.
+	NextCursor string
+	HasMore    bool
+}
 
 // ---------------------------------------------------------------------------
 // progress — the one place the metrics arithmetic lives

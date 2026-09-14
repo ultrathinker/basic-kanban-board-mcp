@@ -319,14 +319,97 @@ type ProgressMark struct {
 	CreatedAt time.Time
 }
 
+// MessageKind classifies a chat message for the communication protocol
+// (KANB-45..47): plain updates, scope changes, questions and commands. The
+// default everywhere is update — a caller that sends none of the new
+// arguments behaves exactly as before the protocol existed.
+type MessageKind string
+
+const (
+	MessageUpdate      MessageKind = "update"
+	MessageScopeChange MessageKind = "scope_change"
+	MessageQuestion    MessageKind = "question"
+	MessageCommand     MessageKind = "command"
+)
+
+var AllMessageKinds = []MessageKind{MessageUpdate, MessageScopeChange, MessageQuestion, MessageCommand}
+
+func (k MessageKind) Valid() bool {
+	for _, v := range AllMessageKinds {
+		if v == k {
+			return true
+		}
+	}
+	return false
+}
+
+// ParseMessageKind accepts the canonical names case-insensitively, the same
+// concession every other enum in this package makes to hand-typed callers.
+func ParseMessageKind(s string) (MessageKind, bool) {
+	for _, v := range AllMessageKinds {
+		if equalFold(s, string(v)) {
+			return v, true
+		}
+	}
+	return MessageUpdate, false
+}
+
 // ChatMessage represents a project-scoped AI conversation entry.
 // Messages are append-only and never pruned.
+//
+// Author is the human-facing display name — a signature, not an identity. The
+// authorized source is AuthorTokenID: the tokens.id of the token that posted,
+// taken from the authenticated caller and never chosen by the client. The
+// addressing fields (Recipient, ResolvedExecutor) also hold tokens.id values;
+// ResolvedExecutor is fixed at send time and deliberately frozen afterwards.
 type ChatMessage struct {
 	ID        string
 	ProjectID string
 	Author    string
 	Body      string
 	CreatedAt time.Time
+
+	Kind          MessageKind
+	AuthorTokenID string
+	// Recipient is what the sender asked for: a tokens.id or "all". Empty
+	// means unset — for question/command that resolves to the project's
+	// coordinator AT SEND TIME (see ResolvedExecutor).
+	Recipient string
+	// ResolvedExecutor is the tokens.id fixed at send time for a question or
+	// command addressed to exactly one executor; empty for update,
+	// scope_change, "all" and unanswered-addressing refusals. A coordinator
+	// change later must not readdress old commands: this value is written
+	// once and never recomputed.
+	ResolvedExecutor string
+	// ReplyToID names the message this one answers, always within the same
+	// project.
+	ReplyToID string
+	// IdempotencyKey deduplicates retries of one send, per authorized sender,
+	// for the message's whole lifetime.
+	IdempotencyKey string
+}
+
+// CommandAcceptance is the durable link "command message -> created tasks ->
+// accepting agent" (KANB-47). One command can be accepted exactly once per
+// project: the uniqueness lives here, keyed by the message, not in any
+// per-token idempotency table — so the binding survives consumer restarts and
+// outlives every retry window.
+type CommandAcceptance struct {
+	ID                string
+	MessageID         string
+	ProjectID         string
+	AcceptedByTokenID string
+	// TaskIDs and TaskKeys name the batch the acceptance created. Keys are
+	// denormalized beside ids because task keys are immutable (PROJ-N): the
+	// acceptance can answer "which tasks came of this command" without a
+	// join, even after a restart.
+	TaskIDs  []string
+	TaskKeys []string
+	// RequestHash fingerprints the accepted batch content, so a retried
+	// acceptance with DIFFERENT content is a loud conflict, not a silent
+	// second package.
+	RequestHash string
+	CreatedAt   time.Time
 }
 
 // ChatCursor identifies a point in chat history for backward pagination

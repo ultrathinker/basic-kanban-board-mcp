@@ -100,6 +100,13 @@ type fakeService struct {
 	LastChatList      service.ChatListInput
 	LastChatListActor service.Actor
 
+	// ChatFeed (board_get view:messages).
+	NextChatFeed      func(ctx context.Context, a service.Actor, in service.ChatFeedInput) (*service.ChatFeedResult, error)
+	DefaultChatFeed   *service.ChatFeedResult
+	DefaultChatFeedEr error
+	LastChatFeed      service.ChatFeedInput
+	LastChatFeedActor service.Actor
+
 	// TaskProgress.
 	NextTaskProgress      func(ctx context.Context, a service.Actor, in service.TaskProgressInput) (*service.TaskProgressResult, error)
 	DefaultTaskProgress   *service.TaskProgressResult
@@ -299,6 +306,21 @@ func (f *fakeService) ChatList(ctx context.Context, a service.Actor, in service.
 		return h(ctx, a, in)
 	}
 	return f.DefaultChatList, f.DefaultChatListEr
+}
+
+func (f *fakeService) ChatFeed(ctx context.Context, a service.Actor, in service.ChatFeedInput) (*service.ChatFeedResult, error) {
+	f.mu.Lock()
+	h := f.NextChatFeed
+	if h != nil {
+		f.NextChatFeed = nil
+	}
+	f.LastChatFeed = in
+	f.LastChatFeedActor = a
+	f.mu.Unlock()
+	if h != nil {
+		return h(ctx, a, in)
+	}
+	return f.DefaultChatFeed, f.DefaultChatFeedEr
 }
 
 // fakeActor returns a non-zero Actor for tests that need an identity

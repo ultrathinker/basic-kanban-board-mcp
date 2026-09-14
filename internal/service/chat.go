@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/domain"
@@ -152,6 +153,138 @@ func (s *svc) ChatList(ctx context.Context, a Actor, in ChatListInput) (*ChatLis
 	}
 	return &result, nil
 }
+
+// ChatFeed reads a project's message feed FORWARD, oldest first, starting at
+// the beginning of the available history (KANB-45). Without `after` the first
+// page is the OLDEST messages — a consumer starting mid-history would miss the
+// very commands written before it launched, which is the failure this read
+// exists to prevent.
+//
+// The cursor is an opaque position, not a timestamp: several messages can
+// share one created_at, so the cursor carries (created_at, id) and pages break
+// ties deterministically without gaps or duplicates. Because chat history is
+// never pruned, a cursor cannot outlive the history it points into — there is
+// deliberately no expiry machinery here. A cursor that does not belong to
+// this project (or does not parse) is rejected with a remediation instead of
+// silently returning an empty page.
+func (s *svc) ChatFeed(ctx context.Context, a Actor, in ChatFeedInput) (*ChatFeedResult, error) {
+	if err := requireRead(a); err != nil {
+		return nil, err
+	}
+	key := strings.TrimSpace(in.ProjectKey)
+	if key == "" {
+		return nil, domain.Invalid("project", "project key is required for the messages view",
+			"Pass the project whose feed you are reading.")
+	}
+	canonicalKey, err := domain.ValidateProjectKey(key)
+	if err != nil {
+		return nil, err
+	}
+
+	var cursor *domain.ChatCursor
+	if in.After != "" {
+		parsed, err := domain.ParseChatCursor(in.After)
+		if err != nil {
+			return nil, err
+		}
+		cursor = parsed
+	}
+
+	limit := in.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	ctx = store.WithActor(ctx, a.Name)
+	var result ChatFeedResult
+	err = s.store.Read(ctx, func(tx store.Tx) error {
+		p, err := s.resolveProject(tx, a, canonicalKey)
+		if err != nil {
+			return err
+		}
+		// A foreign or stale cursor must be refused loudly: silently
+		// returning an empty page would read as "no more messages" and the
+		// consumer would stop, having skipped history it was entitled to.
+		// The cursor's id names a real message in THIS project's feed — chat
+		// is never pruned, so a missing one can only be a cursor from
+		// somewhere else.
+		if cursor != nil {
+			anchor, err := s.store.Chat().Get(tx, cursor.ID)
+			if err != nil {
+				return domain.Invalid("after",
+					fmt.Sprintf("cursor message %s does not exist in project %s", cursor.ID, p.Key),
+					"Use the next_cursor returned by a previous page of this project's feed, or omit after to read from the beginning.")
+			}
+			if anchor.ProjectID != p.ID {
+				return domain.Invalid("after",
+					fmt.Sprintf("cursor message %s belongs to a different project", cursor.ID),
+					"Use the next_cursor returned by a previous page of this project's feed, or omit after to read from the beginning.")
+			}
+		}
+
+		msgs, err := s.store.Chat().List(tx, store.ChatFilter{
+			ProjectID: &p.ID,
+			Ascending: true,
+			After:     cursor,
+			Limit:     limit + 1,
+		})
+		if err != nil {
+			return err
+		}
+		if len(msgs) > limit {
+			result.HasMore = true
+			msgs = msgs[:limit]
+		}
+		if len(msgs) > 0 {
+			last := msgs[len(msgs)-1]
+			result.NextCursor = (&domain.ChatCursor{CreatedAt: last.CreatedAt, ID: last.ID}).String()
+		}
+
+		names := make(map[string]string)
+		toks, err := s.store.Tokens().List(tx)
+		if err != nil {
+			return err
+		}
+		for _, t := range toks {
+			names[t.ID] = t.Name
+		}
+
+		ids := make([]string, 0, len(msgs))
+		for _, m := range msgs {
+			ids = append(ids, m.ID)
+		}
+		acceptances, err := s.store.Acceptances().ByMessages(tx, ids)
+		if err != nil {
+			return err
+		}
+
+		result.Messages = make([]ChatFeedMessage, 0, len(msgs))
+		for _, m := range msgs {
+			fm := ChatFeedMessage{
+				Message:  m,
+				TaskKeys: acceptances[m.ID].TaskKeys,
+			}
+			if m.Recipient != "" && m.Recipient != recipientAll {
+				fm.RecipientName = names[m.Recipient]
+			}
+			if m.ResolvedExecutor != "" {
+				fm.ResolvedExecutorName = names[m.ResolvedExecutor]
+			}
+			result.Messages = append(result.Messages, fm)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// recipientAll is the literal broadcast recipient on the wire.
+const recipientAll = "all"
 
 // ChatMessageAdd is an alias for ChatAdd.
 func (s *svc) ChatMessageAdd(ctx context.Context, a Actor, in ChatAddInput) (*domain.ChatMessage, error) {

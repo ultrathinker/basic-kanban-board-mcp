@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"strings"
 
 	gomcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -25,12 +26,18 @@ type boardFilterIn struct {
 }
 
 type boardGetInput struct {
-	Project   string         `json:"project,omitempty" jsonschema:"project key; omitted = every accessible project"`
-	View      string         `json:"view,omitempty" jsonschema:"tasks = full board, summary = counts only; default depends on whether project is set"`
+	Project   string         `json:"project,omitempty" jsonschema:"project key; omitted = every accessible project; REQUIRED for view:messages"`
+	View      string         `json:"view,omitempty" jsonschema:"tasks = full board, summary = counts only, messages = the communication feed read forward from the beginning; default depends on whether project is set"`
 	DoneLimit int            `json:"done_limit,omitempty" jsonschema:"how many done tasks to include, most recently done first"`
 	Filter    *boardFilterIn `json:"filter,omitempty"`
 	Include   []string       `json:"include,omitempty" jsonschema:"widen the per-task fields returned"`
 	Format    string         `json:"format,omitempty" jsonschema:"compact = the token-cheap text grammar, json = pretty JSON text (structuredContent is always JSON either way)"`
+	// After pages the messages view FORWARD: it is the opaque next_cursor a
+	// previous page returned. Without it the feed starts at the OLDEST
+	// message, never at "now" — a consumer must not miss commands written
+	// before it started (KANB-45).
+	After string `json:"after,omitempty" jsonschema:"messages view only: the next_cursor of a previous page; omit to read the feed from the beginning"`
+	Limit int    `json:"limit,omitempty" jsonschema:"messages view only: page size"`
 }
 
 type boardColumnOut struct {
@@ -101,16 +108,20 @@ type boardGetData struct {
 }
 
 type boardGetOutput struct {
-	OK    bool           `json:"ok"`
-	Op    string         `json:"op"`
-	Data  *boardGetData  `json:"data,omitempty"`
-	Meta  *toolMeta      `json:"meta,omitempty"`
-	Error *errorEnvelope `json:"error,omitempty"`
+	OK   bool          `json:"ok"`
+	Op   string        `json:"op"`
+	Data *boardGetData `json:"data,omitempty"`
+	// Messages carries the view:"messages" payload. It is a sibling of Data,
+	// not inside it, so the two shapes cannot be confused: a feed page is
+	// never a board projection.
+	Messages *boardMessagesData `json:"messages,omitempty"`
+	Meta     *toolMeta          `json:"meta,omitempty"`
+	Error    *errorEnvelope     `json:"error,omitempty"`
 }
 
 func boardGetTool() *gomcp.Tool {
 	s := schemaFor[boardGetInput]()
-	setEnum(prop(s, "view"), string(service.ViewTasks), string(service.ViewSummary))
+	setEnum(prop(s, "view"), string(service.ViewTasks), string(service.ViewSummary), string(service.ViewMessages))
 	setDefault(prop(s, "done_limit"), 0)
 	setMin(prop(s, "done_limit"), 0)
 	setMax(prop(s, "done_limit"), float64(domain.MaxDoneLimit))
@@ -119,6 +130,9 @@ func boardGetTool() *gomcp.Tool {
 	setDefault(inc, []string{})
 	setEnum(prop(s, "format"), "compact", "json")
 	setDefault(prop(s, "format"), "compact")
+	setDefault(prop(s, "limit"), 50)
+	setMin(prop(s, "limit"), 1)
+	setMax(prop(s, "limit"), 100)
 
 	filter := prop(s, "filter")
 	setEnum(prop(filter, "types"), typeNames()...)
@@ -202,6 +216,41 @@ func registerBoardGet(s *gomcp.Server, svc service.Service) {
 			} else {
 				view = service.ViewTasks
 			}
+		}
+
+		// view:"messages" is a different payload, not a board projection:
+		// it reads the feed forward and returns messages + cursor only — the
+		// board, its columns and task bodies are deliberately absent
+		// (KANB-45). It stays inside board_get so the tool count does not
+		// grow.
+		if view == service.ViewMessages {
+			if strings.TrimSpace(in.Project) == "" {
+				derr := domain.Invalid("project", "project is required for view:messages",
+					"Pass the project key whose feed you are reading, e.g. {\"project\":\"KANB\",\"view\":\"messages\"}.")
+				return errorResult(opBoardGet, derr), boardGetOutput{OK: false, Op: opBoardGet, Error: newErrorEnvelope(derr)}, nil
+			}
+			key, kerr := domain.ValidateProjectKey(in.Project)
+			if kerr != nil {
+				derr := domain.AsError(kerr)
+				return errorResult(opBoardGet, derr), boardGetOutput{OK: false, Op: opBoardGet, Error: newErrorEnvelope(derr)}, nil
+			}
+			res, err := svc.ChatFeed(ctx, actor, service.ChatFeedInput{
+				ProjectKey: key,
+				After:      in.After,
+				Limit:      in.Limit,
+			})
+			if err != nil {
+				derr := asDomainError(err)
+				return errorResult(opBoardGet, derr), boardGetOutput{OK: false, Op: opBoardGet, Error: newErrorEnvelope(derr)}, nil
+			}
+			md := &boardMessagesData{
+				Project:    key,
+				Messages:   feedMessagesOut(res),
+				NextCursor: res.NextCursor,
+				HasMore:    res.HasMore,
+			}
+			mout := boardGetOutput{OK: true, Op: opBoardGet, Messages: md, Meta: &toolMeta{Count: len(md.Messages)}}
+			return &gomcp.CallToolResult{Content: []gomcp.Content{&gomcp.TextContent{Text: renderMessagesFeed(md)}}}, mout, nil
 		}
 
 		board, err := svc.BoardGet(ctx, actor, service.BoardGetInput{

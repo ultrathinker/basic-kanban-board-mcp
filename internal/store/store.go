@@ -68,6 +68,7 @@ type Store interface {
 	Notes() NoteRepo
 	Progress() ProgressRepo
 	Chat() ChatRepo
+	Acceptances() CommandAcceptanceRepo
 	Events() EventRepo
 	Tokens() TokenRepo
 	Sessions() SessionRepo
@@ -280,7 +281,13 @@ type ChatFilter struct {
 	ProjectID  *string
 	ProjectIDs []string
 	Limit      int
-	Before     *domain.ChatCursor
+	// Ascending selects the read direction: true = oldest first with After
+	// as the position (the feed's shape, which starts at the beginning of
+	// history even before any cursor exists); false = newest first with
+	// Before as the position (the panel's shape).
+	Ascending bool
+	Before    *domain.ChatCursor
+	After     *domain.ChatCursor
 }
 
 // ChatRepo persists project AI chat messages. Rows are append-only
@@ -288,9 +295,26 @@ type ChatFilter struct {
 type ChatRepo interface {
 	// Add appends one message to the project chat.
 	Add(tx Tx, m *domain.ChatMessage) error
+	// Get resolves one message by id.
+	Get(tx Tx, id string) (*domain.ChatMessage, error)
 	// List returns a page of chat messages, newest first, with optional
-	// project filtering and tie-breaking cursor pagination.
+	// project filtering and tie-breaking cursor pagination. A filter with
+	// After set inverts the direction to oldest-first.
 	List(tx Tx, f ChatFilter) ([]domain.ChatMessage, error)
+}
+
+// CommandAcceptanceRepo persists the "command -> tasks -> acceptor" link
+// (KANB-47). One acceptance per command message, for the message's whole
+// lifetime — this is NOT the 24h idempotency table.
+type CommandAcceptanceRepo interface {
+	// GetByMessage returns the acceptance of one command message, or NotFound.
+	GetByMessage(tx Tx, messageID string) (*domain.CommandAcceptance, error)
+	// ByMessages resolves acceptances for a batch of message ids in one read;
+	// messages without an acceptance are absent from the map.
+	ByMessages(tx Tx, messageIDs []string) (map[string]domain.CommandAcceptance, error)
+	// Put records an acceptance. A duplicate message_id is a hard error — the
+	// service must check GetByMessage first, inside the same transaction.
+	Put(tx Tx, a *domain.CommandAcceptance) error
 }
 
 // EventRepo is append-only and backs SSE replay.

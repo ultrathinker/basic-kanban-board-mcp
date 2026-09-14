@@ -425,6 +425,9 @@ func (s *sqlStore) Progress() ProgressRepo {
 func (s *sqlStore) Chat() ChatRepo {
 	return s.repo("chat", func() any { return &chatRepo{s: s} }).(ChatRepo)
 }
+func (s *sqlStore) Acceptances() CommandAcceptanceRepo {
+	return s.repo("acceptances", func() any { return &commandAcceptanceRepo{s: s} }).(CommandAcceptanceRepo)
+}
 func (s *sqlStore) Events() EventRepo {
 	return s.repo("events", func() any { return &eventRepo{s: s} }).(EventRepo)
 }

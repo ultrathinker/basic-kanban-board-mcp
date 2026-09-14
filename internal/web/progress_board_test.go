@@ -73,6 +73,10 @@ func (s *progressCountingService) TaskGet(_ context.Context, _ service.Actor, _ 
 	return &service.TaskGetResult{}, nil
 }
 
+func (s *progressCountingService) ChatFeed(_ context.Context, _ service.Actor, _ service.ChatFeedInput) (*service.ChatFeedResult, error) {
+	return nil, ErrServiceUnavailable
+}
+
 func (s *progressCountingService) ChatList(_ context.Context, _ service.Actor, in service.ChatListInput) (*service.ChatListResult, error) {
 	s.chatListCalls++
 	// A full page of messages: the panel must be fed by THIS one call, never
