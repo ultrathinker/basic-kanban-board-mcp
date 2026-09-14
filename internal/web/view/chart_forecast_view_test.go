@@ -531,3 +531,96 @@ func TestChart_Forecast_ModalDateAxisDoesNotRepeatALabel(t *testing.T) {
 		t.Errorf("date axis labels = %v, want Sep 13 and Sep 14 exactly once each", counts)
 	}
 }
+
+// 13. REVIEW C #13: two marks one assessor landed in the same instant must
+// not draw as two coincident polyline points. The percent chart collapses
+// same-timestamp points before decimating (deduplicateSameTimestamp); the
+// forecast chart never did, so the duplicated mark came out as a zero-length
+// polyline segment — invisible, but a degenerate output of the decimation
+// pipeline all the same.
+func TestChart_Forecast_SameInstantMarksCollapseToTheLastOne(t *testing.T) {
+	t0 := time.Date(2026, 9, 12, 12, 0, 0, 0, time.Local)
+	etaShort := t0.Add(30 * 24 * time.Hour)
+	etaLong := t0.Add(90 * 24 * time.Hour)
+
+	got := deduplicateForecastPoints([]forecastPoint{
+		{CreatedAt: t0, ETA: etaShort},
+		{CreatedAt: t0, ETA: etaLong}, // same instant, promise revised — keep the LAST
+		{CreatedAt: t0.Add(time.Hour), ETA: etaShort},
+	})
+	if len(got) != 2 {
+		t.Fatalf("same-instant collapse left %d points, want 2 (one per distinct instant)", len(got))
+	}
+	if !got[0].CreatedAt.Equal(t0) || !got[0].ETA.Equal(etaLong) {
+		t.Errorf("collapse kept (%s, %s) at the shared instant, want the LAST mark's promise %s",
+			got[0].CreatedAt, got[0].ETA, etaLong)
+	}
+	if !got[1].CreatedAt.Equal(t0.Add(time.Hour)) || !got[1].ETA.Equal(etaShort) {
+		t.Errorf("collapse disturbed a distinct instant: got (%s, %s)", got[1].CreatedAt, got[1].ETA)
+	}
+
+	// Three marks in one instant collapse to exactly the last one.
+	one := deduplicateForecastPoints([]forecastPoint{
+		{CreatedAt: t0, ETA: etaShort},
+		{CreatedAt: t0, ETA: etaLong},
+		{CreatedAt: t0, ETA: etaShort},
+	})
+	if len(one) != 1 || !one[0].ETA.Equal(etaShort) {
+		t.Errorf("three same-instant marks collapsed to %d points, want 1 carrying the last promise", len(one))
+	}
+
+	// A single point, and points at distinct instants, pass through whole.
+	solo := deduplicateForecastPoints([]forecastPoint{{CreatedAt: t0, ETA: etaShort}})
+	if len(solo) != 1 || !solo[0].ETA.Equal(etaShort) {
+		t.Errorf("single point did not pass through: %+v", solo)
+	}
+}
+
+// The rendered half of item 13: the same fixture at the SVG level. Two marks,
+// same assessor, same instant, same promise — the drawn track is ONE point
+// (the single-point circle branch), not a polyline whose second vertex
+// coincides with its first. The modal's legend must count the same 1.
+func TestChart_Forecast_TwoMarksInTheSameInstantDrawOnePoint(t *testing.T) {
+	t0 := time.Date(2026, 9, 12, 12, 0, 0, 0, time.Local)
+	marks := []domain.ProgressMark{
+		forecastMark("m1", "busy-bot", 40, t0, t0.Add(30*24*time.Hour)),
+		forecastMark("m2", "busy-bot", 60, t0, t0.Add(30*24*time.Hour)),
+	}
+
+	svg := string(RenderForecastChart(marks, DefaultChartWidth, DefaultChartHeight))
+
+	// The exact corruption the review measured: a polyline whose points list
+	// carries the same coordinate pair twice in a row. Scan every polyline,
+	// not just the expected one, so a partial fix in one render path cannot
+	// slip past.
+	polyRe := regexp.MustCompile(`<polyline[^>]*points="([^"]+)"`)
+	for _, pm := range polyRe.FindAllStringSubmatch(svg, -1) {
+		coords := parsePolylinePoints(t, pm[1])
+		for i := 1; i < len(coords); i++ {
+			if coords[i] == coords[i-1] {
+				t.Fatalf("polyline carries a zero-length segment: %v repeated at %d\n%s", coords[i], i, svg)
+			}
+		}
+	}
+
+	// With the collapse in place the track is one point, so it renders as
+	// the single-point marker, not a polyline for this assessor.
+	if strings.Contains(svg, `<polyline`) {
+		t.Errorf("two same-instant marks drew a polyline; the track should be a single point:\n%s", svg)
+	}
+	if !strings.Contains(svg, `r="3" fill="currentColor" data-assessor="busy-bot"`) {
+		t.Errorf("the collapsed track did not render as the single-point circle marker:\n%s", svg)
+	}
+
+	// The modal's legend must agree with what is drawn: two coincident marks
+	// are ONE drawn point, and the legend may not resurrect the raw count.
+	detail := NewForecastChartDetail(marks)
+	if detail == nil {
+		t.Fatal("NewForecastChartDetail returned nil for a two-mark forecast history")
+	}
+	for _, e := range detail.Legend {
+		if e.Label == "busy-bot" && e.Points != 1 {
+			t.Errorf("legend claims %d points for two same-instant marks; the chart draws 1 point", e.Points)
+		}
+	}
+}

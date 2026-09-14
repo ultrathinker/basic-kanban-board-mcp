@@ -175,7 +175,7 @@ func renderForecastChartImpl(marks []domain.ProgressMark, width, height int, det
 		seriesList = append(seriesList, forecastSeries{
 			Name:        name,
 			IsComposite: false,
-			Points:      decimateForecastPoints(byAssessor[name], MaxChartPoints),
+			Points:      prepareForecastTrack(byAssessor[name]),
 			DashArray:   assessorDash(i),
 			StrokeWidth: 1.2,
 		})
@@ -511,12 +511,49 @@ func pluralS(n int) string {
 	return "s"
 }
 
+// deduplicateForecastPoints collapses consecutive points sharing the same
+// CreatedAt, keeping the final (latest) point at that instant — the forecast
+// mirror of chart.go's deduplicateSameTimestamp, which the percent chart runs
+// on every series before decimating and this chart did not (KANB-55 item 13).
+//
+// Without it, two marks one assessor landed in the same instant draw as two
+// coincident polyline vertices — a zero-length segment on the rendered line.
+// With it, a promise (re)stated within the same instant draws the standing
+// one, the same answer the percent chart gives for two percents at one
+// timestamp. The input must be chronologically sorted so equal instants are
+// consecutive, which renderForecastChartImpl guarantees before grouping.
+func deduplicateForecastPoints(points []forecastPoint) []forecastPoint {
+	if len(points) <= 1 {
+		return points
+	}
+	out := make([]forecastPoint, 0, len(points))
+	for _, pt := range points {
+		if len(out) > 0 && out[len(out)-1].CreatedAt.Equal(pt.CreatedAt) {
+			out[len(out)-1] = pt
+		} else {
+			out = append(out, pt)
+		}
+	}
+	return out
+}
+
+// prepareForecastTrack is the one pipeline an assessor's marks go through
+// before anything downstream counts or draws them: collapse same-instant
+// marks, then decimate to the render budget. The renderer and the legend's
+// drawnForecastTrackLen MUST share this exact pipeline — the moment one of
+// them skips a stage, the legend and the polyline disagree again (KANB-55
+// item 7 fixed exactly that split once).
+func prepareForecastTrack(points []forecastPoint) []forecastPoint {
+	return decimateForecastPoints(deduplicateForecastPoints(points), MaxChartPoints)
+}
+
 // drawnForecastTrackLen reports how many points the forecast chart draws
 // for one assessor's track: the same marks-to-points conversion the renderer
-// does, followed by the same decimateForecastPoints pass. The legend reads
-// this number instead of len(marks) so an entry cannot claim the raw count
-// over a polyline the decimator shortened — the assessor-track half of the
-// MUST-agree rule countConsensusPoints's comment states.
+// does, followed by the same prepareForecastTrack pass (same-instant
+// collapse + decimation). The legend reads this number instead of len(marks)
+// so an entry cannot claim the raw count over a polyline the pipeline
+// shortened — the assessor-track half of the MUST-agree rule
+// countConsensusPoints's comment states.
 func drawnForecastTrackLen(marks []domain.ProgressMark) int {
 	pts := make([]forecastPoint, 0, len(marks))
 	for _, m := range marks {
@@ -524,7 +561,7 @@ func drawnForecastTrackLen(marks []domain.ProgressMark) int {
 			pts = append(pts, forecastPoint{CreatedAt: m.CreatedAt, ETA: *m.ETA})
 		}
 	}
-	return len(decimateForecastPoints(pts, MaxChartPoints))
+	return len(prepareForecastTrack(pts))
 }
 
 // decimateForecastPoints downsamples a dense forecast track for rendering,
