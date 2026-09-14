@@ -200,6 +200,10 @@ type ChartDetailView struct {
 	Axis     string // what the vertical axis measures, in words
 	Span     string // the time range covered, in words
 	Subtitle string // the headline reading, e.g. "72% now, from 91%"
+	// Note, when set, is an honesty sentence printed beside the chart —
+	// the modal's slot for a named limit (see ItemsChartView.Note for the
+	// full story). Empty for every chart whose data carries no limit.
+	Note string
 }
 
 // NewProgressChartDetail builds the enlarged assessment chart: the same

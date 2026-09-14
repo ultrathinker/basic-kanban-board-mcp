@@ -188,6 +188,14 @@ type ItemsChartView struct {
 	// reader gets the two numbers without having to measure the lines.
 	Total int
 	Open  int
+	// Note, when set, is an honesty sentence printed under the chart in the
+	// panel's chart-note slot: a named limit the reader must see rather
+	// than deduce. Today that is the scope_change walk announcing it hit
+	// its page cap, so the missing oldest ticks read as "the walk stops
+	// here", never as "nothing was declared back then" — the same honesty
+	// the export document's truncated field gives the export. Empty for a
+	// walk that covered the whole feed.
+	Note string
 }
 
 // NewItemsChartView builds the item-count chart. Returns nil when the project

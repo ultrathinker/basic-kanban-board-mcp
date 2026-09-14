@@ -118,6 +118,7 @@
     </li>
     {{end}}
   </ul>
+  {{- with .Note}}<p class="chart-note text-subtle">{{.}}</p>{{end}}
 </section>
 {{end}}
 
@@ -164,6 +165,7 @@
   </div>
   {{.Items.SVG}}
   <p class="chart-note text-subtle">every card in the project, parents included — the board filter does not apply</p>
+  {{- with .Items.Note}}<p class="chart-note text-subtle">{{.}}</p>{{end}}
 </div>{{end}}
 {{- if .Readiness}}<div class="progress-chart-inner readiness-chart">
   <div class="chart-caption">

@@ -31,6 +31,10 @@ type progressChartStubService struct {
 	feedErr   error
 	feedIns   []service.ChatFeedInput
 	feedPage  int
+	// feedAlwaysHasMore turns every page past the scripted ones into
+	// "there is another" — a feed that never ends, the shape the walk's
+	// page cap exists to bound.
+	feedAlwaysHasMore bool
 }
 
 func (s *progressChartStubService) ProgressHistory(_ context.Context, _ service.Actor, in service.ProgressHistoryInput) (*service.ProgressHistoryResult, error) {
@@ -51,6 +55,9 @@ func (s *progressChartStubService) ChatFeed(_ context.Context, _ service.Actor, 
 		res := s.feedPages[s.feedPage]
 		s.feedPage++
 		return res, nil
+	}
+	if s.feedAlwaysHasMore {
+		return &service.ChatFeedResult{NextCursor: "never-the-end", HasMore: true}, nil
 	}
 	return &service.ChatFeedResult{}, nil
 }
@@ -556,5 +563,88 @@ func TestProgressChart_TaskScopeNeverWalksTheFeed(t *testing.T) {
 	}
 	if len(svc.feedIns) != 0 {
 		t.Errorf("the feed was read %d times on a task scope, want 0", len(svc.feedIns))
+	}
+}
+
+// TestProgressChart_ScopeWalkAtTheCapNamesTheLimit: a feed that never ends
+// stops the walk at exactly its page cap, and the panels then SAY so — the
+// limit is named where the reader sees the marks, because old ticks dropping
+// out must never be indistinguishable from "nothing was declared back then"
+// (the same honesty the export document's truncated field gives the export).
+// The walk that stops silently is the defect this pins shut.
+func TestProgressChart_ScopeWalkAtTheCapNamesTheLimit(t *testing.T) {
+	svc := &progressChartStubService{
+		result:            scopeChartFixture(),
+		feedAlwaysHasMore: true,
+	}
+	w, sess := newProgressChartTestWeb(t, svc)
+
+	rw := do(w, "GET", "/p/BMB/progress/chart", nil, sessionCookie(sess))
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200\n%s", rw.Code, rw.Body.String())
+	}
+	// The walk read exactly the allowed number of pages and no more: the
+	// cap bounds the reads, it must not hang on an endless feed.
+	if len(svc.feedIns) != scopeChangeFeedMaxPages {
+		t.Fatalf("feed read %d times, want exactly the %d-page cap", len(svc.feedIns), scopeChangeFeedMaxPages)
+	}
+	// The reads walked forward: the first from the beginning of history,
+	// the last carrying the previous page's cursor.
+	if svc.feedIns[0].After != "" {
+		t.Errorf("first feed read started at %q, want the beginning of history", svc.feedIns[0].After)
+	}
+	if svc.feedIns[len(svc.feedIns)-1].After == "" {
+		t.Error("last feed read restarted from the beginning of history instead of walking forward")
+	}
+	// The fragment names the limit. Compared through html.EscapeString like
+	// the readiness note, so the template's mechanical escaping of quotes
+	// cannot mask a match.
+	if !strings.Contains(rw.Body.String(), html.EscapeString(scopeChangeTruncatedNote())) {
+		t.Errorf("the cap was hit but the fragment does not name the limit:\n%s", rw.Body.String())
+	}
+
+	// The enlarged items modal shows the same marks at measuring size; it
+	// must carry the same sentence, not only the small panel.
+	rw = do(w, "GET", "/p/BMB/progress/chart?detail=items", nil, sessionCookie(sess))
+	if rw.Code != http.StatusOK {
+		t.Fatalf("modal status = %d, want 200\n%s", rw.Code, rw.Body.String())
+	}
+	if !strings.Contains(rw.Body.String(), html.EscapeString(scopeChangeTruncatedNote())) {
+		t.Errorf("the cap was hit but the items modal does not name the limit:\n%s", rw.Body.String())
+	}
+}
+
+// TestProgressChart_ScopeWalkUnderTheCapStaysSilent: the truncation note is
+// the cap's voice, not a fixture of the items panel — a walk that reached
+// the feed's real end prints nothing extra, or the note itself becomes the
+// boy who cried wolf.
+func TestProgressChart_ScopeWalkUnderTheCapStaysSilent(t *testing.T) {
+	base := time.Date(2026, 9, 1, 9, 0, 0, 0, time.Local)
+	svc := &progressChartStubService{
+		result: scopeChartFixture(),
+		feedPages: []*service.ChatFeedResult{
+			{
+				Messages: []service.ChatFeedMessage{
+					{Message: domain.ChatMessage{
+						ID: "msg-a", Author: "lead", Body: "chatter",
+						CreatedAt: base.Add(time.Hour), Kind: domain.MessageUpdate,
+					}},
+				},
+				NextCursor: "10/msg-a",
+				HasMore:    true,
+			},
+			{Messages: nil},
+		},
+	}
+	w, sess := newProgressChartTestWeb(t, svc)
+
+	rw := do(w, "GET", "/p/BMB/progress/chart", nil, sessionCookie(sess))
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200\n%s", rw.Code, rw.Body.String())
+	}
+	// "older declarations" is the stable half of the note sentence; a walk
+	// that saw the feed's end must not print it.
+	if strings.Contains(rw.Body.String(), "older declarations") {
+		t.Errorf("a walk that reached the feed's end still announced a cap:\n%s", rw.Body.String())
 	}
 }
