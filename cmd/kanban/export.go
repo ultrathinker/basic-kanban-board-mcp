@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/domain"
@@ -370,12 +372,15 @@ func collectJournal(tx store.Tx, st store.Store, bp service.BoardProject, projec
 // letting an agent forge a backdated mark, and the reason the import path
 // has to reach past them.
 func importBoard(ctx context.Context, svc service.Service, st store.Store, actor service.Actor, raw []byte) error {
-	var doc exportDocument
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		return fmt.Errorf("import parse: %w", err)
+	doc, err := decodeExportDocument(raw)
+	if err != nil {
+		return err
 	}
 	if len(doc.Projects) == 0 {
 		return fmt.Errorf("import: no projects found in input")
+	}
+	if err := validateImportReferences(doc); err != nil {
+		return err
 	}
 
 	for _, bp := range doc.Projects {
@@ -393,6 +398,58 @@ func importBoard(ctx context.Context, svc service.Service, st store.Store, actor
 	// above, each of which wrote its own (import-time) journal entries as
 	// an unavoidable store-layer side effect.
 	return importJournal(ctx, st, doc)
+}
+
+// decodeExportDocument treats an export as a closed wire contract. Missing
+// newer fields remain compatible with old exports; an unknown field is a typo
+// and must not silently discard history.
+func decodeExportDocument(raw []byte) (exportDocument, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var doc exportDocument
+	if err := dec.Decode(&doc); err != nil {
+		return exportDocument{}, fmt.Errorf("import parse: %w", err)
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return exportDocument{}, fmt.Errorf("import parse: multiple JSON documents are not allowed")
+		}
+		return exportDocument{}, fmt.Errorf("import parse: %w", err)
+	}
+	return doc, nil
+}
+
+// validateImportReferences refuses dangling history before the first service
+// write. Full cross-layer atomicity needs a service transaction contract; this
+// preflight at least guarantees malformed history cannot leave a new board
+// behind before importDated discovers it.
+func validateImportReferences(doc exportDocument) error {
+	projects := make(map[string]struct{}, len(doc.Projects))
+	tasks := make(map[string]struct{})
+	for _, bp := range doc.Projects {
+		projects[bp.Key] = struct{}{}
+		for _, col := range bp.Columns {
+			for _, task := range col.Tasks {
+				tasks[bp.Key+"/"+task.Key] = struct{}{}
+			}
+		}
+	}
+	for _, mark := range doc.ProgressMarks {
+		if _, ok := projects[mark.Project]; !ok {
+			return fmt.Errorf("import progress mark %s: project %q not in document", mark.ID, mark.Project)
+		}
+		if mark.Task != "" {
+			if _, ok := tasks[mark.Project+"/"+mark.Task]; !ok {
+				return fmt.Errorf("import progress mark %s: task %q not in document project %q", mark.ID, mark.Task, mark.Project)
+			}
+		}
+	}
+	for _, msg := range doc.ChatMessages {
+		if _, ok := projects[msg.Project]; !ok {
+			return fmt.Errorf("import chat message %s: project %q not in document", msg.ID, msg.Project)
+		}
+	}
+	return nil
 }
 
 // importProject mirrors the body of the existing runImport's project

@@ -65,6 +65,53 @@ func TestProjectPost_ProtocolFieldsForwarded(t *testing.T) {
 	}
 }
 
+// TestProjectPost_UnsafeWireTextRejected prevents a message or replay key
+// from being silently rewritten when it crosses JSON or storage boundaries.
+func TestProjectPost_UnsafeWireTextRejected(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name  string
+		field string
+		value string
+	}{
+		{name: "body NUL", field: "body", value: "before\x00after"},
+		{name: "key NUL", field: "idempotency_key", value: "retry\x00one"},
+		{name: "key newline", field: "idempotency_key", value: "retry\none"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cs, svc := roundtripServer(t, NewServer)
+			args := map[string]any{"project": "kanb", "author": "a", "body": "safe"}
+			args[tc.field] = tc.value
+			res, sc := callTool(t, cs, "project_post", args)
+			if !res.IsError {
+				t.Fatalf("unsafe %s accepted: %v", tc.field, sc)
+			}
+			errBlock, _ := sc["error"].(map[string]any)
+			if errBlock["code"] != string(domain.CodeValidation) {
+				t.Errorf("error = %v, want validation", errBlock)
+			}
+			if svc.LastChatAdd.Body != "" {
+				t.Errorf("service called for unsafe %s: %+v", tc.field, svc.LastChatAdd)
+			}
+		})
+	}
+
+	if err := validateChatWireText("body", string([]byte{0xff, 'x'}), true); err == nil {
+		t.Fatal("invalid UTF-8 body accepted")
+	}
+	if err := validateChatWireText("idempotency_key", string([]byte{0xff, 'x'}), false); err == nil {
+		t.Fatal("invalid UTF-8 idempotency key accepted")
+	}
+	if err := validateChatWireText("body", "before\x00after", true); err == nil {
+		t.Fatal("NUL body accepted by wire validation")
+	}
+	if err := validateChatWireText("idempotency_key", "retry\none", false); err == nil {
+		t.Fatal("newline idempotency key accepted by wire validation")
+	}
+}
+
 // TestProjectPost_DefaultKindAndUpdate: without kind the call is an update —
 // the pre-protocol shape of the tool keeps working unchanged.
 func TestProjectPost_DefaultKindAndUpdate(t *testing.T) {

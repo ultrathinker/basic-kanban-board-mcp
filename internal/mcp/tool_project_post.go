@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	gomcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -96,6 +98,25 @@ func messageKindNames() []string {
 	return names
 }
 
+// validateChatWireText rejects values that cannot survive a JSON round trip
+// unchanged. Bodies retain ordinary line formatting; idempotency keys are
+// protocol identifiers and therefore permit no control characters at all.
+func validateChatWireText(field, value string, allowLineFormatting bool) *domain.Error {
+	if !utf8.ValidString(value) {
+		return domain.Invalid(field, field+" must be valid UTF-8", "Send valid UTF-8 text; replace malformed bytes before retrying.")
+	}
+	for _, r := range value {
+		if !unicode.IsControl(r) {
+			continue
+		}
+		if allowLineFormatting && (r == '\n' || r == '\r' || r == '\t') {
+			continue
+		}
+		return domain.Invalid(field, field+" must not contain control characters", "Remove control characters and retry.")
+	}
+	return nil
+}
+
 func registerProjectPost(s *gomcp.Server, svc service.Service) {
 	tool := projectPostTool()
 	gomcp.AddTool(s, tool, func(ctx context.Context, req *gomcp.CallToolRequest, in projectPostInput) (*gomcp.CallToolResult, projectPostOutput, error) {
@@ -122,6 +143,12 @@ func registerProjectPost(s *gomcp.Server, svc service.Service) {
 
 		if err := domain.ValidateChatMessageBody(in.Body); err != nil {
 			derr := domain.AsError(err)
+			return errorResult(opProjectPost, derr), projectPostOutput{OK: false, Op: opProjectPost, Error: newErrorEnvelope(derr)}, nil
+		}
+		if derr := validateChatWireText("body", in.Body, true); derr != nil {
+			return errorResult(opProjectPost, derr), projectPostOutput{OK: false, Op: opProjectPost, Error: newErrorEnvelope(derr)}, nil
+		}
+		if derr := validateChatWireText("idempotency_key", in.IdempotencyKey, false); derr != nil {
 			return errorResult(opProjectPost, derr), projectPostOutput{OK: false, Op: opProjectPost, Error: newErrorEnvelope(derr)}, nil
 		}
 

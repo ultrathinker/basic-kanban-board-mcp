@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -115,6 +116,36 @@ func TestBoardGet_MessagesView(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Errorf("text rendering missing %q:\n%s", want, text)
 		}
+	}
+}
+
+// TestBoardGet_MessagesViewJSONText keeps format:"json" truthful for the
+// feed view too. Structured content is always JSON, but text-only consumers
+// explicitly requested JSON and must not receive the compact feed grammar.
+func TestBoardGet_MessagesViewJSONText(t *testing.T) {
+	t.Parallel()
+	cs, svc := roundtripServer(t, NewServer)
+	svc.DefaultChatFeed = &service.ChatFeedResult{Messages: []service.ChatFeedMessage{{
+		Message: domain.ChatMessage{ID: "msg-1", Kind: domain.MessageUpdate, Body: "Ready"},
+	}}}
+
+	res, sc := callTool(t, cs, "board_get", map[string]any{
+		"project": "kanb", "view": "messages", "format": "json",
+	})
+	expectOK(t, sc, "board_get")
+	tc, ok := res.Content[0].(*gomcp.TextContent)
+	if !ok {
+		t.Fatalf("content[0] is %T, want TextContent", res.Content[0])
+	}
+	var textForm map[string]any
+	if err := json.Unmarshal([]byte(tc.Text), &textForm); err != nil {
+		t.Fatalf("format:json text is not JSON: %v\n%s", err, tc.Text)
+	}
+	if textForm["op"] != "board_get" {
+		t.Errorf("JSON text op = %v, want board_get", textForm["op"])
+	}
+	if _, has := textForm["messages"]; !has {
+		t.Errorf("JSON text has no messages payload: %v", textForm)
 	}
 }
 
