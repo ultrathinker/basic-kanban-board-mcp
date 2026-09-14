@@ -32,6 +32,16 @@
        markup, so the same button works from any page that happens to render
        it, but only the board header offers it, per the owner's request. */ -}}
   <button type="button" class="btn btn-sm" data-board-wide-toggle aria-pressed="false" title="Show the board at full page width">Full width</button>
+  {{- /* The whole-panel toggle. It lives HERE, in the header's button row,
+       and not only in the panel's own footer: the footer control sits at the
+       end of a panel that is routinely taller than the viewport, so the one
+       action that hides the panel was reachable only after scrolling past
+       everything it hides. The per-section "hide" buttons in the panel's
+       headers made that worse by reading as the panel-level control they are
+       not. Being outside .board-split, this button survives the collapse and
+       is the affordance that brings the panel back; app.js keeps its label
+       and aria-expanded in step with the panel's persisted state. */ -}}
+  <button type="button" class="btn btn-sm" data-panel-toggle aria-controls="chat-panel" aria-expanded="true" title="Hide the charts and thoughts panel">Hide panel</button>
   {{if .HideDone}}<a class="btn btn-sm" href="?hide_done=0">Show done</a>
   {{else}}<a class="btn btn-sm" href="?hide_done=1">Hide done</a>{{end}}
   <a class="btn btn-sm" href="{{activityURL .Project.Key}}">Activity</a>

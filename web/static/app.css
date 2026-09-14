@@ -1106,8 +1106,16 @@ select, .field input, .field textarea {
   display: flex;
   flex-direction: column;
 }
+/* The header must survive the panel being dragged narrow. The splitter
+   deliberately has no minimum width (the owner chose a splitter that always
+   moves over one that refuses), so this row has to degrade by WRAPPING: a
+   nowrap flex row instead pushed the toggle button out past the panel's edge
+   and let the "last HH:MM · silence" text run under it, which is what a
+   narrow drag used to look like. The toggle never shrinks and never wraps
+   its own label; the long silence text is the part allowed to give. */
 .panel-section-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
   gap: 0.4rem;
   padding: 0.4rem 0.75rem;
@@ -1115,6 +1123,11 @@ select, .field input, .field textarea {
 }
 .panel-section-head .caps { font-weight: 600; }
 .panel-section-head .spacer { flex: 1 1 auto; }
+.panel-section-head .section-toggle { flex: 0 0 auto; margin-left: auto; }
+.panel-section-head .chat-panel-silence {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .panel-section-body { padding: 0 0.75rem; }
 .panel-footer {
   display: flex;

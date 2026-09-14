@@ -1239,6 +1239,18 @@
     }
     var collapseBtn = panel.querySelector('[data-panel-collapse]');
     if (collapseBtn) collapseBtn.setAttribute('aria-expanded', state.collapsed ? 'false' : 'true');
+    // The header's toggle is the one control that exists in BOTH states, so
+    // its label has to say what the click will do, not what the panel is —
+    // the same rule the section toggles follow ("hide" while showing).
+    var headerBtns = document.querySelectorAll('[data-panel-toggle]');
+    for (var i = 0; i < headerBtns.length; i++) {
+      var b = headerBtns[i];
+      b.setAttribute('aria-expanded', state.collapsed ? 'false' : 'true');
+      b.textContent = state.collapsed ? 'Show panel' : 'Hide panel';
+      b.setAttribute('title', state.collapsed
+        ? 'Show the charts and thoughts panel'
+        : 'Hide the charts and thoughts panel');
+    }
   }
 
   // currentPanelState reads the panel's current state back out of the DOM
@@ -1313,6 +1325,14 @@
       if (expandBtn) {
         e.preventDefault();
         setPanelField('collapsed', false);
+        return;
+      }
+      // The header toggle flips whichever way the panel currently stands, so
+      // one button covers both directions from outside the panel.
+      var headerBtn = e.target.closest && e.target.closest('[data-panel-toggle]');
+      if (headerBtn) {
+        e.preventDefault();
+        setPanelField('collapsed', !currentPanelState().collapsed);
         return;
       }
     });
