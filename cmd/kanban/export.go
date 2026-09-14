@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/domain"
@@ -370,9 +372,9 @@ func collectJournal(tx store.Tx, st store.Store, bp service.BoardProject, projec
 // letting an agent forge a backdated mark, and the reason the import path
 // has to reach past them.
 func importBoard(ctx context.Context, svc service.Service, st store.Store, actor service.Actor, raw []byte) error {
-	var doc exportDocument
-	if err := json.Unmarshal(raw, &doc); err != nil {
-		return fmt.Errorf("import parse: %w", err)
+	doc, err := decodeExportDocument(raw)
+	if err != nil {
+		return err
 	}
 	if len(doc.Projects) == 0 {
 		return fmt.Errorf("import: no projects found in input")
@@ -396,6 +398,25 @@ func importBoard(ctx context.Context, svc service.Service, st store.Store, actor
 	// above, each of which wrote its own (import-time) journal entries as
 	// an unavoidable store-layer side effect.
 	return importJournal(ctx, st, doc)
+}
+
+// decodeExportDocument treats an export as a closed wire contract. Missing
+// newer fields remain compatible with old exports; an unknown field is a typo
+// and must not silently discard history.
+func decodeExportDocument(raw []byte) (exportDocument, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	var doc exportDocument
+	if err := dec.Decode(&doc); err != nil {
+		return exportDocument{}, fmt.Errorf("import parse: %w", err)
+	}
+	if err := dec.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return exportDocument{}, fmt.Errorf("import parse: multiple JSON documents are not allowed")
+		}
+		return exportDocument{}, fmt.Errorf("import parse: %w", err)
+	}
+	return doc, nil
 }
 
 // validateImportReferences refuses dangling history before the first service

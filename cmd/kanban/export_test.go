@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -403,6 +404,16 @@ func TestImportRejectsDanglingHistoryBeforeCreatingProjects(t *testing.T) {
 	}
 	if len(board.Projects) != 0 {
 		t.Fatalf("projects after rejected import = %d, want 0", len(board.Projects))
+	}
+}
+
+func TestDecodeExportDocument_RejectsUnknownHistoryKey(t *testing.T) {
+	_, err := decodeExportDocument([]byte(`{"projects":[],"progress_markss":[]}`))
+	if err == nil || !strings.Contains(err.Error(), "progress_markss") {
+		t.Fatalf("unknown history key error = %v, want field name", err)
+	}
+	if _, err := decodeExportDocument([]byte(`{"projects":[]}`)); err != nil {
+		t.Fatalf("legacy shape rejected: %v", err)
 	}
 }
 
