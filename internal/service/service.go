@@ -781,6 +781,12 @@ type ProgressHistoryInput struct {
 	// Off by default: it is a second read, and the only caller that wants it
 	// is the browser's chart.
 	IncludeItems bool
+	// IncludeReplay asks for the project's history REPLAYED FROM THE
+	// LIFECYCLE JOURNAL (Result.Replay), which is the honest version of the
+	// same curves: it sees reopenings, archivals and estimates as they stood
+	// at each instant, none of which tasks.done_at can remember. Like
+	// IncludeItems it is project-scope only and off by default.
+	IncludeReplay bool
 }
 
 // ItemCountPoint is one step in a project's item-count history: at time At
@@ -806,6 +812,16 @@ type ProgressHistoryResult struct {
 	// Items is the project's item-count history, present only when the
 	// caller set IncludeItems on a project-scope read. Oldest first.
 	Items []ItemCountPoint
+	// Replay is the project's history rebuilt from the lifecycle journal,
+	// present only when the caller set IncludeReplay on a project-scope read.
+	// Oldest first, one point per recorded instant. It carries the item
+	// counts AND the estimate sums, all as of that instant.
+	Replay []HistoryPoint
+	// HistoryStartsAt is the instant from which the journal is trustworthy
+	// (KANB-30). Replay never reaches back before it, and nothing should be
+	// drawn before it either: that history was not recorded and cannot be
+	// honestly recovered.
+	HistoryStartsAt time.Time
 }
 
 // ProgressTrackDeleteInput names one (project, task, assessor) track. An

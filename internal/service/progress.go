@@ -276,34 +276,20 @@ func (s *svc) ProjectProgress(ctx context.Context, a Actor, in ProjectProgressIn
 		}
 		result.ManualTracks = buildTracks(latest, counts)
 
-		// Auto: the board's own verdict, from column membership. IncludeDone
-		// is required — the filter's default hides done columns, which is a
-		// display rule and would make this metric count nothing. Archived
+		// Auto: the board's own verdict, from column membership. Archived
 		// tasks are excluded on both sides of the fraction, consistent with
 		// how the board and the subtask tally treat them.
-		cols, err := s.store.Columns().ListByProject(tx, p.ID)
+		//
+		// The counting itself lives in liveBoardCounts, which is also what a
+		// journal replay is reduced through (history.go): the live "how many
+		// are done now" and the replayed "how many were done then" are one
+		// definition with two sources, not two definitions free to drift.
+		live, err := liveBoardCounts(s, tx, p.ID)
 		if err != nil {
 			return err
 		}
-		doneCols := make(map[string]bool, len(cols))
-		for _, c := range cols {
-			if c.Kind == domain.KindDone {
-				doneCols[c.ID] = true
-			}
-		}
-		tasks, err := s.store.Tasks().List(tx, store.TaskFilter{
-			ProjectIDs:  []string{p.ID},
-			IncludeDone: true,
-		})
-		if err != nil {
-			return err
-		}
-		result.TotalTasks = len(tasks)
-		for _, t := range tasks {
-			if doneCols[t.ColumnID] {
-				result.DoneTasks++
-			}
-		}
+		result.TotalTasks = live.TotalTasks
+		result.DoneTasks = live.DoneTasks
 		if share, ok := autoPercent(result.DoneTasks, result.TotalTasks); ok {
 			result.Auto = &share
 		}
@@ -360,6 +346,18 @@ func (s *svc) ProgressHistory(ctx context.Context, a Actor, in ProgressHistoryIn
 				return err
 			}
 			result.Items = buildItemCounts(spans)
+		}
+		if in.IncludeReplay && taskID == nil {
+			entries, err := s.store.TaskHistory().ListByProject(tx, p.ID)
+			if err != nil {
+				return err
+			}
+			result.Replay = buildHistoryPoints(entries)
+			origin, err := s.store.TaskHistory().Origin(tx)
+			if err != nil {
+				return err
+			}
+			result.HistoryStartsAt = origin
 		}
 		if in.Limit > 0 {
 			marks, total, err := s.store.Progress().HistoryTail(tx, p.ID, taskID, in.Limit)
