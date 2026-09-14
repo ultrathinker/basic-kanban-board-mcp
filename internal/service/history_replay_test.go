@@ -735,3 +735,71 @@ func TestReplay_CardCreatedStraightIntoADoneColumn(t *testing.T) {
 		t.Fatalf("a card born in a done column makes the replay diverge: %v\nlive=%+v", d, live)
 	}
 }
+
+// The lifecycle journal is kept forever, and the ONE deletion allowed to
+// touch it is the ON DELETE CASCADE on task_id. That is not a retention rule,
+// it is the tie that keeps the two answers together: a hard delete (admin CLI
+// only) removes the card from the live counters instantly, so the journal has
+// to stop counting it in the same breath. Without the cascade the replay goes
+// on counting a card that no longer exists, and the gap never closes.
+//
+// Nothing else covers this — TaskRepo.Delete writes no journal entry at all,
+// by design, because the cascade is the whole mechanism.
+func TestReplay_HardDeleteTakesTheJournalWithIt(t *testing.T) {
+	env := openTestEnv(t)
+	ctx := context.Background()
+
+	keeper := makeBacklogTask(t, env, "keeper")
+	doomed := makeBacklogTask(t, env, "doomed")
+	setEstimate(t, env, keeper, 2)
+	setEstimate(t, env, doomed, 5)
+	moveTask(t, env, doomed, "Done")
+
+	// The card has a real history behind it, so the cascade has something to
+	// take: creation, an estimate and a move.
+	var beforeEntries int
+	for _, e := range journalOf(t, env) {
+		if e.TaskID != nil && *e.TaskID == doomed.ID {
+			beforeEntries++
+		}
+	}
+	if beforeEntries < 3 {
+		t.Fatalf("the doomed card left %d journal entries, want at least 3", beforeEntries)
+	}
+
+	if err := env.Write(ctx, func(tx store.Tx) error {
+		return env.Tasks().Delete(tx, doomed.ID)
+	}); err != nil {
+		t.Fatalf("hard delete: %v", err)
+	}
+
+	// Its entries went with it.
+	entries := journalOf(t, env)
+	for _, e := range entries {
+		if e.TaskID != nil && *e.TaskID == doomed.ID {
+			t.Fatalf("journal still holds a %q entry for a hard-deleted card", e.Kind)
+		}
+	}
+
+	// The live board and the replay tell the same story: two cards became
+	// one, and the finished one is gone rather than finished.
+	live := liveCounts(t, env)
+	if live.TotalTasks != 1 || live.DoneTasks != 0 || live.EstimateTotal != 2 {
+		t.Fatalf("live board = %+v, want 1 open card worth 2", live)
+	}
+	if d := diffCounts(live, replayJournal(entries, 0)); len(d) > 0 {
+		t.Fatalf("a hard-deleted card still haunts the replay: %v\nlive=%+v", d, live)
+	}
+
+	// The surviving card kept its own history: the cascade is scoped to the
+	// row that was deleted, not a sweep.
+	var kept int
+	for _, e := range entries {
+		if e.TaskID != nil && *e.TaskID == keeper.ID {
+			kept++
+		}
+	}
+	if kept < 2 {
+		t.Fatalf("the surviving card has %d journal entries left, want its creation and estimate at least", kept)
+	}
+}
