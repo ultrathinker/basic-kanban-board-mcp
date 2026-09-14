@@ -387,3 +387,144 @@ func TestTaskHistory_MigrationSeedsBaselineOnANonEmptyBoard(t *testing.T) {
 		t.Fatalf("test setup is wrong: task created at %s, origin %s", plain.CreatedAt, origin)
 	}
 }
+
+// Three "don't write noise" guards exist in the journal writers because the
+// table is kept forever and a row saying "estimate 3 became estimate 3" or
+// "archived already archived" is junk that nobody can prune. Each guard is
+// load-bearing on its own and a regression that lifts one of them is
+// invisible at every other layer (live counters agree, curve is unchanged,
+// reconciliation passes) — the only thing that notices is the row count
+// after a deliberate no-op.
+
+// Archive guard: a second Archive(card, true) on a card that is already
+// archived writes nothing. Otherwise the table grows on every retry of a
+// user who clicks "Archive" twice.
+func TestTaskHistory_ArchiveIsIdempotent(t *testing.T) {
+	ts := openTestStore(t)
+	p, cols := seedProject(t, ts)
+	ctx := context.Background()
+	task := seedTask(t, ts, p, cols["Backlog"], "stays archived", "alice")
+
+	if err := ts.Write(ctx, func(tx Tx) error {
+		return ts.Tasks().Archive(tx, task.ID, true, "bob")
+	}); err != nil {
+		t.Fatalf("first archive: %v", err)
+	}
+	afterFirst := len(historyOf(t, ts, p.ID))
+
+	if err := ts.Write(ctx, func(tx Tx) error {
+		return ts.Tasks().Archive(tx, task.ID, true, "bob")
+	}); err != nil {
+		t.Fatalf("second archive: %v", err)
+	}
+	if got := len(historyOf(t, ts, p.ID)); got != afterFirst {
+		t.Fatalf("re-archiving a card that is already archived added %d journal rows; the guard must keep it at %d",
+			got-afterFirst, afterFirst)
+	}
+
+	// The matching guard for restore: un-archiving an un-archived card
+	// also writes nothing.
+	if err := ts.Write(ctx, func(tx Tx) error {
+		return ts.Tasks().Archive(tx, task.ID, false, "bob")
+	}); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	afterRestore := len(historyOf(t, ts, p.ID))
+
+	if err := ts.Write(ctx, func(tx Tx) error {
+		return ts.Tasks().Archive(tx, task.ID, false, "bob")
+	}); err != nil {
+		t.Fatalf("second restore: %v", err)
+	}
+	if got := len(historyOf(t, ts, p.ID)); got != afterRestore {
+		t.Fatalf("restoring an already-live card added %d journal rows; the guard must keep it at %d",
+			got-afterRestore, afterRestore)
+	}
+}
+
+// Move guard: a Move to the column the card is already in writes nothing.
+// Without it a UI that bounces the card back into the same slot during a
+// drag-drop leaves a journal trail that says the card moved.
+func TestTaskHistory_MoveToSameColumnWritesNothing(t *testing.T) {
+	ts := openTestStore(t)
+	p, cols := seedProject(t, ts)
+	ctx := context.Background()
+	task := seedTask(t, ts, p, cols["Backlog"], "stays put", "alice")
+
+	afterCreate := len(historyOf(t, ts, p.ID))
+	if err := ts.Write(ctx, func(tx Tx) error {
+		return ts.Tasks().Move(tx, task.ID, cols["Backlog"].ID, 2*domain.RankStep, "bob")
+	}); err != nil {
+		t.Fatalf("move to same column: %v", err)
+	}
+	if got := len(historyOf(t, ts, p.ID)); got != afterCreate {
+		t.Fatalf("moving to the column the card was already in added %d journal rows; the guard must keep it at %d",
+			got-afterCreate, afterCreate)
+	}
+}
+
+// Content guard: an Update that touches neither estimate nor parent writes
+// no journal entry at all. The reverse is also true: changing estimate
+// writes only an estimate entry, changing parent writes only a parent
+// entry, changing both writes two — but never a duplicate "estimate 3
+// became estimate 3".
+func TestTaskHistory_UpdateWithNoRealChangeWritesNothing(t *testing.T) {
+	ts := openTestStore(t)
+	p, cols := seedProject(t, ts)
+	ctx := context.Background()
+	task := seedTask(t, ts, p, cols["Backlog"], "body change only", "alice")
+	est := 5.0
+	if err := ts.Write(ctx, func(tx Tx) error {
+		cur, err := ts.Tasks().GetByID(tx, task.ID)
+		if err != nil {
+			return err
+		}
+		cur.Estimate = &est
+		cur.UpdatedBy = "alice"
+		return ts.Tasks().Update(tx, cur, nil)
+	}); err != nil {
+		t.Fatalf("seed estimate: %v", err)
+	}
+	afterSeed := len(historyOf(t, ts, p.ID))
+
+	// Update with the SAME estimate and the SAME parent (still nil): no
+	// change to either field, so neither guard trips.
+	if err := ts.Write(ctx, func(tx Tx) error {
+		cur, err := ts.Tasks().GetByID(tx, task.ID)
+		if err != nil {
+			return err
+		}
+		cur.Estimate = &est
+		cur.UpdatedBy = "bob"
+		return ts.Tasks().Update(tx, cur, nil)
+	}); err != nil {
+		t.Fatalf("update with no real change: %v", err)
+	}
+	if got := len(historyOf(t, ts, p.ID)); got != afterSeed {
+		t.Fatalf("an Update that changed neither estimate nor parent added %d journal rows; the guard must keep it at %d",
+			got-afterSeed, afterSeed)
+	}
+
+	// Now change ONLY the parent. The delta must be exactly one parent
+	// entry, with no estimate row alongside it.
+	other := seedTask(t, ts, p, cols["Backlog"], "new parent", "alice")
+	beforeReparent := len(historyOf(t, ts, p.ID))
+	if err := ts.Write(ctx, func(tx Tx) error {
+		cur, err := ts.Tasks().GetByID(tx, task.ID)
+		if err != nil {
+			return err
+		}
+		cur.ParentID = &other.ID
+		cur.UpdatedBy = "bob"
+		return ts.Tasks().Update(tx, cur, nil)
+	}); err != nil {
+		t.Fatalf("reparent: %v", err)
+	}
+	added := historyOf(t, ts, p.ID)[beforeReparent:]
+	if len(added) != 1 {
+		t.Fatalf("the parent-only update added %d journal rows, want 1", len(added))
+	}
+	if added[0].Kind != HistoryParent {
+		t.Fatalf("the parent-only update added a %q entry, want parent", added[0].Kind)
+	}
+}
