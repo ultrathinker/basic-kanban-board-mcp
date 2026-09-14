@@ -333,3 +333,46 @@ func TestChart_Forecast_TooltipHasDateAndRemaining(t *testing.T) {
 		t.Error("no tooltip carried the 'in Xd/m/h' remaining-time suffix")
 	}
 }
+
+// 9. REVIEW C #5: a promise whose date had already passed when it was made
+// must read as OVERDUE, not as imminent. humanizeDuration has no sign, so
+// the unguarded remainder fell into its "<1m" branch and a month-late
+// promise rendered "(in <1m)" — a past date described as arriving in under
+// a minute. The service deliberately supports past ETAs (its own forecast
+// tests feed a 48h-past eta and require it to reach the view), so this is a
+// real path, not a degenerate input.
+//
+// The future case is asserted TOO, on purpose: a "fix" that flips the
+// comparison would move the lie to the other side (every future promise
+// suddenly "overdue"), and a past-only test would stay green while the
+// tooltip got worse for the common case.
+func TestChart_Forecast_TooltipCallsAPastPromiseOverdue(t *testing.T) {
+	made := time.Date(2026, 9, 12, 12, 0, 0, 0, time.Local)
+
+	past := tooltipText(forecastPoint{CreatedAt: made, ETA: made.Add(-30 * 24 * time.Hour)})
+	if !strings.Contains(past, "2026-08-13") || !strings.Contains(past, "overdue by 30d") {
+		t.Errorf("tooltip for a promise 30 days past = %q, want the date plus \"overdue by 30d\"", past)
+	}
+	if strings.Contains(past, "(in ") {
+		t.Errorf("tooltip for a past promise still claims remaining time: %q", past)
+	}
+
+	future := tooltipText(forecastPoint{CreatedAt: made, ETA: made.Add(90 * 24 * time.Hour)})
+	if !strings.Contains(future, "2026-12-11") || !strings.Contains(future, "(in 90d)") {
+		t.Errorf("tooltip for a promise 90 days ahead = %q, want the date plus \"(in 90d)\"", future)
+	}
+
+	// End to end: the overdue phrasing must survive into the rendered SVG,
+	// not only live in the helper — a renderer that swapped tooltipText for
+	// its own inline formatting would otherwise pass unnoticed.
+	marks := []domain.ProgressMark{
+		{ID: "m1", Assessor: "alpha", Percent: 30, CreatedAt: made, ETA: forecastPt(made.Add(-30 * 24 * time.Hour))},
+	}
+	svg := string(RenderForecastChart(marks, 600, 200))
+	if !strings.Contains(svg, "overdue by 30d") {
+		t.Errorf("rendered forecast chart has no overdue tooltip for the past promise:\n%s", svg)
+	}
+	if strings.Contains(svg, "(in <1m)") {
+		t.Errorf("rendered forecast chart describes a past promise as imminent:\n%s", svg)
+	}
+}

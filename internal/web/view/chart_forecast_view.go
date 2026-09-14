@@ -430,8 +430,17 @@ func renderFullForecastChart(b forecastBounds, seriesList []forecastSeries, etaM
 // because "remaining time" alone shrinks every day even when nothing
 // changed (the same reason the Y axis is absolute dates, not "days
 // remaining from now").
+//
+// A promise whose date had already passed when it was made is OVERDUE, not
+// imminent. humanizeDuration has no sign, so the raw negative remainder
+// falls into its "<1m" branch and a month-late promise would read
+// "(in <1m)" — the exact lie the board's forecast badge already avoids by
+// carrying an "overdue" mark for the same situation (view.ForecastView).
 func tooltipText(pt forecastPoint) string {
 	rem := pt.ETA.Sub(pt.CreatedAt)
+	if rem < 0 {
+		return pt.ETA.Format("2006-01-02") + " (overdue by " + humanizeDuration(-rem) + ")"
+	}
 	return pt.ETA.Format("2006-01-02") + " (in " + humanizeDuration(rem) + ")"
 }
 
