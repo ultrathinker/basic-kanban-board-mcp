@@ -375,3 +375,73 @@ func TestReadiness_LiveAgreesWithTheLastHistoricalPoint(t *testing.T) {
 		t.Fatalf("readiness = %q %v, want estimates 25%%", live.Basis, live.Percent)
 	}
 }
+
+// DoneLeaves is the numerator of the task-count fallback — the figure shown
+// when nothing on the board is estimated — so it has to count LEAVES, not
+// every finished card. An umbrella filed in a done column while its children
+// are still open is finished only as a label: none of the work under it is.
+// Counting it would put a card in the numerator that is not in the
+// denominator, and the board would report half the work done with none of it
+// done.
+//
+// The same counter travels out on HistoryPoint.DoneLeaves and through the
+// replay reconciliation, so a mistake here bends the historical curve too.
+// Every fixture in the suite had kept its umbrella in Backlog.
+func TestReadiness_AnUmbrellaInADoneColumnIsNotAFinishedLeaf(t *testing.T) {
+	env := openTestEnv(t)
+	unit := env.proj.EstimateUnit
+
+	umbrella := makeBacklogTask(t, env, "umbrella")
+	childA := makeBacklogTask(t, env, "child A")
+	childB := makeBacklogTask(t, env, "child B")
+	setParent(t, env, childA, umbrella)
+	setParent(t, env, childB, umbrella)
+
+	// The umbrella is filed as done while both children are still open, and
+	// nothing anywhere carries an estimate.
+	moveTask(t, env, umbrella, "Done")
+
+	r := liveReadiness(t, env)
+	if r.Basis != ReadinessTaskCount {
+		t.Fatalf("basis = %q, want task_count (nothing is estimated)", r.Basis)
+	}
+	if r.Leaves != 2 {
+		t.Fatalf("leaves = %d, want 2 (the two children; the umbrella has children)", r.Leaves)
+	}
+	if r.DoneLeaves != 0 {
+		t.Fatalf("done leaves = %d, want 0 — the umbrella is in Done but it is not a leaf", r.DoneLeaves)
+	}
+	if got := mustPercent(t, r); got != 0 {
+		t.Fatalf("readiness = %d%%, want 0%% — no working task is finished", got)
+	}
+
+	// The umbrella is still a finished CARD; only the leaf tally excludes it.
+	live := liveCounts(t, env)
+	if live.DoneTasks != 1 || live.TotalTasks != 3 {
+		t.Fatalf("live board = %+v, want 3 cards with 1 in a done column", live)
+	}
+
+	// The replay must agree, since DoneLeaves is compared field for field.
+	if d := diffCounts(live, replayJournal(journalOf(t, env), 0)); len(d) > 0 {
+		t.Fatalf("an umbrella in a done column makes the replay diverge: %v", d)
+	}
+	points := buildHistoryPoints(journalOf(t, env), unit)
+	last := points[len(points)-1]
+	if last.DoneLeaves != 0 || last.Leaves != 2 {
+		t.Fatalf("the curve's last point has %d of %d leaves done, want 0 of 2", last.DoneLeaves, last.Leaves)
+	}
+	if last.Readiness.Percent == nil || *last.Readiness.Percent != 0 {
+		t.Fatalf("the curve's last point reads %v, want 0%%", last.Readiness.Percent)
+	}
+
+	// Finishing one child moves the number, so the zero above is a measured
+	// zero and not a counter that never budges.
+	moveTask(t, env, childA, "Done")
+	r = liveReadiness(t, env)
+	if r.DoneLeaves != 1 {
+		t.Fatalf("after finishing one child, done leaves = %d, want 1", r.DoneLeaves)
+	}
+	if got := mustPercent(t, r); got != 50 {
+		t.Fatalf("readiness = %d%%, want 50%% (1 of 2 working tasks)", got)
+	}
+}
