@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -15,7 +16,11 @@ import (
 func TestInstructions_ExactRender(t *testing.T) {
 	t.Parallel()
 	want := strings.Join([]string{
-		"This server is a shared kanban board for AI coding agents (and the humans watching them). Nine tools; no tenth will be added.",
+		// The count is interpolated from the registry, so this line derives it
+		// too. Writing "13" here would reintroduce exactly the hand-maintained
+		// number KANB-42 exists to remove — the golden would then pin a literal
+		// and fail on the day the surface legitimately grows.
+		fmt.Sprintf("This server is a shared kanban board for AI coding agents (and the humans watching them). %d tools; the set is deliberately small.", len(fullToolFactories)),
 		"",
 		"Identity: your actor identity is the name of your bearer token. No tool accepts an \"actor\" parameter — whatever you do is attributed to your token, always.",
 		"",

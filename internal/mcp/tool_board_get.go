@@ -45,7 +45,7 @@ type boardColumnOut struct {
 // identity. `version` in particular closes a loop that was open: project_upsert
 // (mode:"update") requires if_version and this is the only tool that reads a
 // project, so without it an administrator could not reconfigure an existing
-// project through the nine tools at all. The settings come with it so a caller
+// project through the tools at all. The settings come with it so a caller
 // can send a modified copy of what it read instead of guessing at the values
 // it is about to overwrite.
 type boardProjectOut struct {

@@ -1,5 +1,5 @@
 // Package mcp adapts internal/service.Service onto the Model Context
-// Protocol: nine tools, mounted over streamable HTTP, plus a read-only
+// Protocol: the tool registry in registry.go, mounted over streamable HTTP, plus a read-only
 // variant and the initialize instructions. This package holds no business
 // logic — every rule it seems to enforce (WIP, dependencies, versions,
 // cycles) actually lives in internal/domain and internal/service; this

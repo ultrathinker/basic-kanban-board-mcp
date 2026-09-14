@@ -10,46 +10,6 @@ import (
 	gomcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// fullToolFactoriesForDocs is the canonical list every tool that ships
-// on the full /mcp server, used by GenerateMCPToolsDocs to render
-// docs/MCP-TOOLS.md. The list lives here (rather than next to the
-// server constructors) because adding a tool requires updating it —
-// the same discipline as the rest of the registry, made visible by the
-// pinned docgen test that fails on a count mismatch.
-//
-// board_guide is itself part of this list. board_get through
-// progress_history are the original twelve tools the plan committed to
-// when the count was "nine" (the count grew with progress_set, then
-// progress_history, then board_guide); "nine" is the historical anchor,
-// "13" is the present truth and the source of the count in the doc.
-var fullToolFactoriesForDocs = []func() *gomcp.Tool{
-	boardGetTool,
-	taskNextTool,
-	taskGetTool,
-	taskCreateTool,
-	taskUpdateTool,
-	taskLinkTool,
-	taskClaimTool,
-	taskRemoveTool,
-	projectUpsertTool,
-	projectPostTool,
-	progressSetTool,
-	progressHistoryTool,
-	boardGuideTool,
-}
-
-// readOnlyToolFactoriesForDocs is the read-only server's tool list,
-// used to document /mcp/readonly. It is shorter than the full list
-// because mutating tools never appear there (PLAN §6 rule 4). The
-// /mcp/readonly section of the generated doc reads from this slice.
-var readOnlyToolFactoriesForDocs = []func() *gomcp.Tool{
-	boardGetTool,
-	taskGetTool,
-	taskNextTool,
-	progressHistoryTool,
-	boardGuideTool,
-}
-
 // GenerateMCPToolsDocs renders the canonical docs/MCP-TOOLS.md content
 // from the registry. The committed file on disk is the golden; the test
 // in docgen_test.go diff-fails on any divergence, so a registry change
@@ -67,29 +27,29 @@ func GenerateMCPToolsDocs() string {
 	writeDocQuickReference(&b)
 	writeDocCorePrinciples(&b)
 	writeDocCompactGrammar(&b)
-	writeDocToolReference(&b, fullToolFactoriesForDocs)
+	writeDocToolReference(&b, fullToolFactories)
 	writeDocErrorHandling(&b)
 	return b.String()
 }
 
 func writeDocHeader(b *bytes.Buffer) {
 	fmt.Fprintf(b, "# MCP Tools Reference\n\n")
-	fmt.Fprintf(b, "basic-kanban-board-mcp exposes %d native Model Context Protocol (MCP) tools over streamable-HTTP with mandatory bearer token authentication.\n\n", len(fullToolFactoriesForDocs))
+	fmt.Fprintf(b, "basic-kanban-board-mcp exposes %d native Model Context Protocol (MCP) tools over streamable-HTTP with mandatory bearer token authentication.\n\n", len(fullToolFactories))
 	fmt.Fprintf(b, "Every task write is a batch, every read defaults to a token-efficient compact text format, and every task carries an authoritative version for optimistic concurrency.\n\n")
 	fmt.Fprintf(b, "---\n\n")
 }
 
 func writeDocQuickReference(b *bytes.Buffer) {
-	fmt.Fprintf(b, "## Quick Reference: The %d Tools\n\n", len(fullToolFactoriesForDocs))
+	fmt.Fprintf(b, "## Quick Reference: The %d Tools\n\n", len(fullToolFactories))
 	fmt.Fprintf(b, "| Tool | Purpose |\n")
 	fmt.Fprintf(b, "|---|---|\n")
-	for i, f := range fullToolFactoriesForDocs {
+	for i, f := range fullToolFactories {
 		t := f()
 		fmt.Fprintf(b, "| [`%s`](#%d-%s) | %s |\n",
 			t.Name, i+1, t.Name, oneLineForDoc(t.Description))
 	}
 	fmt.Fprintf(b, "\n")
-	fmt.Fprintf(b, "> **Tool count:** %d tools on the full server (this file). %d on `/mcp/readonly`: board_get, task_get, task_next with claim/start disabled, progress_history, board_guide. The count comes from the registry, not a constant.\n\n", len(fullToolFactoriesForDocs), len(readOnlyToolFactoriesForDocs))
+	fmt.Fprintf(b, "> **Tool count:** %d tools on the full server (this file). %d on `/mcp/readonly`: board_get, task_get, task_next with claim/start disabled, progress_history, board_guide. The count comes from the registry, not a constant.\n\n", len(fullToolFactories), len(readOnlyToolFactories))
 	fmt.Fprintf(b, "---\n\n")
 }
 

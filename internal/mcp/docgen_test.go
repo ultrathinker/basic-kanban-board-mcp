@@ -3,6 +3,7 @@ package mcp
 import (
 	"bytes"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,12 +17,17 @@ import (
 var updateDoc = flag.Bool("update-doc", false, "rewrite docs/MCP-TOOLS.md to match the current registry")
 
 // TestDocGen_MatchesCommittedGolden is KANB-43's "the test goes red on
-// divergence": it regenerates docs/MCP-TOOLS.md from the registry and
-// compares byte-for-byte to the committed file. A tool added to the
-// registry but missing from fullToolFactoriesForDocs would already
-// fail this test (data.tool_count would be wrong); a tool added to
-// fullToolFactoriesForDocs but missing from gomcp.AddTool calls would
-// show up as a name list mismatch. Either way, drift shows up here.
+// divergence": it regenerates docs/MCP-TOOLS.md from the registry in
+// registry.go and compares byte-for-byte to the committed file. Change the
+// registry without regenerating and this fails.
+//
+// What it does NOT catch, and an earlier version of this comment wrongly
+// claimed it did: a tool registered on the server but absent from the
+// registry. The generator reads only the registry, so the rendered document
+// would match the committed one and this test would pass while the server
+// served a tool no document mentions. A review canary proved exactly that.
+// TestRegistryMatchesTheRunningServer is what closes it, by asking a live
+// server what it publishes.
 func TestDocGen_MatchesCommittedGolden(t *testing.T) {
 	t.Parallel()
 	got := GenerateMCPToolsDocs()
@@ -124,23 +130,31 @@ func diffDoc(t *testing.T, path, want, got string) {
 	}
 }
 
-// TestDocGen_ToolCountMatchesRegistry is the canary from KANB-42, lifted
-// to the doc: the "13 tools" sentence in the Quick Reference is built
-// from len(fullToolFactoriesForDocs) and a stray addition would change
-// it. This test fails if the count diverges between the registry and
-// the doc — without needing to diff the whole rendered file.
+// TestDocGen_ToolCountMatchesRegistry checks the Quick Reference header
+// carries the count the registry actually holds — without naming that count.
+//
+// It used to read `wantPrefix := "## Quick Reference: The 13 Tools"`. That
+// literal was the only thing catching registry drift, and it caught it by
+// accident: it fails just as loudly when the surface legitimately grows to
+// fourteen, reporting "count drifted from registry" when the registry is the
+// one thing that is right. A count written down in the test is the same
+// defect as a count written down in the doc, which is what KANB-42 is about.
 func TestDocGen_ToolCountMatchesRegistry(t *testing.T) {
 	t.Parallel()
 	got := GenerateMCPToolsDocs()
-	wantPrefix := "## Quick Reference: The 13 Tools"
-	if !strings.Contains(got, wantPrefix) {
-		t.Errorf("doc quick-reference header does not match registry count: want %q in output", wantPrefix)
+	want := fmt.Sprintf("## Quick Reference: The %d Tools", len(fullToolFactories))
+	if !strings.Contains(got, want) {
+		t.Errorf("doc quick-reference header does not match the registry: want %q in output", want)
 	}
-	if strings.Contains(got, "## Quick Reference: The 12 Tools") {
-		t.Errorf("doc still carries the old 12-tools header — count drifted from registry")
-	}
-	if strings.Contains(got, "## Quick Reference: The 9 Tools") {
-		t.Errorf("doc still carries the old 9-tools header — count drifted from registry")
+	// Any OTHER count in that header means the generator and the registry
+	// disagree — including a stale one left behind by a partial edit.
+	for n := 1; n <= len(fullToolFactories)+5; n++ {
+		if n == len(fullToolFactories) {
+			continue
+		}
+		if stale := fmt.Sprintf("## Quick Reference: The %d Tools", n); strings.Contains(got, stale) {
+			t.Errorf("doc carries %q alongside the registry count of %d", stale, len(fullToolFactories))
+		}
 	}
 }
 
@@ -168,13 +182,13 @@ func TestDocGen_ExampleCallsIncludeRequiredFields(t *testing.T) {
 	t.Parallel()
 	got := GenerateMCPToolsDocs()
 
-	// Walk every fullToolFactoriesForDocs tool: pull its schema's
+	// Walk every fullToolFactories tool: pull its schema's
 	// required list and verify the example block contains the literal
 	// "key": token for each one. A schema that declares "foo" as
 	// required must produce an example whose "foo": appears in the
 	// generated text — otherwise the doc would teach a request that
 	// the schema would refuse.
-	for _, f := range fullToolFactoriesForDocs {
+	for _, f := range fullToolFactories {
 		tool := f()
 		required := schemaRequiredSet(tool.InputSchema)
 		if len(required) == 0 {

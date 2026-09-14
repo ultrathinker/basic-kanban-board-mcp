@@ -33,14 +33,13 @@ type schemaErrorOutput struct {
 var toolInputSchemas = buildToolInputSchemas()
 
 func buildToolInputSchemas() map[string]*jsonschema.Schema {
-	tools := []*gomcp.Tool{
-		boardGetTool(), taskNextTool(), taskGetTool(), taskCreateTool(),
-		taskUpdateTool(), taskLinkTool(), taskClaimTool(), taskRemoveTool(),
-		projectUpsertTool(), projectPostTool(), progressSetTool(), progressHistoryTool(),
-		boardGuideTool(),
-	}
-	m := make(map[string]*jsonschema.Schema, len(tools))
-	for _, t := range tools {
+	// Built from the one registry in registry.go. Listing the tools again
+	// here is how a new tool used to end up with the generic remediation
+	// instead of one naming its required properties: the list was correct
+	// on the day it was written and silently behind ever after.
+	m := make(map[string]*jsonschema.Schema, len(fullToolFactories))
+	for _, f := range fullToolFactories {
+		t := f()
 		// Tool.InputSchema is `any` on the wire type; every tool in this
 		// package sets it from schemaFor, so the assertion cannot fail —
 		// and if a future tool sets something else, the missing entry
