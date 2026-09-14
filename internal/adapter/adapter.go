@@ -61,6 +61,46 @@ type State struct {
 	Identity string          `json:"identity"`
 	Cursor   string          `json:"cursor"`
 	Queue    []QueuedMessage `json:"queue"`
+	Workers  []Worker        `json:"workers,omitempty"`
+	Journal  []JournalEntry  `json:"journal,omitempty"`
+}
+
+// Worker is local orchestration context, never a board entity. It contains no
+// token secret and grants no process authority outside this adapter.
+type Worker struct {
+	WorkerID    string     `json:"worker_id"`
+	Role        string     `json:"role"`
+	Provider    string     `json:"provider"`
+	SessionID   string     `json:"session_id,omitempty"`
+	WorkDir     string     `json:"work_dir"`
+	CurrentTask string     `json:"current_task,omitempty"`
+	Checkpoint  Checkpoint `json:"checkpoint"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+}
+
+// Checkpoint is the bounded handoff record used when a CLI cannot resume.
+type Checkpoint struct {
+	Done       string `json:"done,omitempty"`
+	Version    string `json:"version,omitempty"`
+	Unresolved string `json:"unresolved,omitempty"`
+	NextStep   string `json:"next_step,omitempty"`
+}
+
+// JournalEntry makes resume fallbacks explicit instead of hiding them in an
+// inferred worker status.
+type JournalEntry struct {
+	At       time.Time `json:"at"`
+	WorkerID string    `json:"worker_id"`
+	Kind     string    `json:"kind"`
+	Detail   string    `json:"detail"`
+}
+
+// Assignment tells a caller whether the same CLI session can be continued.
+type Assignment struct {
+	Worker   Worker
+	Resume   bool
+	Prompt   string
+	Fallback string
 }
 
 // Store owns an adapter state file and makes every state transition durable.
@@ -198,6 +238,77 @@ func (s *Store) ResetAttempt(messageID, sessionID string) error {
 	return fmt.Errorf("message %s for session %s not found", messageID, sessionID)
 }
 
+// UpsertWorker records a worker's durable environment association. SessionID
+// may be empty only for a worker that has not yet started a CLI session.
+func (s *Store) UpsertWorker(worker Worker) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if strings.TrimSpace(worker.WorkerID) == "" || strings.TrimSpace(worker.Role) == "" || strings.TrimSpace(worker.Provider) == "" || strings.TrimSpace(worker.WorkDir) == "" {
+		return errors.New("worker id, role, provider, and work directory are required")
+	}
+	worker.UpdatedAt = time.Now().UTC()
+	for i := range s.state.Workers {
+		if s.state.Workers[i].WorkerID == worker.WorkerID {
+			if worker.SessionID == "" {
+				worker.SessionID = s.state.Workers[i].SessionID
+			}
+			if worker.CurrentTask == "" {
+				worker.CurrentTask = s.state.Workers[i].CurrentTask
+			}
+			if worker.Checkpoint == (Checkpoint{}) {
+				worker.Checkpoint = s.state.Workers[i].Checkpoint
+			}
+			s.state.Workers[i] = worker
+			return s.saveLocked()
+		}
+	}
+	s.state.Workers = append(s.state.Workers, worker)
+	return s.saveLocked()
+}
+
+// PrepareAssignment selects a saved session for related work or logs the
+// explicit checkpoint fallback when that session is unavailable.
+func (s *Store) PrepareAssignment(workerID, task string, resumeAvailable bool) (Assignment, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.state.Workers {
+		w := &s.state.Workers[i]
+		if w.WorkerID != workerID {
+			continue
+		}
+		w.CurrentTask, w.UpdatedAt = task, time.Now().UTC()
+		a := Assignment{Worker: *w}
+		if resumeAvailable && w.SessionID != "" {
+			a.Resume = true
+			a.Prompt = "Continue the saved worker session with the current contract and checkpoint."
+		} else {
+			a.Fallback = "resume_unavailable_checkpoint_loaded"
+			a.Prompt = checkpointPrompt(w.Checkpoint)
+			s.state.Journal = append(s.state.Journal, JournalEntry{At: w.UpdatedAt, WorkerID: workerID, Kind: a.Fallback, Detail: "new session must start from checkpoint"})
+		}
+		if err := s.saveLocked(); err != nil {
+			return Assignment{}, err
+		}
+		a.Worker = *w
+		return a, nil
+	}
+	return Assignment{}, fmt.Errorf("worker %s not found", workerID)
+}
+
+// RecordCheckpoint replaces the bounded context handoff after a work stage.
+func (s *Store) RecordCheckpoint(workerID string, checkpoint Checkpoint) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.state.Workers {
+		w := &s.state.Workers[i]
+		if w.WorkerID == workerID {
+			w.Checkpoint, w.UpdatedAt = checkpoint, time.Now().UTC()
+			return s.saveLocked()
+		}
+	}
+	return fmt.Errorf("worker %s not found", workerID)
+}
+
 func (s *Store) saveLocked() error {
 	b, err := json.MarshalIndent(s.state, "", "  ")
 	if err != nil {
@@ -264,6 +375,10 @@ func isStop(m QueuedMessage) bool {
 	}
 	body := strings.Fields(strings.ToLower(strings.TrimSpace(m.Body)))
 	return len(body) > 0 && (body[0] == "stop" || body[0] == "halt")
+}
+
+func checkpointPrompt(c Checkpoint) string {
+	return fmt.Sprintf("Resume is unavailable. Start a fresh session from checkpoint: done=%s; version=%s; unresolved=%s; next=%s", c.Done, c.Version, c.Unresolved, c.NextStep)
 }
 
 // Runner delivers a message to a particular CLI session and returns only after

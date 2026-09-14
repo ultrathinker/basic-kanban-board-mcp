@@ -25,6 +25,67 @@ func TestDecodeFeedAcceptsEmptyPageWithCursor(t *testing.T) {
 	}
 }
 
+func TestWorkerSessionAndCheckpointSurviveRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	store, err := OpenStore(path, "https://board.example", "KANB", "worker-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := Worker{WorkerID: "worker-a", Role: "implementer", Provider: "claude", SessionID: "session-a", WorkDir: "C:/work"}
+	if err := store.UpsertWorker(worker); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := Checkpoint{Done: "parser", Version: "v7", Unresolved: "review", NextStep: "run tests"}
+	if err := store.RecordCheckpoint("worker-a", checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenStore(path, "https://board.example", "KANB", "worker-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := reopened.Snapshot().Workers
+	if len(got) != 1 || got[0].SessionID != "session-a" || got[0].Checkpoint != checkpoint {
+		t.Fatalf("workers = %#v", got)
+	}
+}
+
+func TestRelatedTaskPrefersSavedSession(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "state.json"), "https://board.example", "KANB", "worker-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertWorker(Worker{WorkerID: "worker-a", Role: "implementer", Provider: "claude", SessionID: "session-a", WorkDir: "C:/work"}); err != nil {
+		t.Fatal(err)
+	}
+	a, err := store.PrepareAssignment("worker-a", "KANB-50", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !a.Resume || a.Worker.SessionID != "session-a" {
+		t.Fatalf("assignment = %#v", a)
+	}
+}
+
+func TestUnavailableResumeUsesVisibleCheckpointFallback(t *testing.T) {
+	store, err := OpenStore(filepath.Join(t.TempDir(), "state.json"), "https://board.example", "KANB", "worker-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpsertWorker(Worker{WorkerID: "worker-a", Role: "implementer", Provider: "claude", SessionID: "session-a", WorkDir: "C:/work", Checkpoint: Checkpoint{Done: "done", NextStep: "test"}}); err != nil {
+		t.Fatal(err)
+	}
+	a, err := store.PrepareAssignment("worker-a", "KANB-50", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Resume || a.Fallback != "resume_unavailable_checkpoint_loaded" || a.Prompt == "" {
+		t.Fatalf("assignment = %#v", a)
+	}
+	if got := store.Snapshot().Journal; len(got) != 1 || got[0].Kind != a.Fallback {
+		t.Fatalf("journal = %#v", got)
+	}
+}
+
 func TestReceiveSurvivesCrashAfterPagePersistence(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	store, err := OpenStore(path, "https://board.example", "KANB", "worker-token")

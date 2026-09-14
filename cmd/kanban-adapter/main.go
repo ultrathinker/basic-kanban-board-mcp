@@ -29,6 +29,9 @@ func run(args []string) error {
 	identity := fs.String("identity", "", "board token id this adapter receives for")
 	state := fs.String("state", filepath.Join(".", "data", "adapter-state.json"), "durable adapter state file")
 	session := fs.String("session", "", "target CLI session id")
+	workerID := fs.String("worker", "", "durable worker id (default: --identity)")
+	role := fs.String("role", "implementer", "worker role")
+	task := fs.String("task", "", "current related task key")
 	runnerName := fs.String("runner", "claude", "delivery runner: claude")
 	workdir := fs.String("workdir", "", "working directory for the CLI")
 	once := fs.Bool("once", false, "poll and deliver one pending message")
@@ -46,11 +49,24 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	if *workerID == "" {
+		*workerID = *identity
+	}
+	if *workdir == "" {
+		return errors.New("--workdir is required for the durable worker registry")
+	}
+	if err := store.UpsertWorker(adapter.Worker{WorkerID: *workerID, Role: *role, Provider: *runnerName, SessionID: *session, WorkDir: *workdir, CurrentTask: *task}); err != nil {
+		return err
+	}
+	assignment, err := store.PrepareAssignment(*workerID, *task, *session != "")
+	if err != nil {
+		return err
+	}
 	client := adapter.MCPFeedClient{Endpoint: *url, Token: token, Project: *project}
 	if *runnerName != "claude" {
 		return fmt.Errorf("unsupported runner %q; only claude has a confirmed delivery implementation", *runnerName)
 	}
-	if strings.TrimSpace(*session) == "" {
+	if strings.TrimSpace(assignment.Worker.SessionID) == "" {
 		return errors.New("--session is required; the adapter does not invent a CLI session")
 	}
 	runner := adapter.ClaudeRunner{WorkDir: *workdir}
@@ -59,7 +75,7 @@ func run(args []string) error {
 		if err != nil {
 			return err
 		}
-		if err := store.Receive(page, *session); err != nil {
+		if err := store.Receive(page, assignment.Worker.SessionID); err != nil {
 			return err
 		}
 		return adapter.DeliverNext(context.Background(), store, runner, time.Now)
