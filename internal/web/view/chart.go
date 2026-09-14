@@ -49,21 +49,13 @@ type chartPoint struct {
 type chartSeries struct {
 	Name        string
 	IsComposite bool
-	// IsForecast marks the one track (see buildForecastSeries) that plots
-	// how the promised finish date moved over time, rather than a percent.
-	// It gets its own data-series attribute and title text, distinct from
-	// both the per-assessor percent tracks and the composite.
-	IsForecast  bool
+	// KANB-36: IsForecast is gone. The forecast is no longer drawn on the
+	// percent chart — it lives in its own chart with a real date axis
+	// (chart_forecast.go).
 	Points      []chartPoint
 	DashArray   string
 	StrokeWidth float64
 }
-
-// forecastDashArray is the dash pattern for the forecast track: deliberately
-// not one of chartDashPatterns, so it never reads as "one more assessor" —
-// it is a different kind of line (a date, not a percent) and must look like
-// one at a glance, greyscale rules or not.
-const forecastDashArray = "1 4"
 
 // ProgressChartView holds the rendered SVG chart for template inclusion.
 // A nil *ProgressChartView means no assessment history exists.
@@ -177,16 +169,14 @@ func renderProgressChart(history []domain.ProgressMark, width, height int, detai
 	}
 	compositePoints = decimatePoints(compositePoints, MaxChartPoints)
 
-	// Forecast track: how the promised finish date moved over time. Built
-	// from the same sorted marks, independent of the percent tracks above —
-	// see buildForecastSeries for the mapping. Empty when nobody in this
-	// history ever gave a forecast; that is not an error, just nothing to
-	// draw.
-	forecastPoints := buildForecastSeries(marks)
-	if len(forecastPoints) > 0 {
-		forecastPoints = deduplicateSameTimestamp(forecastPoints)
-		forecastPoints = decimatePoints(forecastPoints, MaxChartPoints)
-	}
+	// Forecast track removed (KANB-36): the forecast was drawn on the
+	// percent chart's 0..100 axis, normalized so the EARLIEST promise sat at
+	// 100 and the LATEST at 0. That mixed a date with a percent and read
+	// badly. Forecasts now live in their own chart — see RenderForecastChart
+	// in chart_forecast.go — with the predicted date on a real date axis,
+	// one series per assessor, plus a calculated consensus at each time
+	// point. The data itself is unchanged (m.ETA is still stored on every
+	// mark); only its rendering moved.
 
 	// Deterministically order assessor names.
 	var assessorNames []string
@@ -206,19 +196,6 @@ func renderProgressChart(history []domain.ProgressMark, width, height int, detai
 		})
 	}
 
-	// Forecast track is inserted after the assessors but before the
-	// composite, so the composite keeps its contract of being rendered last
-	// (on top) — this only adds a layer underneath it, never above.
-	if len(forecastPoints) > 0 {
-		seriesList = append(seriesList, chartSeries{
-			Name:        "forecast",
-			IsForecast:  true,
-			Points:      forecastPoints,
-			DashArray:   forecastDashArray,
-			StrokeWidth: 1.6,
-		})
-	}
-
 	// Composite line is rendered last with a heavier, solid stroke to stand out prominently.
 	seriesList = append(seriesList, chartSeries{
 		Name:        "composite",
@@ -229,78 +206,6 @@ func renderProgressChart(history []domain.ProgressMark, width, height int, detai
 	})
 
 	return renderFullChart(bounds, seriesList, tStart, tEnd, detailed)
-}
-
-// buildForecastSeries derives the forecast track from the same history the
-// percent tracks are drawn from. Not every mark carries an ETA (it is
-// optional on progress_set), so this collects exactly the marks that do, in
-// chronological order, across every assessor — the brief asks for ONE shape
-// that answers "is the promise sliding or holding", not a track per
-// assessor.
-//
-// Design decision (see REPORT.md for the full reasoning): the vertical axis
-// stays 0..100 like every other track, so the forecast reuses the exact
-// same projection, decimation and single-point handling the percent lines
-// already have. Each ETA is normalized against the min/max ETA actually
-// seen in this history: the EARLIEST promised date maps to 100 (top — the
-// same place a good percent lives) and the LATEST promised date maps to 0
-// (bottom — the same place a bad percent lives). A promise that holds
-// steady draws a flat line; a promise that slides later and later trends
-// toward the bottom, exactly the way a percent drop already reads on this
-// chart — so "the promise is failing" looks like the same kind of bad news
-// whether the number behind it is a percent or a date. This also means
-// decimatePoints' existing "never smooth away a drop" contract protects a
-// sudden, large slip in the forecast for free, with no changes to that
-// function.
-//
-// Absolute ETA (not "days remaining from the report") is normalized on
-// purpose: a promise that never moves at all would still show shrinking
-// "days remaining" as the date approaches, which would misread as sliding
-// even though nothing changed. Plotting the raw promised date is the only
-// mapping that renders a genuinely held promise as flat.
-//
-// When every forecast in the history names the same instant (min == max,
-// which includes the single-forecast case), there is nothing to normalize
-// against, so every point is placed at the neutral midline (50): one data
-// point, or perfect agreement, cannot look like sliding OR holding, so it
-// commits to neither.
-func buildForecastSeries(marks []domain.ProgressMark) []chartPoint {
-	var etaMin, etaMax time.Time
-	haveETA := false
-	for _, m := range marks {
-		if m.ETA == nil {
-			continue
-		}
-		if !haveETA {
-			etaMin, etaMax = *m.ETA, *m.ETA
-			haveETA = true
-			continue
-		}
-		if m.ETA.Before(etaMin) {
-			etaMin = *m.ETA
-		}
-		if m.ETA.After(etaMax) {
-			etaMax = *m.ETA
-		}
-	}
-	if !haveETA {
-		return nil
-	}
-
-	span := etaMax.Sub(etaMin)
-	points := make([]chartPoint, 0, len(marks))
-	for _, m := range marks {
-		if m.ETA == nil {
-			continue
-		}
-		v := 50
-		if span > 0 {
-			frac := float64(m.ETA.Sub(etaMin)) / float64(span)
-			v = int(100 - frac*100 + 0.5)
-		}
-		points = append(points, chartPoint{Time: m.CreatedAt, Percent: clampPercent(v)})
-	}
-	return points
 }
 
 // chartBounds encapsulates SVG viewport dimensions and coordinate projections.
@@ -440,11 +345,6 @@ func renderFullChart(b chartBounds, seriesList []chartSeries, tStart, tEnd time.
 			switch {
 			case s.IsComposite:
 				fmt.Fprintf(&buf, `<circle cx="%.1f" cy="%.1f" r="4" fill="currentColor" data-series="composite"><title>Composite: %d%%</title></circle>`, cx, cy, pt.Percent)
-			case s.IsForecast:
-				// No percent printed here: the forecast's numeric axis is a
-				// normalized placement, not a percent, and the brief asks for a
-				// shape the reader reads at a glance — not a number to decode.
-				fmt.Fprintf(&buf, `<circle cx="%.1f" cy="%.1f" r="3" fill="currentColor" data-series="forecast"><title>Forecast</title></circle>`, cx, cy)
 			default:
 				fmt.Fprintf(&buf, `<circle cx="%.1f" cy="%.1f" r="3" fill="currentColor" data-assessor="%s"><title>%s: %d%%</title></circle>`, cx, cy, escapedName, escapedName, pt.Percent)
 			}
@@ -462,12 +362,6 @@ func renderFullChart(b chartBounds, seriesList []chartSeries, tStart, tEnd time.
 		switch {
 		case s.IsComposite:
 			fmt.Fprintf(&buf, `<polyline fill="none" stroke="currentColor" stroke-width="%.1f" points="%s" data-series="composite"><title>Composite Progress</title></polyline>`, s.StrokeWidth, pointsBuf.String())
-		case s.IsForecast:
-			dashAttr := ""
-			if s.DashArray != "" && s.DashArray != "none" {
-				dashAttr = fmt.Sprintf(` stroke-dasharray="%s"`, s.DashArray)
-			}
-			fmt.Fprintf(&buf, `<polyline fill="none" stroke="currentColor" stroke-width="%.1f"%s points="%s" data-series="forecast"><title>Forecast history</title></polyline>`, s.StrokeWidth, dashAttr, pointsBuf.String())
 		default:
 			dashAttr := ""
 			if s.DashArray != "" && s.DashArray != "none" {
@@ -498,35 +392,84 @@ func deduplicateSameTimestamp(points []chartPoint) []chartPoint {
 	return out
 }
 
-// decimatePoints downsamples dense point sequences for rendering while strictly
-// protecting all downward drops and local minima.
+// decimatePoints downsamples dense percent sequences for rendering while
+// strictly protecting all downward drops and local extrema. On the percent
+// chart the bad news is a FALL (readiness revised down), so worseIsHigher is
+// false — see decimateKeepMask for the shared rule.
 func decimatePoints(points []chartPoint, maxPoints int) []chartPoint {
-	n := len(points)
-	if n <= maxPoints || maxPoints < 2 {
+	if len(points) <= maxPoints || maxPoints < 2 {
 		return points
+	}
+	values := make([]int64, len(points))
+	for i, p := range points {
+		values[i] = int64(p.Percent)
+	}
+	keep := decimateKeepMask(values, maxPoints, false)
+	var result []chartPoint
+	for i := range points {
+		if keep[i] {
+			result = append(result, points[i])
+		}
+	}
+	return result
+}
+
+// decimateKeepMask is the ONE decimation rule both charts obey. It takes the
+// series as plain int64 values and answers which indices survive.
+//
+// Why one function and not one per chart: the two charts disagree about which
+// direction is bad news, and that disagreement is exactly ONE comparison (the
+// "a step in the bad direction is critical" rule below). Everything else —
+// endpoints, local extrema, the scoring when criticals alone overflow the
+// budget, the even spread of whatever budget is left — is identical. Two
+// copies would drift, and the drift would be invisible: both charts would
+// still render, just one of them would have quietly started throwing away the
+// points the owner looks at the chart to see.
+//
+// worseIsHigher says which way is bad news:
+//   - percent chart: readiness revised DOWN is the bad news -> false
+//   - forecast chart: the promised date sliding LATER is the bad news -> true
+//
+// The owner's rule this protects: the drop from 91% to 72% (and the forecast
+// that slid from "in two weeks" to "in three months") is the main event of the
+// chart, never noise. A naive "every Nth point" would throw away precisely
+// that.
+func decimateKeepMask(values []int64, maxPoints int, worseIsHigher bool) []bool {
+	n := len(values)
+	keep := make([]bool, n)
+	if n <= maxPoints || maxPoints < 2 {
+		for i := range keep {
+			keep[i] = true
+		}
+		return keep
+	}
+
+	// worse reports whether the step from a to b is the bad direction.
+	worse := func(a, b int64) bool {
+		if worseIsHigher {
+			return b > a
+		}
+		return b < a
 	}
 
 	// Mark critical points that MUST NOT be dropped:
 	// 1. Endpoints (start and finish).
-	// 2. Any drop: if points[i].Percent < points[i-1].Percent, both points[i-1] (peak)
-	//    and points[i] (valley/trough) are strictly critical.
-	// 3. Local minima: points where progress fell and now levels off or rises.
-	// 4. Local maxima: points where progress rose and now levels off or falls.
+	// 2. Any step in the bad direction: BOTH the point before it (the peak the
+	//    series fell from / the date it slid from) and the point after it.
+	// 3. Local minima and local maxima.
 	isCritical := make([]bool, n)
 	isCritical[0] = true
 	isCritical[n-1] = true
 
 	for i := 1; i < n; i++ {
-		if points[i].Percent < points[i-1].Percent {
+		if worse(values[i-1], values[i]) {
 			isCritical[i-1] = true
 			isCritical[i] = true
 		}
 	}
 
 	for i := 1; i < n-1; i++ {
-		prev := points[i-1].Percent
-		curr := points[i].Percent
-		next := points[i+1].Percent
+		prev, curr, next := values[i-1], values[i], values[i+1]
 		if (curr <= prev && curr < next) || (curr < prev && curr <= next) {
 			isCritical[i] = true
 		}
@@ -542,48 +485,81 @@ func decimatePoints(points []chartPoint, maxPoints int) []chartPoint {
 		}
 	}
 
-	// If critical points alone exceed maxPoints, prioritize largest drops and extrema.
+	// If the critical points alone overflow the budget, ranking them by how
+	// sharp each one is LOCALLY throws the worst news away. Measured on a
+	// history of 400 forecasts with early churn and a late slide: the slide to
+	// 90 days did not survive at all and the reader saw a ceiling of 40 days,
+	// while the percent chart drew a floor of 20% over data that reached 10%.
+	//
+	// Three things conspired. A local score (this step plus the next) rates a
+	// long gentle slide below a short violent wobble, even when the slide is the
+	// larger move overall. sort.SliceStable on equal scores keeps the earlier
+	// index, so survival drifts systematically toward the start of the history.
+	// And nothing outside the critical set survived at all, so whole stretches
+	// of the timeline went unrepresented.
+	//
+	// The replacement is envelope decimation: cut the timeline into equal
+	// buckets and keep each bucket's highest and lowest value. That preserves
+	// the outline of the series rather than its sharpest corners, and — the
+	// property that matters here — the global extreme of EITHER side is the
+	// extreme of its own bucket, so it always survives. The drawn range can
+	// therefore never be narrower than the data's, which is exactly the promise
+	// the owner cares about: the fall from 91% to 72%, and the promise that
+	// slid from two weeks to three months, stay on the chart.
+	//
+	// Polarity plays no part here: keeping both ends of the envelope protects
+	// the bad side whichever way it points.
 	if criticalCount > maxPoints {
-		type scoredIndex struct {
-			idx   int
-			score int
-		}
-		var scored []scoredIndex
-		for i := 1; i < n-1; i++ {
-			if isCritical[i] {
-				prevDiff := absInt(points[i].Percent - points[i-1].Percent)
-				nextDiff := 0
-				if i+1 < n {
-					nextDiff = absInt(points[i].Percent - points[i+1].Percent)
-				}
-				scored = append(scored, scoredIndex{idx: i, score: prevDiff + nextDiff})
-			}
-		}
-		sort.SliceStable(scored, func(i, j int) bool {
-			return scored[i].score > scored[j].score
-		})
-
-		keep := make([]bool, n)
 		keep[0] = true
 		keep[n-1] = true
-		budget := maxPoints - 2
-		if budget > len(scored) {
-			budget = len(scored)
+
+		// Each bucket spends at most two of the remaining budget (its min and
+		// its max), so the number of buckets is half of what is left.
+		buckets := (maxPoints - 2) / 2
+		if buckets < 1 {
+			buckets = 1
 		}
-		for i := 0; i < budget; i++ {
-			keep[scored[i].idx] = true
+		for b := 0; b < buckets; b++ {
+			lo := 1 + (n-2)*b/buckets
+			hi := 1 + (n-2)*(b+1)/buckets
+			if hi > n-1 {
+				hi = n - 1
+			}
+			if lo >= hi {
+				continue
+			}
+			minIdx, maxIdx := lo, lo
+			for i := lo; i < hi; i++ {
+				if values[i] < values[minIdx] {
+					minIdx = i
+				}
+				if values[i] > values[maxIdx] {
+					maxIdx = i
+				}
+			}
+			keep[minIdx] = true
+			keep[maxIdx] = true
 		}
 
-		var result []chartPoint
-		for i := 0; i < n; i++ {
-			if keep[i] {
-				result = append(result, points[i])
+		// Belt and braces: pin the series-wide extremes outright. The bucket
+		// pass already reaches them, and saying so here means a later change to
+		// the bucketing cannot quietly drop the one guarantee this branch is
+		// for.
+		gMin, gMax := 0, 0
+		for i := 1; i < n; i++ {
+			if values[i] < values[gMin] {
+				gMin = i
+			}
+			if values[i] > values[gMax] {
+				gMax = i
 			}
 		}
-		return result
+		keep[gMin] = true
+		keep[gMax] = true
+		return keep
 	}
 
-	// Critical points fit in budget: distribute remaining budget across non-critical points.
+	// Critical points fit in budget: spread the rest across non-critical points.
 	remainingBudget := maxPoints - criticalCount
 	nonCriticalIndices := make([]int, 0, n-criticalCount)
 	for i := 0; i < n; i++ {
@@ -591,32 +567,21 @@ func decimatePoints(points []chartPoint, maxPoints int) []chartPoint {
 			nonCriticalIndices = append(nonCriticalIndices, i)
 		}
 	}
-
-	keep := make([]bool, n)
 	for i := 0; i < n; i++ {
 		if isCritical[i] {
 			keep[i] = true
 		}
 	}
-
 	if remainingBudget > 0 && len(nonCriticalIndices) > 0 {
 		step := float64(len(nonCriticalIndices)) / float64(remainingBudget)
 		for j := 0; j < remainingBudget; j++ {
-			idx := nonCriticalIndices[int(float64(j)*step)]
-			keep[idx] = true
+			keep[nonCriticalIndices[int(float64(j)*step)]] = true
 		}
 	}
-
-	var result []chartPoint
-	for i := 0; i < n; i++ {
-		if keep[i] {
-			result = append(result, points[i])
-		}
-	}
-	return result
+	return keep
 }
 
-func absInt(x int) int {
+func absInt64(x int64) int64 {
 	if x < 0 {
 		return -x
 	}

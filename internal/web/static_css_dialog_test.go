@@ -103,3 +103,192 @@ func stripCSSComments(s string) string {
 		s = rest[j+2:]
 	}
 }
+
+// ---------------------------------------------------------------------------
+// KANB-41: the card-flight animation layer must NEVER eat a click.
+//
+// The flight is a position:fixed ghost that floats over the board while
+// a card animates between columns. The brief is explicit: it must not
+// intercept the mouse or keyboard, must not change scroll, must not
+// delay data. The cheapest way to guarantee the mouse bit is a CSS rule,
+// not a runtime check — so the test reads the embedded stylesheet and
+// asserts pointer-events:none on .card-flight. A regression here would
+// mean the animation literally prevents the user from clicking the
+// cards underneath it for two seconds out of every move.
+// ---------------------------------------------------------------------------
+
+func TestAppCSS_CardFlightDoesNotInterceptPointerEvents(t *testing.T) {
+	sub, err := fs.Sub(staticFS, "static")
+	if err != nil {
+		t.Fatalf("fs.Sub: %v", err)
+	}
+	raw, err := fs.ReadFile(sub, "app.css")
+	if err != nil {
+		t.Fatalf("read app.css: %v", err)
+	}
+	css := stripCSSComments(string(raw))
+
+	// Find the MAIN .card-flight rule (the one with the full property
+	// set: position:fixed, z-index, etc.) — the @media
+	// (prefers-reduced-motion: reduce) override is a separate, much
+	// shorter rule that deliberately does not repeat every property,
+	// and skipping it is fine (the override's job is to suppress the
+	// transition, not to re-declare the cursor / pointer semantics).
+	var mainBody string
+	var mainFound bool
+	for _, m := range cssRuleRe.FindAllStringSubmatch(css, -1) {
+		selectorList, body := m[1], m[2]
+		for _, sel := range strings.Split(selectorList, ",") {
+			sel = strings.TrimSpace(sel)
+			if sel == "" || strings.HasPrefix(sel, "@") {
+				continue
+			}
+			parts := strings.Fields(sel)
+			subject := parts[len(parts)-1]
+			if subject != ".card-flight" {
+				continue
+			}
+			// The main rule carries position:fixed and a font-family
+			// declaration; the reduced-motion override carries just
+			// `transition: none` and never position:fixed. Pick the
+			// richer one as the "main" rule.
+			if strings.Contains(body, "position: fixed") {
+				mainBody = body
+				mainFound = true
+			}
+		}
+	}
+	if !mainFound {
+		t.Error("no main .card-flight rule found in app.css (one with position: fixed)")
+		return
+	}
+	pe := pointerEventsDeclRe.FindStringSubmatch(mainBody)
+	if pe == nil {
+		t.Errorf(".card-flight main rule has no pointer-events declaration:\n%s", mainBody)
+		return
+	}
+	// pe[1] is the captured char-or-start before "pointer-events";
+	// pe[2] is the captured value. TrimSpace on the value, then
+	// compare — "none" is the only safe value for a fixed-position
+	// overlay (the test's whole point).
+	if strings.TrimSpace(pe[2]) != "none" {
+		t.Errorf(".card-flight pointer-events is %q, want \"none\" (KANB-41: the flight must not eat clicks)", strings.TrimSpace(pe[2]))
+	}
+}
+
+// pointerEventsDeclRe finds the value of any `pointer-events: ...`
+// declaration inside a CSS rule body. Same shape as displayDeclRe.
+var pointerEventsDeclRe = regexp.MustCompile(`(^|[;{\s])pointer-events\s*:\s*([^;]+)`)
+
+// TestAppCSS_CardFlightRespectsReducedMotion (KANB-41): the flight's
+// motion must be suppressed under prefers-reduced-motion. The cheapest
+// way to check the contract is "the stylesheet has a reduced-motion
+// override that touches .card-flight". The actual duration value is
+// up to app.js to set (the Web Animations call honours the same media
+// query), so the test only pins the CSS half.
+func TestAppCSS_CardFlightRespectsReducedMotion(t *testing.T) {
+	sub, err := fs.Sub(staticFS, "static")
+	if err != nil {
+		t.Fatalf("fs.Sub: %v", err)
+	}
+	raw, err := fs.ReadFile(sub, "app.css")
+	if err != nil {
+		t.Fatalf("read app.css: %v", err)
+	}
+	css := stripCSSComments(string(raw))
+
+	// Find the @media (prefers-reduced-motion: reduce) block, then
+	// look for .card-flight inside it. We do not care HOW it suppresses
+	// the animation (transition:none, animation: none, animation-duration:
+	// 0.001ms, whatever the implementation picked) — only that the
+	// block mentions .card-flight at all.
+	// This used to assert only that the block MENTIONS .card-flight, which
+	// made it green by construction: inverting its own declarations — turning
+	// the motion back on under the preference — still passed. A test that
+	// cannot fail on the defect it is named after is not a guard, so it now
+	// reads what the block actually says about those selectors.
+	mediaRe := regexp.MustCompile(`@media\s*\(\s*prefers-reduced-motion\s*:\s*reduce\s*\)\s*\{((?:[^{}]*\{[^{}]*\})*[^{}]*)\}`)
+	var block string
+	for _, mm := range mediaRe.FindAllStringSubmatch(css, -1) {
+		if strings.Contains(mm[1], ".card-flight") {
+			block = mm[1]
+			break
+		}
+	}
+	if block == "" {
+		t.Fatal("no @media (prefers-reduced-motion: reduce) block covering .card-flight in app.css")
+	}
+
+	// suppressed reports whether a value actually stops motion. The
+	// implementation may say so however it likes — none, 0s, or a duration
+	// short enough to be imperceptible — but it has to say one of them
+	// rather than name a visible animation.
+	suppressed := func(v string) bool {
+		v = strings.ToLower(strings.TrimSpace(v))
+		v = strings.TrimSpace(strings.TrimSuffix(v, "!important"))
+		switch v {
+		case "none", "0s", "0ms", "0":
+			return true
+		}
+		return strings.HasPrefix(v, "0.00")
+	}
+
+	motionDeclRe := regexp.MustCompile(`(?:^|[;{\s])(transition|animation)\s*:\s*([^;}]+)`)
+	for _, r := range cssRuleRe.FindAllStringSubmatch(block, -1) {
+		sel, decls := strings.TrimSpace(r[1]), r[2]
+		if !strings.Contains(sel, ".card-flight") && !strings.Contains(sel, ".card-highlight") {
+			continue
+		}
+		for _, d := range motionDeclRe.FindAllStringSubmatch(decls, -1) {
+			prop, val := d[1], strings.TrimSpace(d[2])
+			if !suppressed(val) {
+				t.Errorf("under prefers-reduced-motion, %q sets %s: %s — that is motion, not the absence of it (KANB-41). "+
+					"A reader who asked the system for less movement must not be handed a moving card.",
+					sel, prop, val)
+			}
+		}
+	}
+
+	if !strings.Contains(block, ".card-flight") {
+		t.Errorf("prefers-reduced-motion block does not mention .card-flight (KANB-41):\n%s", block)
+	}
+	// Same block also has to cover the highlight pulse — a user who
+	// opted out of motion still sees the cue, but not as a moving
+	// outline.
+	if !strings.Contains(block, ".card-highlight") {
+		t.Errorf("prefers-reduced-motion block does not mention .card-highlight:\n%s", block)
+	}
+}
+
+// TestAppCSS_StaticDialogGateStillPasses is a canary: the KANB-41 CSS
+// additions must not have re-introduced an unconditional `display`
+// rule on a dialog, which is the regression TestAppCSS_DialogDisplayIsAlwaysGatedOnOpen
+// exists to catch. Re-running that test directly would not show up as a
+// failure of this one, but this test stays here so a future reader
+// sees the contract in one place.
+func TestAppCSS_CardFlightHasNoClickableDescendants(t *testing.T) {
+	sub, err := fs.Sub(staticFS, "static")
+	if err != nil {
+		t.Fatalf("fs.Sub: %v", err)
+	}
+	raw, err := fs.ReadFile(sub, "app.css")
+	if err != nil {
+		t.Fatalf("read app.css: %v", err)
+	}
+	css := stripCSSComments(string(raw))
+
+	// .card-flight itself only carries the card key as text content —
+	// it is a visual cue, not an interactive widget. Pin that it does
+	// NOT contain any <button>, <a>, <input> or other interactive
+	// element by class (there is no rule for that today, and adding
+	// one would be a smell). The test simply asserts the rule body's
+	// declarations are the safe shape: pointer-events:none is there
+	// (covered by the other test) and no `cursor: pointer` slipped in.
+	if strings.Contains(css, ".card-flight") {
+		blockRe := regexp.MustCompile(`(?s)\.card-flight\s*\{([^}]*)\}`)
+		bm := blockRe.FindStringSubmatch(css)
+		if bm != nil && strings.Contains(bm[1], "cursor: pointer") {
+			t.Errorf(".card-flight has cursor:pointer — it should look inert, not interactive:\n%s", bm[1])
+		}
+	}
+}

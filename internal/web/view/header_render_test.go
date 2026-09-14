@@ -130,13 +130,18 @@ func TestActivityPage_LiveIndicatorGoneUpdateLinkPresent(t *testing.T) {
 	}
 }
 
-// TestBoardPage_ProgressAndThoughtsMoveToSubhead is KANB-20's structural
-// contract: the project-progress group and the Thoughts toggle must have
-// left .page-head for their own centered row (.page-subhead), while
-// #project-progress's id, .proj-progress-group's live-region contract and
-// data-chat-toggle's ability to open the panel all keep working — moving
-// markup must not break what other code depends on finding it by id/attr.
-func TestBoardPage_ProgressAndThoughtsMoveToSubhead(t *testing.T) {
+// TestBoardPage_ProgressMovesToSubhead is KANB-20's structural contract:
+// the project-progress group must have left .page-head for its own centered
+// row (.page-subhead), while #project-progress's id,
+// .proj-progress-group's live-region contract keep working — moving markup
+// must not break what other code depends on finding it by id.
+//
+// KANB-33 then moved the panel's controls OFF the header entirely: the
+// charts toggle, the thoughts toggle and the collapse-panel button live on
+// the panel itself, never in the project header. This test pins both moves:
+// the metrics live in the subhead, and the old "Thoughts" header button
+// (data-chat-toggle) is gone from the page — it has no caller any more.
+func TestBoardPage_ProgressMovesToSubhead(t *testing.T) {
 	m := boardWithChat(view.NewChatPanel(chatFixtureMsgs, "", chatFixtureNow, nil), true)
 	// boardWithChat does not set progress metrics; attach both so this test
 	// also exercises the "both present" layout, matching the real header.
@@ -160,8 +165,11 @@ func TestBoardPage_ProgressAndThoughtsMoveToSubhead(t *testing.T) {
 	if strings.Contains(head, `id="project-progress"`) {
 		t.Fatal("#project-progress is still inside .page-head — KANB-20 asked for it moved to its own row")
 	}
+	// KANB-33: the old data-chat-toggle button is gone from the page
+	// entirely — its three successors (charts/thoughts/collapse) live on
+	// the panel, not in any header row.
 	if strings.Contains(head, "data-chat-toggle") {
-		t.Fatal("the Thoughts toggle is still inside .page-head — KANB-20 asked for it moved alongside the progress group")
+		t.Fatal("the legacy Thoughts toggle is still inside .page-head — KANB-33 moved panel controls to the panel itself")
 	}
 
 	subStart := strings.Index(html, `class="page-subhead"`)
@@ -176,9 +184,6 @@ func TestBoardPage_ProgressAndThoughtsMoveToSubhead(t *testing.T) {
 
 	if !strings.Contains(subhead, `id="project-progress"`) {
 		t.Fatal("#project-progress did not land inside .page-subhead")
-	}
-	if !strings.Contains(subhead, "data-chat-toggle") {
-		t.Fatal("the Thoughts toggle did not land inside .page-subhead")
 	}
 	// KANB-12's live-region contract must still resolve to the moved element:
 	// #project-progress must appear exactly once in the whole document (the
@@ -217,6 +222,10 @@ func TestBoardPage_ProgressAndThoughtsMoveToSubhead(t *testing.T) {
 // target, and app.css collapses an empty row (.page-subhead:not(:has(...))).
 // That also makes the appearance automatic — when the bar is written into
 // #project-progress the CSS stops matching and the row shows itself.
+//
+// KANB-33: the row is now ONLY the progress metrics — there is no
+// data-chat-toggle to look for, because the controls moved off the page
+// header entirely (see TestBoardPage_ProgressMovesToSubhead).
 func TestBoardPage_EmptySubheadKeepsTheLiveTarget(t *testing.T) {
 	html := renderProgress(t, "page-board", view.SamplePage("Test", "board", view.SampleColumnlessBoardModel()))
 	if !strings.Contains(html, "page-subhead") {
@@ -229,11 +238,11 @@ func TestBoardPage_EmptySubheadKeepsTheLiveTarget(t *testing.T) {
 		t.Fatal(`the data-live-region="#project-progress" declaration must still be present`)
 	}
 	// The row must be EMPTY of content, which is what lets CSS collapse it:
-	// no metric caption and no Thoughts button.
+	// no metric caption and no panel-control button.
 	if strings.Contains(html, "assessed") || strings.Contains(html, "tasks done") {
 		t.Fatal("an empty project rendered a progress caption")
 	}
 	if strings.Contains(html, "data-chat-toggle") {
-		t.Fatal("an empty project rendered the Thoughts toggle")
+		t.Fatal("an empty project rendered the legacy Thoughts toggle (KANB-33 removed it)")
 	}
 }

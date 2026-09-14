@@ -300,6 +300,39 @@ func renderCases() []renderCase {
 			notWants: []string{"<no value>"},
 		},
 		{
+			// KANB-36: a fragment with all three panels. The forecast
+			// panel renders between progress and items; each carries
+			// its own data-chart-zoom target so the modal opens only
+			// the one the user clicked.
+			name:     "progress-chart-fragment/with-forecast",
+			template: "progress-chart-fragment",
+			data: &view.ProgressChartFragment{
+				Progress: view.NewProgressChartView([]domain.ProgressMark{
+					{ID: "m1", Assessor: "alpha", Percent: 30, CreatedAt: time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local), ETA: forecastAt(7)},
+					{ID: "m2", Assessor: "alpha", Percent: 55, CreatedAt: time.Date(2026, 9, 12, 11, 0, 0, 0, time.Local), ETA: forecastAt(10)},
+				}, view.DefaultChartWidth, view.DefaultChartHeight),
+				Forecast: view.NewForecastChartView([]domain.ProgressMark{
+					{ID: "m1", Assessor: "alpha", Percent: 30, CreatedAt: time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local), ETA: forecastAt(7)},
+					{ID: "m2", Assessor: "alpha", Percent: 55, CreatedAt: time.Date(2026, 9, 12, 11, 0, 0, 0, time.Local), ETA: forecastAt(10)},
+				}, view.DefaultChartWidth, view.DefaultChartHeight),
+				Items: view.NewItemsChartView([]service.ItemCountPoint{
+					{At: time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local), Total: 4, Open: 4},
+				}, view.DefaultChartWidth, view.DefaultChartHeight),
+			},
+			wants: []string{
+				"progress-chart-inner",
+				"forecast-chart",
+				"items-chart",
+				// Three distinct zoom targets — one click, one chart.
+				`data-chart-zoom="progress"`,
+				`data-chart-zoom="forecast"`,
+				`data-chart-zoom="items"`,
+				// The forecast chart's signature (data-series="consensus").
+				`data-series="consensus"`,
+			},
+			notWants: []string{"<no value>"},
+		},
+		{
 			// The enlarged assessment chart the modal shows. Same data as the
 			// inline panel, plus the furniture that panel has no room for: a
 			// labelled percent axis, a legend naming every line, and the
@@ -343,6 +376,35 @@ func renderCases() []renderCase {
 			notWants: []string{"<no value>", "Assessed progress"},
 		},
 		{
+			// KANB-36: the forecast chart's enlarged modal. Same data as
+			// the inline forecast panel, plus a labelled date Y axis
+			// (not 0..100 percent — that would be the old rendering).
+			name:     "chart-detail-fragment/forecast",
+			template: "chart-detail-fragment",
+			data: view.NewForecastChartDetail([]domain.ProgressMark{
+				{ID: "m1", Assessor: "alpha", Percent: 91, CreatedAt: time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local), ETA: forecastAt(7)},
+				{ID: "m2", Assessor: "beta", Percent: 60, CreatedAt: time.Date(2026, 9, 12, 11, 0, 0, 0, time.Local), ETA: forecastAt(10)},
+				{ID: "m3", Assessor: "alpha", Percent: 72, CreatedAt: time.Date(2026, 9, 12, 12, 0, 0, 0, time.Local), ETA: forecastAt(15)},
+			}),
+			wants: []string{
+				`data-chart-title="Promised finish date"`,
+				"chart-legend",
+				// Date axis (KANB-36), not percent — the literal "vertical:
+				// percent assessed, ..." string the percent chart prints
+				// must NOT be here.
+				"vertical: promised finish date,",
+				// Both assessors named, plus the consensus line.
+				"alpha", "beta", "consensus",
+				// Date range printed in the legend, in YYYY-MM-DD form
+				// (the format forecastRangeNote uses).
+				"2026-09-19",
+				"2026-09-27",
+				// The consensus track carries its own data-series.
+				`data-series="consensus"`,
+			},
+			notWants: []string{"<no value>", "Assessed progress", "vertical: percent assessed"},
+		},
+		{
 			// The panel define on its own, so it stays covered even if the
 			// fragment above changes shape.
 			name:     "chart-detail-panel/items-only",
@@ -356,6 +418,34 @@ func renderCases() []renderCase {
 				"vertical: number of tasks, 0 to 2",
 				"2 of 2 done, 0 still open",
 				`data-series="items-open"`,
+			},
+			notWants: []string{"<no value>"},
+		},
+		{
+			// KANB-39: the standing prompt — the one paste-ready rule that
+			// goes into AGENTS.md / system prompt — carries the feed
+			// discipline: first post, stage-transition posts, pulse
+			// (~five minutes of ACTIVE work, not a wall clock), named
+			// pause reason, closing summary, and the explicit
+			// never-shows-an-online-dot clause. A future edit could
+			// quietly drop any of these; this test pins the contract.
+			name:     "chrome/standing-prompt-feed-rules",
+			template: "prompt-cards",
+			data:     boardPage(),
+			wants: []string{
+				// First post + closing summary: the two bookends.
+				"FIRST thought at the start",
+				"final SUMMARY post",
+				// The pulse rule must mention active work, not a fixed
+				// cadence — the brief says "about every five minutes
+				// of active work", and the prompt translates it that
+				// way so a wall-clock cadence does not become a
+				// heartbeat that outlives a crashed process.
+				"five minutes of ACTIVE work",
+				"REASON when you stop",
+				// The explicit no-online-dot clause — the prompt has to
+				// own the rule rather than rely on the reader knowing it.
+				`never shows an &#34;online&#34; dot`,
 			},
 			notWants: []string{"<no value>"},
 		},
@@ -742,6 +832,16 @@ func renderCases() []renderCase {
 			notWants: []string{"<no value>"},
 		},
 	}
+}
+
+// forecastAt is the local shorthand for an ETA in templates_render_test
+// fixtures: forecastAt(7) means "seven days after the fixture's anchor".
+// Anchored to the test's t0 below so a fixture always renders the same
+// dates regardless of which zone the runner sits in.
+func forecastAt(daysFromT0 int) *time.Time {
+	t0 := time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local)
+	v := t0.Add(time.Duration(daysFromT0) * 24 * time.Hour)
+	return &v
 }
 
 func columnNamed(b view.BoardModel, name string) view.ColumnView {

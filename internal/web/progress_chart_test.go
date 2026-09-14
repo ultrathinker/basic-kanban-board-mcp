@@ -187,8 +187,8 @@ func chartDetailFixture() *service.ProgressHistoryResult {
 	return &service.ProgressHistoryResult{
 		ProjectKey: "BMB",
 		Marks: []domain.ProgressMark{
-			{ID: "m1", Assessor: "alpha", Percent: 91, CreatedAt: base},
-			{ID: "m2", Assessor: "alpha", Percent: 72, CreatedAt: base.Add(2 * time.Hour)},
+			{ID: "m1", Assessor: "alpha", Percent: 91, CreatedAt: base, ETA: etaAt(base, 7*24*time.Hour)},
+			{ID: "m2", Assessor: "alpha", Percent: 72, CreatedAt: base.Add(2 * time.Hour), ETA: etaAt(base, 10*24*time.Hour)},
 		},
 		Total: 2,
 		Items: []service.ItemCountPoint{
@@ -196,6 +196,12 @@ func chartDetailFixture() *service.ProgressHistoryResult {
 			{At: base.Add(2 * time.Hour), Total: 9, Open: 3},
 		},
 	}
+}
+
+// etaAt is the local shorthand for optional forecast dates in fixtures.
+func etaAt(t time.Time, d time.Duration) *time.Time {
+	v := t.Add(d)
+	return &v
 }
 
 func TestProgressChartDetail_ProgressOpensOnlyTheAssessmentChart(t *testing.T) {
@@ -283,5 +289,68 @@ func TestProgressChartDetail_NoHistoryRendersNothing(t *testing.T) {
 	}
 	if strings.TrimSpace(rw.Body.String()) != "" {
 		t.Errorf("an empty history rendered a frame:\n%s", rw.Body.String())
+	}
+}
+
+// TestProgressChartDetail_ForecastOpensOnlyTheForecastChart (KANB-36):
+// the forecast has its own chart now, with its own modal route. One click
+// must open ONE chart, exactly like progress / items already do. A
+// mis-routed case would silently open the wrong chart; this test pins the
+// routing so a future change cannot drift without breaking it.
+func TestProgressChartDetail_ForecastOpensOnlyTheForecastChart(t *testing.T) {
+	svc := &progressChartStubService{result: chartDetailFixture()}
+	w, sess := newProgressChartTestWeb(t, svc)
+
+	rw := do(w, "GET", "/p/BMB/progress/chart?detail=forecast", nil, sessionCookie(sess))
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200\n%s", rw.Code, rw.Body.String())
+	}
+	body := rw.Body.String()
+	if !strings.Contains(body, `data-chart-title="Promised finish date"`) {
+		t.Errorf("detail=forecast did not return the forecast chart:\n%s", body)
+	}
+	// A misrouted forecast detail must not silently return the other
+	// two charts either — same one-click-one-chart discipline.
+	if strings.Contains(body, "Assessed progress") || strings.Contains(body, `data-series="composite"`) {
+		t.Errorf("detail=forecast also returned the assessment chart:\n%s", body)
+	}
+	if strings.Contains(body, "Items on the board") || strings.Contains(body, `data-series="items-total"`) {
+		t.Errorf("detail=forecast also returned the item chart:\n%s", body)
+	}
+	// The enlarged forecast chart's Y axis is a date axis (KANB-36),
+	// not 0..100 percent. A label that looks like "2026-09-XX" must be
+	// present, and no percent label can have leaked through.
+	if !strings.Contains(body, "2026-") {
+		t.Errorf("the enlarged forecast chart is missing its date axis:\n%s", body)
+	}
+	for _, pct := range []string{">0%<", ">25%<", ">50%<", ">75%<", ">100%<"} {
+		if strings.Contains(body, pct) {
+			t.Errorf("forecast detail leaked a percent label %q:\n%s", pct, body)
+		}
+	}
+}
+
+// TestProgressChartDetail_ForecastAbsentWithoutETARendersEmpty: a history
+// of percent marks with NO ETA anywhere renders nothing for the forecast
+// detail — the same "no data, no placeholder" rule the percent and items
+// charts already follow (a modal frame around "nothing here" would be
+// a worse lie than no modal).
+func TestProgressChartDetail_ForecastAbsentWithoutETARendersEmpty(t *testing.T) {
+	base := time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local)
+	svc := &progressChartStubService{result: &service.ProgressHistoryResult{
+		ProjectKey: "BMB",
+		Marks: []domain.ProgressMark{
+			{ID: "m1", Assessor: "alpha", Percent: 30, CreatedAt: base},
+			{ID: "m2", Assessor: "alpha", Percent: 50, CreatedAt: base.Add(2 * time.Hour)},
+		},
+	}}
+	w, sess := newProgressChartTestWeb(t, svc)
+
+	rw := do(w, "GET", "/p/BMB/progress/chart?detail=forecast", nil, sessionCookie(sess))
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rw.Code)
+	}
+	if strings.TrimSpace(rw.Body.String()) != "" {
+		t.Errorf("a history with no ETA rendered a frame for detail=forecast:\n%s", rw.Body.String())
 	}
 }
