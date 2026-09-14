@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"sort"
 	"strings"
@@ -66,6 +68,27 @@ func (s *svc) TaskCreate(ctx context.Context, a Actor, in TaskCreateInput) (*Tas
 		}
 		cc := newColumnCache(s, tx)
 		pc := newProjectCache(s, tx)
+
+		// ----- Acceptance guard (KANB-47) -----
+		// A source_message turns the whole call into the atomic acceptance of
+		// one command: the checks, the task inserts and the acceptance record
+		// all share THIS transaction, so a failure anywhere rolls back
+		// everything — a half-accepted command cannot exist.
+		var guard *acceptanceGuard
+		if in.SourceMessage != "" {
+			guard, err = s.prepareAcceptance(tx, a, in)
+			if err != nil {
+				return err
+			}
+			if guard.already != nil {
+				views, verr := s.acceptanceReplayViews(tx, cc, pc, guard.already, now)
+				if verr != nil {
+					return verr
+				}
+				result = TaskCreateResult{Tasks: views, Replayed: true, AlreadyAccepted: true}
+				return nil
+			}
+		}
 
 		// ----- Plan phase: per-item classification -----
 		// Each item is either "new" (to be inserted), "replay" (idempotent
@@ -303,6 +326,15 @@ func (s *svc) TaskCreate(ctx context.Context, a Actor, in TaskCreateInput) (*Tas
 			outTasks = append(outTasks, tv)
 		}
 
+		// The acceptance record joins the batch in the same transaction: by
+		// the time this runs, every task row exists, so the link and the
+		// tasks commit or roll back as one unit.
+		if guard != nil {
+			if err := s.recordAcceptance(tx, a, guard, plans, now); err != nil {
+				return err
+			}
+		}
+
 		result = TaskCreateResult{Tasks: outTasks, Replayed: replayed}
 		return nil
 	})
@@ -311,6 +343,199 @@ func (s *svc) TaskCreate(ctx context.Context, a Actor, in TaskCreateInput) (*Tas
 	}
 	s.publishAll(pending)
 	return &result, nil
+}
+
+// ---------------------------------------------------------------------------
+// source_message acceptance (KANB-47)
+//
+// Accepting a command is the one write in the product where "did it happen?"
+// must survive a crash between two writes. The link "command -> tasks ->
+// acceptor" is a row in command_acceptances, written in the same transaction
+// as the tasks it names; the UNIQUE(message_id) constraint is the rule "a
+// command is accepted once per project", enforced by the database rather than
+// by check-then-insert discipline — two racing acceptances cannot both commit.
+// ---------------------------------------------------------------------------
+
+// acceptanceGuard carries one source_message acceptance through TaskCreate's
+// transaction. already is non-nil exactly when the command was accepted
+// before: the call then replays the stored outcome instead of creating.
+type acceptanceGuard struct {
+	message *domain.ChatMessage
+	project *domain.Project
+	// hash fingerprints the batch content this acceptance covers, so a
+	// retried acceptance with different content is a loud conflict.
+	hash    string
+	already *domain.CommandAcceptance
+}
+
+// prepareAcceptance validates a source_message against every acceptance rule
+// and decides replay-vs-create. All of it runs inside the caller's write
+// transaction, so nothing here can race the checks that follow it.
+//
+// The rules (KANB-47 §13.4):
+//  1. the message exists and is a kind:command — a question needs a reply
+//     (reply_to), not a task, and a fictitious card for a pure question is
+//     what this refusal prevents;
+//  2. the accepting actor is the command's resolved_executor — compared by
+//     tokens.id, never by the author signature, which the caller controls;
+//  3. the batch belongs to the command's project;
+//  4. a command already accepted replays its stored task_keys to the SAME
+//     acceptor, refuses any other token, and refuses incompatible content.
+func (s *svc) prepareAcceptance(tx store.Tx, a Actor, in TaskCreateInput) (*acceptanceGuard, error) {
+	msg, err := s.store.Chat().Get(tx, strings.TrimSpace(in.SourceMessage))
+	if isNotFound(err) {
+		return nil, domain.NotFound("source_message", in.SourceMessage)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if msg.Kind != domain.MessageCommand {
+		return nil, domain.Invalid("source_message",
+			fmt.Sprintf("message %s is a %s, not a command", msg.ID, msg.Kind),
+			"Only a kind:command message can be accepted into tasks; answer a question with project_post(reply_to: ...) instead.")
+	}
+	project, err := s.store.Projects().GetByID(tx, msg.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	// The actor must be able to see the project the command lives in at all.
+	if _, err := s.resolveProject(tx, a, project.Key); err != nil {
+		return nil, err
+	}
+	for i, nt := range in.Tasks {
+		canonical, err := domain.ValidateProjectKey(nt.ProjectKey)
+		if err != nil {
+			return nil, err
+		}
+		if canonical != project.Key {
+			return nil, domain.Invalid("source_message",
+				fmt.Sprintf("the command lives in project %s but task %d targets %s", project.Key, i+1, canonical),
+				"An accepted batch is created in the command's own project.")
+		}
+	}
+
+	if acc, err := s.store.Acceptances().GetByMessage(tx, msg.ID); err == nil && acc != nil {
+		if acc.AcceptedByTokenID != a.TokenID {
+			by, _ := s.store.Tokens().GetByID(tx, acc.AcceptedByTokenID)
+			who := acc.AcceptedByTokenID
+			if by != nil {
+				who = by.Name
+			}
+			return nil, domain.Forbidden(
+				fmt.Sprintf("command %s was already accepted by %s", msg.ID, who),
+				"Only the accepting agent may replay an acceptance; create ordinary tasks for your own work instead.")
+		}
+		hash, err := hashAcceptedBatch(msg.ID, in.Tasks)
+		if err != nil {
+			return nil, err
+		}
+		if acc.RequestHash != hash {
+			return nil, &domain.Error{
+				Code: domain.CodeIdempotencyMismatch,
+				Message: fmt.Sprintf(
+					"command %s was already accepted with different content; its original tasks (%s) are unchanged",
+					msg.ID, strings.Join(acc.TaskKeys, ", ")),
+				Remediation: "Replay the exact original batch to receive the original tasks, or post a new command for the changed work.",
+			}
+		}
+		return &acceptanceGuard{message: msg, project: project, hash: hash, already: acc}, nil
+	} else if err != nil && !isNotFound(err) {
+		return nil, err
+	}
+
+	if msg.ResolvedExecutor == "" {
+		return nil, domain.Invalid("source_message",
+			fmt.Sprintf("command %s has no resolved executor to accept it", msg.ID),
+			"The command must be addressed to exactly one executor; ask the sender to repost with a recipient.")
+	}
+	if a.TokenID != msg.ResolvedExecutor {
+		executor, _ := s.store.Tokens().GetByID(tx, msg.ResolvedExecutor)
+		who := msg.ResolvedExecutor
+		if executor != nil {
+			who = executor.Name
+		}
+		return nil, domain.Forbidden(
+			fmt.Sprintf("only %s may accept command %s", who, msg.ID),
+			"This command is addressed to its resolved executor; ask them to accept it, or ask for a command addressed to you.")
+	}
+	hash, err := hashAcceptedBatch(msg.ID, in.Tasks)
+	if err != nil {
+		return nil, err
+	}
+	return &acceptanceGuard{message: msg, project: project, hash: hash}, nil
+}
+
+// recordAcceptance writes the durable link after the batch's rows exist, in
+// the same transaction. plans (not outTasks) is the source for ids and keys
+// so per-item idempotency replays are named too: the acceptance must cover
+// every task the command produced, however each one came to exist.
+func (s *svc) recordAcceptance(tx store.Tx, a Actor, guard *acceptanceGuard, plans []*createItemPlan, now time.Time) error {
+	ids := make([]string, 0, len(plans))
+	keys := make([]string, 0, len(plans))
+	for _, p := range plans {
+		switch {
+		case p.inserted != nil:
+			ids = append(ids, p.inserted.ID)
+			keys = append(keys, p.inserted.Key)
+		case p.isReplay && p.replayed != nil:
+			ids = append(ids, p.replayed.ID)
+			keys = append(keys, p.replayed.Key)
+		default:
+			return fmt.Errorf("acceptance: plan item produced no task")
+		}
+	}
+	return s.store.Acceptances().Put(tx, &domain.CommandAcceptance{
+		ID:                newID(),
+		MessageID:         guard.message.ID,
+		ProjectID:         guard.project.ID,
+		AcceptedByTokenID: a.TokenID,
+		TaskIDs:           ids,
+		TaskKeys:          keys,
+		RequestHash:       guard.hash,
+		CreatedAt:         now,
+	})
+}
+
+// acceptanceReplayViews materialises the CURRENT views of an acceptance's
+// stored task keys. The keys are the durable answer to "which tasks came of
+// this command"; their state is read live, so a replay shows where the work
+// stands now, not where it stood at acceptance time.
+func (s *svc) acceptanceReplayViews(tx store.Tx, cc *columnCache, pc *projectCache, acc *domain.CommandAcceptance, now time.Time) ([]domain.TaskView, error) {
+	byKey, err := s.store.Tasks().GetManyByKeys(tx, acc.TaskKeys)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domain.TaskView, 0, len(acc.TaskKeys))
+	for _, key := range acc.TaskKeys {
+		t, ok := byKey[strings.ToUpper(key)]
+		if !ok {
+			return nil, domain.NotFound("task", key)
+		}
+		tv, err := s.hydrateView(tx, cc, pc, t, now, hydrateOpts{})
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, tv)
+	}
+	return out, nil
+}
+
+// hashAcceptedBatch fingerprints the content of an accepted batch: the
+// command message id plus every item's canonical task hash, in order. Two
+// acceptances of one command with equal fingerprints are the same acceptance;
+// anything else is different content and must conflict, not silently extend.
+func hashAcceptedBatch(messageID string, tasks []NewTask) (string, error) {
+	h := sha256.New()
+	h.Write([]byte(messageID))
+	for _, nt := range tasks {
+		item, err := hashNewTask(nt)
+		if err != nil {
+			return "", err
+		}
+		h.Write([]byte{0})
+		h.Write([]byte(item))
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // validateNewTask runs every pure-field check that does not need the

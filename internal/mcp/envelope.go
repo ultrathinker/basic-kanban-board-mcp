@@ -69,4 +69,8 @@ type toolMeta struct {
 	BlockedTop []blockedSampleOut `json:"blocked_top,omitempty"`
 	ClaimedKey string             `json:"claimed_key,omitempty"`
 	StartedKey string             `json:"started_key,omitempty"`
+	// AlreadyAccepted marks a source_message acceptance that replayed the
+	// original one: data.tasks carries the original task keys' current views
+	// and nothing new was created (KANB-47).
+	AlreadyAccepted bool `json:"already_accepted,omitempty" jsonschema:"true when source_message replayed an existing acceptance: same task keys, no new batch"`
 }

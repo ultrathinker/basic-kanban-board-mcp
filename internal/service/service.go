@@ -383,6 +383,20 @@ type TaskGetResult struct {
 
 type TaskCreateInput struct {
 	Tasks []NewTask
+	// SourceMessage optionally names a kind:command chat message this batch
+	// ACCEPTS (KANB-47). Empty means the call behaves exactly as before.
+	//
+	// When set, the whole call becomes an atomic acceptance: only the
+	// command's resolved executor (fixed at send time) may accept, the batch
+	// must belong to the command's project, and the "command -> tasks ->
+	// acceptor" link is written in the SAME transaction as the tasks — either
+	// the tasks exist AND the message is accepted, or nothing happened. A
+	// repeated acceptance returns the original task_keys with
+	// AlreadyAccepted=true and creates nothing; a repeated acceptance with
+	// different content is a loud conflict. The guarantee is durable (it
+	// survives restarts), and it covers the BOARD only: it cannot prevent an
+	// external command or deploy from running twice.
+	SourceMessage string
 }
 
 // NewTask uses symbolic refs, not positional indices: an LLM building a batch
@@ -413,6 +427,10 @@ type TaskCreateResult struct {
 	Tasks []domain.TaskView
 	// Replayed is true when an idempotency key returned the original response.
 	Replayed bool
+	// AlreadyAccepted is true when a source_message acceptance replayed the
+	// original acceptance: Tasks then carries the CURRENT views of the
+	// originally created task keys, and nothing new was created (KANB-47).
+	AlreadyAccepted bool
 }
 
 // ---------------------------------------------------------------------------

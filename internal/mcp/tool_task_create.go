@@ -40,6 +40,13 @@ type taskCreateInput struct {
 	// error below, instead of the SDK's terse "unexpected additional property".
 	Project *string     `json:"project,omitempty" jsonschema:"do NOT set this: project is a per-item field — put it inside each element of tasks[]"`
 	Tasks   []newTaskIn `json:"tasks" jsonschema:"all-or-nothing: either every task is created, or none are"`
+	// SourceMessage accepts a kind:command feed message ATOMICALLY: the tasks
+	// and the "command -> tasks -> you" link commit together or not at all.
+	// Only the command's resolved_executor may accept (read it from
+	// board_get(view:messages)); a repeat returns the original task keys with
+	// meta.already_accepted=true and creates nothing. The whole batch must
+	// belong to the command's project.
+	SourceMessage string `json:"source_message,omitempty" jsonschema:"id of a kind:command message you (its resolved_executor) are accepting; omit for an ordinary create"`
 }
 
 type taskCreateData struct {
@@ -85,7 +92,12 @@ func taskCreateTool() *gomcp.Tool {
 		Name: opTaskCreate,
 		Description: "Create one or more tasks in a single atomic batch (all-or-nothing). " +
 			"To link items of the same batch, give one a `ref` and point at it from another by prefixing that name with a single @: " +
-			"an item created as `{\"ref\": \"scaffold\", ...}` is referenced as `\"blocked_by\": [\"@scaffold\"]`. " +
+			"an item created as `{\"ref\": \"scaffold\", ...}` is referenced as `\"blocked_by\": [\"@scaffold\"]`.\n" +
+			"Pass `source_message` to ACCEPT a command from the project feed: only the command's resolved_executor may, " +
+			"the tasks and the acceptance link commit atomically, and a repeat returns the original task keys with " +
+			"meta.already_accepted=true instead of creating a second batch. " +
+			"NOTE: this acceptance guarantee is about the BOARD only — it does not prevent an external command, deploy or " +
+			"side effect from running twice; guard those separately.\n" +
 			"Returns `data.tasks[]`: the created tasks, in request order, each carrying its assigned `key` and `version`.",
 		InputSchema: s,
 	}
@@ -202,7 +214,10 @@ func registerTaskCreate(s *gomcp.Server, svc service.Service) {
 			tasks[i] = nt
 		}
 
-		res, err := svc.TaskCreate(ctx, actor, service.TaskCreateInput{Tasks: tasks})
+		res, err := svc.TaskCreate(ctx, actor, service.TaskCreateInput{
+			Tasks:         tasks,
+			SourceMessage: strings.TrimSpace(in.SourceMessage),
+		})
 		if err != nil {
 			derr := asDomainError(err)
 			return errorResult(opTaskCreate, derr), taskCreateOutput{OK: false, Op: opTaskCreate, Error: newErrorEnvelope(derr)}, nil
@@ -212,7 +227,7 @@ func registerTaskCreate(s *gomcp.Server, svc service.Service) {
 		out := taskCreateOutput{
 			OK: true, Op: opTaskCreate,
 			Data: &taskCreateData{Tasks: taskViewOutList(res.Tasks, service.FullProjection(includes))},
-			Meta: &toolMeta{Count: len(res.Tasks), Replayed: res.Replayed},
+			Meta: &toolMeta{Count: len(res.Tasks), Replayed: res.Replayed, AlreadyAccepted: res.AlreadyAccepted},
 		}
 		return &gomcp.CallToolResult{Content: []gomcp.Content{&gomcp.TextContent{Text: jsonText(out)}}}, out, nil
 	})
