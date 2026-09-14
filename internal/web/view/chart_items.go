@@ -223,21 +223,27 @@ func itemsStepPath(b itemsBounds, points []service.ItemCountPoint, pick func(ser
 }
 
 // ProgressChartFragment is what "GET /p/{key}/progress/chart" renders: the
-// assessment chart, and — for the project scope only — the item-count chart
-// beneath it. Either may be nil; a fragment with both nil renders nothing,
-// which app.js treats as "nothing to open".
+// assessment chart, the forecast chart (KANB-36: now its own panel with a
+// real date axis, was previously a track on the assessment chart), and —
+// for the project scope only — the item-count chart. Any of the three may
+// be nil; a fragment with all three nil renders nothing, which app.js
+// treats as "nothing to open".
 //
-// The two are separate fields rather than one merged picture because they
+// The three are separate fields rather than one merged picture because they
 // answer different questions in different units: Progress is what the
-// assessors SAY, Items is what the board CONTAINS. Keeping them apart is the
-// same discipline that keeps "assessed" and "tasks done" as two bars instead
-// of one blended number.
+// assessors SAY (percent), Forecast is when they think it'll be done
+// (dates), Items is what the board CONTAINS (counts). Two of them were
+// already independent; KANB-36 promoted the forecast from "a track on
+// progress" to its own chart, leaving the others untouched. Keeping them
+// apart is the same discipline that keeps "assessed" and "tasks done" as
+// two bars instead of one blended number.
 type ProgressChartFragment struct {
 	Progress *ProgressChartView
+	Forecast *ForecastChartView
 	Items    *ItemsChartView
 }
 
 // Empty reports whether there is nothing at all to render.
 func (f *ProgressChartFragment) Empty() bool {
-	return f == nil || (f.Progress == nil && f.Items == nil)
+	return f == nil || (f.Progress == nil && f.Forecast == nil && f.Items == nil)
 }

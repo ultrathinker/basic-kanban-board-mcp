@@ -304,17 +304,30 @@ func (w *Web) handleProgressChart(rw http.ResponseWriter, r *http.Request) {
 	case "progress":
 		w.renderChartDetail(rw, r, view.NewProgressChartDetail(result.Marks))
 		return
+	case "forecast":
+		// KANB-36: the forecast chart is its own panel. NewForecastChartDetail
+		// returns nil when no mark in history carried an ETA, exactly like the
+		// percent and items charts' nil semantics — a modal frame around
+		// "nothing here" would be a worse lie than no modal.
+		w.renderChartDetail(rw, r, view.NewForecastChartDetail(result.Marks))
+		return
 	case "items":
 		w.renderChartDetail(rw, r, view.NewItemsChartDetail(result.Items))
 		return
 	default:
 		apiError(rw, domain.Invalid("detail",
 			fmt.Sprintf("unknown chart %q", detail),
-			`Ask for "progress" or "items", or omit detail for the inline panels.`))
+			`Ask for "progress", "forecast" or "items", or omit detail for the inline panels.`))
 		return
 	}
 	frag := &view.ProgressChartFragment{
 		Progress: view.NewProgressChartView(result.Marks, view.DefaultChartWidth, view.DefaultChartHeight),
+		// KANB-36: the forecast chart is its own panel, fed from the same
+		// marks the percent chart reads. NewForecastChartView returns nil
+		// when nobody in this history ever gave a forecast, the same
+		// "render nothing" rule the percent chart already follows for
+		// missing data.
+		Forecast: view.NewForecastChartView(result.Marks, view.DefaultChartWidth, view.DefaultChartHeight),
 		Items:    view.NewItemsChartView(result.Items, view.DefaultChartWidth, view.DefaultChartHeight),
 	}
 	if frag.Empty() {

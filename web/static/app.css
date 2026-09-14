@@ -813,6 +813,7 @@ select, .field input, .field textarea {
   overflow-x: auto;
 }
 .chart-progress,
+.chart-forecast,
 .chart-items {
   display: block;
   max-width: 100%;
@@ -822,8 +823,13 @@ select, .field input, .field textarea {
    readings are never mistaken for one picture: the upper chart is a percent
    (what the assessors said), the lower one is a count (what the board holds).
    The caption prints both current numbers, because a reader should not have
-   to measure a line to learn that 109 of 151 items are done. */
-.items-chart { margin-top: 0.4rem; }
+   to measure a line to learn that 109 of 151 items are done.
+   KANB-36: a third panel slots between these two — the forecast chart.
+   It has its own frame for the same reason: percents and dates are
+   different units and must not be confused, and a frame around nothing
+   would not be the third panel at all (the template guards it with {{if .Forecast}}). */
+.items-chart,
+.forecast-chart { margin-top: 0.4rem; }
 /* Both inline panels open the full chart. The affordance is the same one
    .pbar-clickable uses, for the same reason: a click target with no cursor
    change is a click target nobody finds. */

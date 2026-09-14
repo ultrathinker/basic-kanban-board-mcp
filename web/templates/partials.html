@@ -133,13 +133,16 @@
        as a no-op, exactly like loadOlderChatMessages already does for an
        exhausted chat page.
 
-       Two panels, stacked. The upper one is what the ASSESSORS said over
-       time (percent axis); the lower one is what the BOARD holds over time
-       (item counts, its own axis) and appears for the project scope only,
-       since a single task has no item count. They are not merged into one
-       picture because percents and counts share no axis — see chart_items.go
-       for the full argument. The SVGs are chart.go's and chart_items.go's
-       own output, untouched. */ -}}
+       KANB-36 turned this fragment into three panels, stacked. The upper
+       one is what the ASSESSORS said over time (percent axis); the middle
+       one is what they PROMISED over time (date axis — formerly a track
+       on the upper panel, mixed with the percent axis and read badly);
+       the lower one is what the BOARD holds over time (item counts, its
+       own axis) and appears for the project scope only, since a single
+       task has no item count. Each panel is independent — each one
+       answers a different question in different units, and merging them
+       would lie about either. The SVGs are chart.go's, chart_forecast.go's
+       and chart_items.go's own output, untouched. */ -}}
 {{- /* Each panel is a click target that opens the enlarged version in a
        modal (data-chart-zoom, wired in app.js): the column is too narrow to
        carry an axis and a legend, so the small panel shows the shape and the
@@ -147,6 +150,8 @@
        the same way .pbar itself is. */ -}}
 {{- if .}}{{if .Progress}}<div class="progress-chart-inner" data-chart-zoom="progress" role="button" tabindex="0"
      title="Open the full chart" aria-label="Open the full assessed-progress chart">{{.Progress.SVG}}</div>{{end}}
+{{- if .Forecast}}<div class="progress-chart-inner forecast-chart" data-chart-zoom="forecast" role="button" tabindex="0"
+     title="Open the full chart" aria-label="Open the full promised-finish-date chart">{{.Forecast.SVG}}</div>{{end}}
 {{- if .Items}}<div class="progress-chart-inner items-chart" data-chart-zoom="items" role="button" tabindex="0"
      title="Open the full chart" aria-label="Open the full item-count chart">
   <div class="items-chart-caption">
