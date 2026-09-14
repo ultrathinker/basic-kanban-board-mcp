@@ -202,15 +202,53 @@ func TestAppCSS_CardFlightRespectsReducedMotion(t *testing.T) {
 	// the animation (transition:none, animation: none, animation-duration:
 	// 0.001ms, whatever the implementation picked) — only that the
 	// block mentions .card-flight at all.
-	mediaRe := regexp.MustCompile(`@media\s*\(\s*prefers-reduced-motion\s*:\s*reduce\s*\)\s*\{([^@]*)\}`)
-	m := mediaRe.FindStringSubmatch(css)
-	if m == nil {
-		t.Fatal("no @media (prefers-reduced-motion: reduce) block in app.css")
+	// This used to assert only that the block MENTIONS .card-flight, which
+	// made it green by construction: inverting its own declarations — turning
+	// the motion back on under the preference — still passed. A test that
+	// cannot fail on the defect it is named after is not a guard, so it now
+	// reads what the block actually says about those selectors.
+	mediaRe := regexp.MustCompile(`@media\s*\(\s*prefers-reduced-motion\s*:\s*reduce\s*\)\s*\{((?:[^{}]*\{[^{}]*\})*[^{}]*)\}`)
+	var block string
+	for _, mm := range mediaRe.FindAllStringSubmatch(css, -1) {
+		if strings.Contains(mm[1], ".card-flight") {
+			block = mm[1]
+			break
+		}
 	}
-	block := m[1]
-	// The block may contain nested braces (e.g. a media query inside),
-	// so the simple [^@]* is too greedy only if there is another @-rule
-	// inside; for this stylesheet there is not, so the regex is fine.
+	if block == "" {
+		t.Fatal("no @media (prefers-reduced-motion: reduce) block covering .card-flight in app.css")
+	}
+
+	// suppressed reports whether a value actually stops motion. The
+	// implementation may say so however it likes — none, 0s, or a duration
+	// short enough to be imperceptible — but it has to say one of them
+	// rather than name a visible animation.
+	suppressed := func(v string) bool {
+		v = strings.ToLower(strings.TrimSpace(v))
+		v = strings.TrimSpace(strings.TrimSuffix(v, "!important"))
+		switch v {
+		case "none", "0s", "0ms", "0":
+			return true
+		}
+		return strings.HasPrefix(v, "0.00")
+	}
+
+	motionDeclRe := regexp.MustCompile(`(?:^|[;{\s])(transition|animation)\s*:\s*([^;}]+)`)
+	for _, r := range cssRuleRe.FindAllStringSubmatch(block, -1) {
+		sel, decls := strings.TrimSpace(r[1]), r[2]
+		if !strings.Contains(sel, ".card-flight") && !strings.Contains(sel, ".card-highlight") {
+			continue
+		}
+		for _, d := range motionDeclRe.FindAllStringSubmatch(decls, -1) {
+			prop, val := d[1], strings.TrimSpace(d[2])
+			if !suppressed(val) {
+				t.Errorf("under prefers-reduced-motion, %q sets %s: %s — that is motion, not the absence of it (KANB-41). "+
+					"A reader who asked the system for less movement must not be handed a moving card.",
+					sel, prop, val)
+			}
+		}
+	}
+
 	if !strings.Contains(block, ".card-flight") {
 		t.Errorf("prefers-reduced-motion block does not mention .card-flight (KANB-41):\n%s", block)
 	}

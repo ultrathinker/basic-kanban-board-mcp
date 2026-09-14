@@ -148,12 +148,20 @@ func TestChart_Forecast_SlidesTowardBottom(t *testing.T) {
 // days) and one input order (5d, 30d, 5d1m — deliberately NOT sorted).
 // A correct chart re-orders by date and plots each point at its real
 // ETA coordinate; a buggy chart plots them at indices 0/1/2.
-func TestChart_Forecast_NonUniformDatesSortByValueNotByIndex(t *testing.T) {
+// The chart sorts by WHEN each forecast was made (CreatedAt), not by the date
+// it promised: x is real time, so an unsorted input would draw a line that
+// jumps back and forth across the chart instead of tracking the promise as
+// time goes on.
+//
+// The name used to say "sort by value not by index", which described neither
+// the implementation nor the assertion — the fixture's CreatedAt order and ETA
+// order happen to coincide, so the Y check below passes on chronological
+// sorting rather than proving any ordering by value.
+func TestChart_Forecast_UnorderedInputIsSortedChronologically(t *testing.T) {
 	t0 := time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local)
-	// Input order: 5d, 30d, 5d1m. A by-index chart would draw them at the
-	// top, middle, somewhere-in-between — but the SORTED order is 5d, 5d1m,
-	// 30d, which is NOT the input order, so a chart that skips sorting
-	// plots 5d then 30d then 5d1m and the Y coordinates are wrong.
+	// Fed out of order on purpose: the marks arrive t0, t0+2h, t0+1h. A
+	// chart that plots them in input order draws the third point to the LEFT
+	// of the second, so the line doubles back on itself.
 	marks := []domain.ProgressMark{
 		{ID: "m1", Assessor: "bot", Percent: 10, CreatedAt: t0, ETA: forecastPt(t0.Add(5 * 24 * time.Hour))},
 		{ID: "m3", Assessor: "bot", Percent: 50, CreatedAt: t0.Add(2 * time.Hour), ETA: forecastPt(t0.Add(5*24*time.Hour + 30*24*time.Hour))},
@@ -167,22 +175,22 @@ func TestChart_Forecast_NonUniformDatesSortByValueNotByIndex(t *testing.T) {
 		t.Fatalf("expected 3 forecast points, got %d: %v", len(coords), coords)
 	}
 
-	// Y order (top-to-bottom) MUST match the DATE order, not the input
-	// order. Sorted dates: 5d < 5d1m < 30d. Top is smallest Y.
-	if !(coords[0][1] < coords[1][1]) || !(coords[1][1] < coords[2][1]) {
-		t.Fatalf("Y coordinates are not in increasing date order: %v\n"+
-			"A chart that sorts by date plots them top-to-bottom by value; "+
-			"a chart that ignores input order must NOT do that.\nSVG:\n%s", coords, svg)
-	}
-	// X order (left-to-right) MUST match the CREATEDAT order, which is
-	// also the sort key (the chart groups by assessor in chronological
-	// order). Top point has the smallest X AND Y; bottom has the largest
-	// of both. So Y strictly increasing AND X strictly increasing is the
-	// "sorted correctly" property; a by-index bug fails one of these.
+	// THE property: x increases along the line, because the line is drawn in
+	// the order the forecasts were made. This is what fails when the sort is
+	// dropped.
 	for i := 1; i < len(coords); i++ {
 		if !(coords[i][0] > coords[i-1][0]) {
-			t.Fatalf("X is not strictly increasing in the rendered line: %v", coords)
+			t.Fatalf("X is not strictly increasing in the rendered line: %v\n"+
+				"The marks were fed out of chronological order and drawn that way, so the line "+
+				"doubles back instead of tracking the promise forward in time.\nSVG:\n%s", coords, svg)
 		}
+	}
+	// In THIS fixture the promised dates happen to rise with the times they
+	// were made, so y rises along the line too. That is a property of the
+	// fixture, not a rule of the chart — the ordering guarantee above is the
+	// one being pinned.
+	if !(coords[0][1] < coords[1][1]) || !(coords[1][1] < coords[2][1]) {
+		t.Fatalf("Y coordinates do not follow the promised dates for this fixture: %v\nSVG:\n%s", coords, svg)
 	}
 }
 
