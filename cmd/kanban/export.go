@@ -27,6 +27,23 @@ type exportDocument struct {
 	Projects      []service.BoardProject `json:"projects"`
 	ProgressMarks []exportProgressMark   `json:"progress_marks"`
 	ChatMessages  []exportChatMessage    `json:"chat_messages"`
+	// Journal is the task lifecycle journal (KANB-30), re-keyed the same way
+	// ProgressMarks and ChatMessages are: project and task KEYS instead of
+	// internal UUIDs, and column NAMES instead of column ids, so a row can
+	// be replayed against a freshly-created board whose ids will not match
+	// the source's. Without this, moving a board to another machine would
+	// zero out every history chart (KANB-31's replay) exactly the way an
+	// export without progress marks or chat used to (KANB-29) — the same
+	// defect, a third time, on data that did not exist yet when KANB-29 was
+	// fixed.
+	Journal []exportJournalEntry `json:"journal"`
+	// HistoryStartsAt carries the instant from which the source's journal is
+	// trustworthy (KANB-30's origin, set once by migration 0006). Import
+	// must plant this same instant on the destination instead of leaving
+	// the destination's own migration stamp standing — otherwise every
+	// re-imported board would report that its journal became trustworthy on
+	// the day it was moved, not the day it actually started.
+	HistoryStartsAt time.Time `json:"history_starts_at"`
 
 	// Truncated names every project whose done tasks did not all fit in
 	// this export. board_get (and therefore this export, which reads the
@@ -74,6 +91,31 @@ type exportChatMessage struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// exportJournalEntry is one row of the task lifecycle journal (KANB-30). Its
+// ID is deliberately not carried across: task_history.id is a store-internal
+// autoincrement with nothing else referencing it (unlike a progress mark or
+// chat message id, which a caller could have recorded), so import is free to
+// let the destination assign fresh ones. Everything else that matters to a
+// replay travels: kind, timestamps, the reconstructed flag, and every value
+// field, re-keyed like the rest of the document.
+type exportJournalEntry struct {
+	Project       string    `json:"project"`
+	Task          string    `json:"task,omitempty"`
+	Actor         string    `json:"actor"`
+	Kind          string    `json:"kind"`
+	TS            time.Time `json:"ts"`
+	Reconstructed bool      `json:"reconstructed"`
+	Archived      *bool     `json:"archived,omitempty"`
+	FromColumn    string    `json:"from_column,omitempty"`
+	FromKind      string    `json:"from_kind,omitempty"`
+	ToColumn      string    `json:"to_column,omitempty"`
+	ToKind        string    `json:"to_kind,omitempty"`
+	OldEstimate   *float64  `json:"old_estimate,omitempty"`
+	NewEstimate   *float64  `json:"new_estimate,omitempty"`
+	OldParent     string    `json:"old_parent,omitempty"`
+	NewParent     string    `json:"new_parent,omitempty"`
+}
+
 // exportBoard builds the full export document: the same board the existing
 // runExport already publishes, plus the progress marks and chat messages
 // that the Board type never carried. The two extra streams are read through
@@ -116,6 +158,15 @@ func exportBoard(ctx context.Context, svc service.Service, st store.Store, actor
 	// the newest page first and accepts a cursor for the previous one,
 	// which is the same loop ChatList runs — just here, in one place.
 	err = st.Read(ctx, func(tx store.Tx) error {
+		// Origin is a single, store-wide row (task_history_origin has
+		// exactly one), not per project — read it once here rather than
+		// once per project in the loop below.
+		origin, err := st.TaskHistory().Origin(tx)
+		if err != nil {
+			return fmt.Errorf("export journal origin: %w", err)
+		}
+		out.HistoryStartsAt = origin
+
 		for _, bp := range board.Projects {
 			p, err := st.Projects().GetByKey(tx, bp.Key)
 			if err != nil {
@@ -125,6 +176,9 @@ func exportBoard(ctx context.Context, svc service.Service, st store.Store, actor
 				return err
 			}
 			if err := collectChat(tx, st, p.ID, bp.Key, out); err != nil {
+				return err
+			}
+			if err := collectJournal(tx, st, bp, p.ID, out); err != nil {
 				return err
 			}
 		}
@@ -215,6 +269,97 @@ func collectChat(tx store.Tx, st store.Store, projectID, projectKey string, out 
 	}
 }
 
+// collectJournal reads one project's whole lifecycle journal and appends it
+// to the export document, re-keyed the way the rest of the document is:
+// column ids become column names and task ids become task keys, resolved
+// through the store's own GetByID lookups. Unlike collectProgress (which
+// walks the board's visible columns) this reads the journal directly by
+// project id, so an archived task's history travels too — the journal is
+// the one place in this document that does not depend on what the board
+// currently chooses to display.
+//
+// A dangling reference (a column or a parent task that has since been hard-
+// deleted — task_history keeps no foreign key on those columns, by design,
+// so a later admin delete does not silently rewrite history) resolves to an
+// empty string rather than failing the whole export: the entry's kind, time
+// and other fields are still worth keeping, and import treats an unresolved
+// name as "leave that one field off" rather than an error.
+func collectJournal(tx store.Tx, st store.Store, bp service.BoardProject, projectID string, out *exportDocument) error {
+	entries, err := st.TaskHistory().ListByProject(tx, projectID)
+	if err != nil {
+		return fmt.Errorf("export journal (project %s): %w", bp.Key, err)
+	}
+
+	taskKeys := make(map[string]string)
+	lookupTask := func(id string) string {
+		if id == "" {
+			return ""
+		}
+		if k, ok := taskKeys[id]; ok {
+			return k
+		}
+		t, err := st.Tasks().GetByID(tx, id)
+		if err != nil {
+			// A hard-deleted task: task_history carries no FK on task_id
+			// itself in every column (old_parent / new_parent have none at
+			// all), so this is an honest gap, not a bug.
+			taskKeys[id] = ""
+			return ""
+		}
+		taskKeys[id] = t.Key
+		return t.Key
+	}
+
+	colNames := make(map[string]string)
+	lookupColumn := func(id *string) string {
+		if id == nil || *id == "" {
+			return ""
+		}
+		if n, ok := colNames[*id]; ok {
+			return n
+		}
+		c, err := st.Columns().GetByID(tx, *id)
+		if err != nil {
+			colNames[*id] = ""
+			return ""
+		}
+		colNames[*id] = c.Name
+		return c.Name
+	}
+
+	for _, e := range entries {
+		je := exportJournalEntry{
+			Project:       bp.Key,
+			Actor:         e.Actor,
+			Kind:          string(e.Kind),
+			TS:            e.TS,
+			Reconstructed: e.Reconstructed,
+			Archived:      e.Archived,
+			FromColumn:    lookupColumn(e.FromColumn),
+			ToColumn:      lookupColumn(e.ToColumn),
+			OldEstimate:   e.OldEstimate,
+			NewEstimate:   e.NewEstimate,
+		}
+		if e.TaskID != nil {
+			je.Task = lookupTask(*e.TaskID)
+		}
+		if e.FromKind != nil {
+			je.FromKind = string(*e.FromKind)
+		}
+		if e.ToKind != nil {
+			je.ToKind = string(*e.ToKind)
+		}
+		if e.OldParent != nil {
+			je.OldParent = lookupTask(*e.OldParent)
+		}
+		if e.NewParent != nil {
+			je.NewParent = lookupTask(*e.NewParent)
+		}
+		out.Journal = append(out.Journal, je)
+	}
+	return nil
+}
+
 // importBoard reads an export document and re-creates it against the live
 // store. The first pass uses service.* calls so the existing version /
 // parent / acceptance / link rules are honoured on the new board; the
@@ -241,7 +386,13 @@ func importBoard(ctx context.Context, svc service.Service, st store.Store, actor
 	// progress + chat come after every project/tasks/link has been
 	// re-created, so the references in the marks / messages resolve
 	// against the destination board that the prior pass built.
-	return importDated(ctx, st, actor, doc)
+	if err := importDated(ctx, st, actor, doc); err != nil {
+		return err
+	}
+	// The journal comes last: it has to clean up after every service call
+	// above, each of which wrote its own (import-time) journal entries as
+	// an unavoidable store-layer side effect.
+	return importJournal(ctx, st, doc)
 }
 
 // importProject mirrors the body of the existing runImport's project
@@ -491,6 +642,134 @@ func importDated(ctx context.Context, st store.Store, actor service.Actor, doc e
 		// source board already did, and a "restored progress mark" event
 		// would lie about when it actually happened.
 		_ = actor
+		return nil
+	})
+}
+
+// importJournal restores the task lifecycle journal (KANB-30) after every
+// project, task and link has been re-created. Each of those creations wrote
+// its own 'created' / 'moved' / ... journal entries as a store-layer side
+// effect stamped at the IMPORT instant (see TaskHistoryRepo.DeleteByProject
+// for why that cannot be suppressed). This clears that noise per project —
+// only once each, and only for projects this document actually describes —
+// then replays the ORIGINAL entries from the document with their original
+// timestamps, re-keyed back to the destination's ids. Finally it lowers the
+// store's origin to the source's, if the source started earlier, so a board
+// moved to a new machine does not report its history became trustworthy on
+// moving day.
+//
+// A legacy document with neither a journal nor a history_starts_at (an
+// export from before KANB-32) leaves everything alone: the import-time
+// noise from project/task creation is exactly what every import produced
+// before this feature existed, and there is nothing here to restore over
+// it.
+func importJournal(ctx context.Context, st store.Store, doc exportDocument) error {
+	if len(doc.Journal) == 0 && doc.HistoryStartsAt.IsZero() {
+		return nil
+	}
+	return st.Write(ctx, func(tx store.Tx) error {
+		projID := make(map[string]string, len(doc.Projects))
+		taskID := make(map[string]string)
+		colID := make(map[string]string)
+		for _, bp := range doc.Projects {
+			p, err := st.Projects().GetByKey(tx, bp.Key)
+			if err != nil {
+				return fmt.Errorf("import journal resolve project %s: %w", bp.Key, err)
+			}
+			projID[bp.Key] = p.ID
+
+			cols, err := st.Columns().ListByProject(tx, p.ID)
+			if err != nil {
+				return fmt.Errorf("import journal resolve columns of %s: %w", bp.Key, err)
+			}
+			for _, c := range cols {
+				colID[bp.Key+"/"+c.Name] = c.ID
+			}
+
+			for _, col := range bp.Columns {
+				for _, tv := range col.Tasks {
+					t, err := st.Tasks().GetByKey(tx, tv.Key)
+					if err != nil {
+						return fmt.Errorf("import journal resolve task %s: %w", tv.Key, err)
+					}
+					taskID[bp.Key+"/"+tv.Key] = t.ID
+				}
+			}
+		}
+
+		// Every project this document describes gets its import-time noise
+		// wiped exactly once, whether or not it turns out to have any
+		// journal entries of its own: a project whose SOURCE journal was
+		// genuinely empty must end up with an empty journal here too, not
+		// with the side-effect rows TaskCreate happened to write.
+		for _, bp := range doc.Projects {
+			pid, ok := projID[bp.Key]
+			if !ok {
+				continue
+			}
+			if err := st.TaskHistory().DeleteByProject(tx, pid); err != nil {
+				return fmt.Errorf("import journal: clear project %s: %w", bp.Key, err)
+			}
+		}
+
+		for _, e := range doc.Journal {
+			pid, ok := projID[e.Project]
+			if !ok {
+				return fmt.Errorf("import journal entry: project %q not in document", e.Project)
+			}
+			entry := &store.TaskHistoryEntry{
+				TS:            e.TS,
+				Actor:         e.Actor,
+				ProjectID:     pid,
+				Kind:          store.TaskHistoryKind(e.Kind),
+				Reconstructed: e.Reconstructed,
+				Archived:      e.Archived,
+				OldEstimate:   e.OldEstimate,
+				NewEstimate:   e.NewEstimate,
+			}
+			if e.Task != "" {
+				tid, ok := taskID[e.Project+"/"+e.Task]
+				if !ok {
+					return fmt.Errorf("import journal entry: task %q not in document (project %s)", e.Task, e.Project)
+				}
+				entry.TaskID = &tid
+			}
+			if e.FromColumn != "" {
+				if cid, ok := colID[e.Project+"/"+e.FromColumn]; ok {
+					entry.FromColumn = &cid
+				}
+			}
+			if e.ToColumn != "" {
+				if cid, ok := colID[e.Project+"/"+e.ToColumn]; ok {
+					entry.ToColumn = &cid
+				}
+			}
+			if e.FromKind != "" {
+				k := domain.Kind(e.FromKind)
+				entry.FromKind = &k
+			}
+			if e.ToKind != "" {
+				k := domain.Kind(e.ToKind)
+				entry.ToKind = &k
+			}
+			if e.OldParent != "" {
+				if tid, ok := taskID[e.Project+"/"+e.OldParent]; ok {
+					entry.OldParent = &tid
+				}
+			}
+			if e.NewParent != "" {
+				if tid, ok := taskID[e.Project+"/"+e.NewParent]; ok {
+					entry.NewParent = &tid
+				}
+			}
+			if err := st.TaskHistory().Append(tx, entry); err != nil {
+				return fmt.Errorf("import journal entry (project %s): %w", e.Project, err)
+			}
+		}
+
+		if err := st.TaskHistory().LowerOrigin(tx, doc.HistoryStartsAt); err != nil {
+			return fmt.Errorf("import journal: lower origin: %w", err)
+		}
 		return nil
 	})
 }

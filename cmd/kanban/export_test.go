@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 	"time"
 
@@ -382,6 +383,418 @@ func mustOpenStore(t *testing.T, dir string) store.Store {
 // models "no forecast" as a nil *time.Time, so the round-trip test has to
 // be able to write both a real forecast and the absence of one.
 func ptrTime(t time.Time) *time.Time { return &t }
+
+// floatPtrLocal is the float64 counterpart of intPtrLocal, needed for the
+// journal round-trip fixture's estimate-change entry.
+func floatPtrLocal(v float64) *float64 { return &v }
+
+// canonicalizeJournal turns raw store.TaskHistoryEntry rows into the same
+// re-keyed shape exportJournalEntry uses (task KEYS, column NAMES), via
+// caller-supplied lookups. It is a second, independent implementation of
+// the re-keying collectJournal does — written directly against the store
+// rather than reusing collectJournal — so the round-trip test is not just
+// checking collectJournal's output against itself.
+func canonicalizeJournal(entries []store.TaskHistoryEntry, projectKey string, taskKeyOf func(string) string, colNameOf func(*string) string) []exportJournalEntry {
+	out := make([]exportJournalEntry, 0, len(entries))
+	for _, e := range entries {
+		je := exportJournalEntry{
+			Project:       projectKey,
+			Actor:         e.Actor,
+			Kind:          string(e.Kind),
+			TS:            e.TS,
+			Reconstructed: e.Reconstructed,
+			Archived:      e.Archived,
+			FromColumn:    colNameOf(e.FromColumn),
+			ToColumn:      colNameOf(e.ToColumn),
+			OldEstimate:   e.OldEstimate,
+			NewEstimate:   e.NewEstimate,
+		}
+		if e.TaskID != nil {
+			je.Task = taskKeyOf(*e.TaskID)
+		}
+		if e.FromKind != nil {
+			je.FromKind = string(*e.FromKind)
+		}
+		if e.ToKind != nil {
+			je.ToKind = string(*e.ToKind)
+		}
+		if e.OldParent != nil {
+			je.OldParent = taskKeyOf(*e.OldParent)
+		}
+		if e.NewParent != nil {
+			je.NewParent = taskKeyOf(*e.NewParent)
+		}
+		out = append(out, je)
+	}
+	return out
+}
+
+// journalSortKey orders journal entries for comparison: kind + timestamp is
+// unique across every fixture entry this test writes (every timestamp
+// below is distinct on purpose), so sorting both sides by it lines up the
+// pairs a field-by-field comparison needs.
+func journalSortKey(e exportJournalEntry) string {
+	return e.Kind + "@" + e.TS.UTC().Format(time.RFC3339Nano) + "@" + e.Task
+}
+
+func sortJournal(entries []exportJournalEntry) {
+	sort.Slice(entries, func(i, j int) bool { return journalSortKey(entries[i]) < journalSortKey(entries[j]) })
+}
+
+func floatPtrEqualLocal(a, b *float64) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
+
+func boolPtrEqualLocal(a, b *bool) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
+
+// assertJournalEntriesEqual compares two aligned (same length, same sort
+// order) journal slices field by field, the way the progress/chat
+// comparisons above do -- not by count, per KANB-32's own warning.
+func assertJournalEntriesEqual(t *testing.T, label string, got, want []exportJournalEntry) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("%s: entry count = %d, want %d\ngot:  %+v\nwant: %+v", label, len(got), len(want), got, want)
+	}
+	for i := range want {
+		g, w := got[i], want[i]
+		if g.Project != w.Project {
+			t.Errorf("%s[%d] project = %q, want %q", label, i, g.Project, w.Project)
+		}
+		if g.Task != w.Task {
+			t.Errorf("%s[%d] (%s) task = %q, want %q", label, i, w.Kind, g.Task, w.Task)
+		}
+		if g.Actor != w.Actor {
+			t.Errorf("%s[%d] (%s) actor = %q, want %q", label, i, w.Kind, g.Actor, w.Actor)
+		}
+		if g.Kind != w.Kind {
+			t.Errorf("%s[%d] kind = %q, want %q", label, i, g.Kind, w.Kind)
+		}
+		if !g.TS.Equal(w.TS) {
+			t.Errorf("%s[%d] (%s) ts = %s, want %s", label, i, w.Kind, g.TS, w.TS)
+		}
+		if g.Reconstructed != w.Reconstructed {
+			t.Errorf("%s[%d] (%s) reconstructed = %v, want %v", label, i, w.Kind, g.Reconstructed, w.Reconstructed)
+		}
+		if !boolPtrEqualLocal(g.Archived, w.Archived) {
+			t.Errorf("%s[%d] (%s) archived = %v, want %v", label, i, w.Kind, g.Archived, w.Archived)
+		}
+		if g.FromColumn != w.FromColumn {
+			t.Errorf("%s[%d] (%s) from_column = %q, want %q", label, i, w.Kind, g.FromColumn, w.FromColumn)
+		}
+		if g.FromKind != w.FromKind {
+			t.Errorf("%s[%d] (%s) from_kind = %q, want %q", label, i, w.Kind, g.FromKind, w.FromKind)
+		}
+		if g.ToColumn != w.ToColumn {
+			t.Errorf("%s[%d] (%s) to_column = %q, want %q", label, i, w.Kind, g.ToColumn, w.ToColumn)
+		}
+		if g.ToKind != w.ToKind {
+			t.Errorf("%s[%d] (%s) to_kind = %q, want %q", label, i, w.Kind, g.ToKind, w.ToKind)
+		}
+		if !floatPtrEqualLocal(g.OldEstimate, w.OldEstimate) {
+			t.Errorf("%s[%d] (%s) old_estimate = %v, want %v", label, i, w.Kind, g.OldEstimate, w.OldEstimate)
+		}
+		if !floatPtrEqualLocal(g.NewEstimate, w.NewEstimate) {
+			t.Errorf("%s[%d] (%s) new_estimate = %v, want %v", label, i, w.Kind, g.NewEstimate, w.NewEstimate)
+		}
+		if g.OldParent != w.OldParent {
+			t.Errorf("%s[%d] (%s) old_parent = %q, want %q", label, i, w.Kind, g.OldParent, w.OldParent)
+		}
+		if g.NewParent != w.NewParent {
+			t.Errorf("%s[%d] (%s) new_parent = %q, want %q", label, i, w.Kind, g.NewParent, w.NewParent)
+		}
+	}
+}
+
+// TestExportImport_RoundTripWithJournal is KANB-32's headline guarantee,
+// mirroring TestExportImport_RoundTripWithProgressAndChat for the task
+// lifecycle journal (KANB-30): every kind of journal entry this fixture
+// writes round-trips through export -> import with its fields AND its
+// ORIGINAL timestamp intact, field by field rather than by count, and the
+// journal's origin instant (history_starts_at) travels with it instead of
+// becoming the moment of import.
+func TestExportImport_RoundTripWithJournal(t *testing.T) {
+	dir1 := t.TempDir()
+	dir2 := t.TempDir()
+	ctx := context.Background()
+
+	base := time.Now().UTC().Truncate(time.Second).Add(time.Hour)
+	tMoved := base.Add(1 * time.Minute)
+	tEstimate := base.Add(2 * time.Minute)
+	tParent := base.Add(3 * time.Minute)
+	tArchived := base.Add(4 * time.Minute)
+	tRestored := base.Add(5 * time.Minute)
+	tColumnKind := base.Add(6 * time.Minute)
+
+	var (
+		projID             string
+		task1ID, task2ID   string
+		task1Key, task2Key string
+		backlogID, doingID string
+		sourceEntries      []store.TaskHistoryEntry
+		sourceOrigin       time.Time
+	)
+	func() {
+		st, err := openStore(ctx, dir1)
+		if err != nil {
+			t.Fatalf("openStore: %v", err)
+		}
+		defer st.Close()
+		svc := service.New(st, nil)
+		actor := service.Actor{
+			Name:   "tester",
+			Scopes: domain.Scopes{domain.ScopeAdmin, domain.ScopeWrite, domain.ScopeRead},
+		}
+
+		if _, err := svc.ProjectUpsert(ctx, actor, service.ProjectUpsertInput{
+			Mode: service.UpsertCreate, Key: "RKJR", Name: "Journal round-trip",
+			Columns: []service.ColumnSpec{
+				{Name: "Backlog", Kind: domain.KindBacklog},
+				{Name: "Doing", Kind: domain.KindActive, WIPLimit: intPtrLocal(5)},
+				{Name: "Done", Kind: domain.KindDone},
+			},
+		}); err != nil {
+			t.Fatalf("ProjectUpsert: %v", err)
+		}
+
+		created, err := svc.TaskCreate(ctx, actor, service.TaskCreateInput{
+			Tasks: []service.NewTask{
+				{ProjectKey: "RKJR", Column: "Backlog", Title: "parent", Type: domain.TypeTask, Estimate: floatPtrLocal(3)},
+				{ProjectKey: "RKJR", Column: "Backlog", Title: "child", Type: domain.TypeTask},
+			},
+		})
+		if err != nil {
+			t.Fatalf("TaskCreate: %v", err)
+		}
+		task1ID, task1Key = created.Tasks[0].ID, created.Tasks[0].Key
+		task2ID, task2Key = created.Tasks[1].ID, created.Tasks[1].Key
+		projID = created.Tasks[0].ProjectID
+
+		activeKind := domain.KindActive
+		doneKind := domain.KindDone
+		backlogKind := domain.KindBacklog
+		trueVal, falseVal := true, false
+		est3, est5 := 3.0, 5.0
+
+		if err := st.Write(ctx, func(tx store.Tx) error {
+			backlog, err := st.Columns().GetByName(tx, projID, "Backlog")
+			if err != nil {
+				return err
+			}
+			backlogID = backlog.ID
+			doing, err := st.Columns().GetByName(tx, projID, "Doing")
+			if err != nil {
+				return err
+			}
+			doingID = doing.ID
+
+			// One hand-written entry of every kind that carries a value,
+			// at strictly increasing, hand-picked timestamps. Direct store
+			// writes are the only way to control TS -- the mutation paths
+			// that normally record these stamp tx.Now() -- the same
+			// technique the progress/chat fixtures above use.
+			fixtures := []*store.TaskHistoryEntry{
+				{
+					TS: tMoved, Actor: "tester", ProjectID: projID, TaskID: &task1ID,
+					Kind:       store.HistoryMoved,
+					FromColumn: &backlogID, FromKind: &backlogKind,
+					ToColumn: &doingID, ToKind: &activeKind,
+				},
+				{
+					TS: tEstimate, Actor: "tester", ProjectID: projID, TaskID: &task1ID,
+					Kind: store.HistoryEstimate, OldEstimate: &est3, NewEstimate: &est5,
+				},
+				{
+					TS: tParent, Actor: "tester", ProjectID: projID, TaskID: &task2ID,
+					Kind: store.HistoryParent, NewParent: &task1ID,
+				},
+				{
+					TS: tArchived, Actor: "tester", ProjectID: projID, TaskID: &task1ID,
+					Kind: store.HistoryArchived, Archived: &trueVal,
+				},
+				{
+					TS: tRestored, Actor: "tester", ProjectID: projID, TaskID: &task1ID,
+					Kind: store.HistoryRestored, Archived: &falseVal,
+				},
+				{
+					TS: tColumnKind, Actor: "tester", ProjectID: projID,
+					Kind:       store.HistoryColumnKind,
+					FromColumn: &doingID, FromKind: &activeKind,
+					ToColumn: &doingID, ToKind: &doneKind,
+				},
+			}
+			for _, e := range fixtures {
+				if err := st.TaskHistory().Append(tx, e); err != nil {
+					return fmt.Errorf("append fixture %s: %w", e.Kind, err)
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("seed journal: %v", err)
+		}
+
+		if err := st.Read(ctx, func(tx store.Tx) error {
+			entries, err := st.TaskHistory().ListByProject(tx, projID)
+			if err != nil {
+				return err
+			}
+			sourceEntries = entries
+			origin, err := st.TaskHistory().Origin(tx)
+			if err != nil {
+				return err
+			}
+			sourceOrigin = origin
+			return nil
+		}); err != nil {
+			t.Fatalf("read back source journal: %v", err)
+		}
+	}()
+
+	// 8 entries: the 2 auto-recorded 'created' rows (one per task, an
+	// unavoidable side effect of TaskCreate) plus the 6 fixtures above.
+	if len(sourceEntries) != 8 {
+		t.Fatalf("seeded journal has %d entries, want 8: %+v", len(sourceEntries), sourceEntries)
+	}
+
+	sourceTaskKeyOf := func(id string) string {
+		switch id {
+		case task1ID:
+			return task1Key
+		case task2ID:
+			return task2Key
+		default:
+			return ""
+		}
+	}
+	sourceColNameOf := func(id *string) string {
+		if id == nil {
+			return ""
+		}
+		switch *id {
+		case backlogID:
+			return "Backlog"
+		case doingID:
+			return "Doing"
+		default:
+			return ""
+		}
+	}
+	want := canonicalizeJournal(sourceEntries, "RKJR", sourceTaskKeyOf, sourceColNameOf)
+	sortJournal(want)
+
+	// --- export ---
+	exportFile := filepath.Join(t.TempDir(), "export.json")
+	if err := runExport([]string{"--data", dir1, "--out", exportFile}); err != nil {
+		t.Fatalf("runExport: %v", err)
+	}
+	raw, err := os.ReadFile(exportFile)
+	if err != nil {
+		t.Fatalf("read export: %v", err)
+	}
+	var doc exportDocument
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parse export: %v", err)
+	}
+	if !doc.HistoryStartsAt.Equal(sourceOrigin) {
+		t.Errorf("export history_starts_at = %s, want %s (the source's own origin)", doc.HistoryStartsAt, sourceOrigin)
+	}
+	gotExported := append([]exportJournalEntry(nil), doc.Journal...)
+	sortJournal(gotExported)
+	assertJournalEntriesEqual(t, "export", gotExported, want)
+
+	// --- import ---
+	if err := runImport([]string{"--data", dir2, "--in", exportFile}); err != nil {
+		t.Fatalf("runImport: %v", err)
+	}
+
+	var (
+		gotImported    []exportJournalEntry
+		importedOrigin time.Time
+	)
+	st2, err := openStore(ctx, dir2)
+	if err != nil {
+		t.Fatalf("openStore dir2: %v", err)
+	}
+	defer st2.Close()
+	if err := st2.Read(ctx, func(tx store.Tx) error {
+		p, err := st2.Projects().GetByKey(tx, "RKJR")
+		if err != nil {
+			return err
+		}
+		t1, err := st2.Tasks().GetByKey(tx, task1Key)
+		if err != nil {
+			return err
+		}
+		t2, err := st2.Tasks().GetByKey(tx, task2Key)
+		if err != nil {
+			return err
+		}
+		backlog, err := st2.Columns().GetByName(tx, p.ID, "Backlog")
+		if err != nil {
+			return err
+		}
+		doing, err := st2.Columns().GetByName(tx, p.ID, "Doing")
+		if err != nil {
+			return err
+		}
+		destTaskKeyOf := func(id string) string {
+			switch id {
+			case t1.ID:
+				return task1Key
+			case t2.ID:
+				return task2Key
+			default:
+				return ""
+			}
+		}
+		destColNameOf := func(id *string) string {
+			if id == nil {
+				return ""
+			}
+			switch *id {
+			case backlog.ID:
+				return "Backlog"
+			case doing.ID:
+				return "Doing"
+			default:
+				return ""
+			}
+		}
+		entries, err := st2.TaskHistory().ListByProject(tx, p.ID)
+		if err != nil {
+			return err
+		}
+		gotImported = canonicalizeJournal(entries, "RKJR", destTaskKeyOf, destColNameOf)
+		origin, err := st2.TaskHistory().Origin(tx)
+		if err != nil {
+			return err
+		}
+		importedOrigin = origin
+		return nil
+	}); err != nil {
+		t.Fatalf("read imported journal: %v", err)
+	}
+
+	sortJournal(gotImported)
+	assertJournalEntriesEqual(t, "import", gotImported, want)
+
+	// The whole point of KANB-32's history_starts_at: the destination must
+	// NOT report that its journal became trustworthy on import day. It
+	// must carry the source's own origin, unchanged.
+	if !importedOrigin.Equal(sourceOrigin) {
+		t.Errorf("imported origin = %s, want %s (the source's origin, not the moment of import)", importedOrigin, sourceOrigin)
+	}
+	if importedOrigin.After(base) {
+		t.Errorf("imported origin = %s is after the fixture's own base time %s -- it looks like the import instant leaked in", importedOrigin, base)
+	}
+}
 
 // captureStderr redirects os.Stderr for the duration of fn, returning
 // whatever it wrote. Mirrors captureStdout in main_test.go — export's

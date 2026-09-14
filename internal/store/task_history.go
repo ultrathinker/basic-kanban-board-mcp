@@ -88,6 +88,36 @@ type TaskHistoryRepo interface {
 	// Origin returns the instant from which the journal is trustworthy — the
 	// moment migration 0006 ran. Nothing before it may be drawn as a line.
 	Origin(tx Tx) (time.Time, error)
+
+	// DeleteByProject removes every journal row belonging to one project. It
+	// exists ONLY for import (cmd/kanban's importJournal, KANB-32): a
+	// re-created project's tasks are built through the normal service path,
+	// which — like every task creation and update — writes its own
+	// 'created' / 'moved' / ... entries as an unavoidable side effect of
+	// store.Tasks().Create and store.Tasks().Update. Those entries carry the
+	// IMPORT instant, not the original one, and would sit alongside the
+	// real, re-keyed history import is about to write, doubling every count
+	// a replay produces and letting the freshest (import-time) 'created' row
+	// overwrite the reconstructed state of every earlier one. Deleting the
+	// side-effect rows before writing the true ones is the only way to land
+	// a faithful journal without teaching every mutation path to skip
+	// recording when a caller says so — a bypass flag on the write path is
+	// exactly the kind of silent gap KANB-31 exists to prevent.
+	DeleteByProject(tx Tx, projectID string) error
+
+	// LowerOrigin moves the journal's trustworthy-from instant earlier,
+	// never later. It exists for import: a fresh store's own migration
+	// already wrote an origin row stamped at "now" (its own migration
+	// time), and importing a board whose real origin is earlier must not
+	// leave that import-time stamp standing — the moment a chart's honest
+	// gap starts would silently become "the day this board was moved"
+	// instead of the day the journal actually began. Importing into a store
+	// that already holds an EARLIER origin (a second import, or an
+	// existing board) must not push it later, which is why this only ever
+	// lowers the value. A zero candidate is a no-op, so a legacy import
+	// document that never carried history_starts_at leaves the origin
+	// alone.
+	LowerOrigin(tx Tx, candidate time.Time) error
 }
 
 type taskHistoryRepo struct{ s *sqlStore }
@@ -213,6 +243,39 @@ func (r *taskHistoryRepo) Origin(tx Tx) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("store: read task history origin: %w", err)
 	}
 	return parseTime(ts)
+}
+
+func (r *taskHistoryRepo) DeleteByProject(tx Tx, projectID string) error {
+	if projectID == "" {
+		return domain.Invalid("project_id", "project id is empty", "Pass the project UUID.")
+	}
+	tw := tx.(*txWrap)
+	if _, err := tw.tx.ExecContext(tw.ctx(),
+		"DELETE FROM task_history WHERE project_id = ?", projectID,
+	); err != nil {
+		return fmt.Errorf("store: delete task history for project: %w", err)
+	}
+	return nil
+}
+
+func (r *taskHistoryRepo) LowerOrigin(tx Tx, candidate time.Time) error {
+	if candidate.IsZero() {
+		return nil
+	}
+	current, err := r.Origin(tx)
+	if err != nil {
+		return err
+	}
+	if !candidate.Before(current) {
+		return nil
+	}
+	tw := tx.(*txWrap)
+	if _, err := tw.tx.ExecContext(tw.ctx(),
+		"UPDATE task_history_origin SET started_at = ? WHERE id = 1", formatTime(candidate),
+	); err != nil {
+		return fmt.Errorf("store: lower task history origin: %w", err)
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
