@@ -255,10 +255,20 @@ type forecastBounds struct {
 	etaSpan        time.Duration
 }
 
+// forecastChartPadLeft is the forecast chart's own left padding, wider than
+// the shared ChartPadLeft. Both forecast surfaces anchor a full
+// "2006-01-02" date label just left of the plot area — the inline panel's
+// earliest-ETA reference and the modal's whole date axis — and a
+// 10-character date at the axis font size is ~60px wide, about twice what
+// ChartPadLeft (36, sized for the percent chart's "100%") leaves beside the
+// plot. With the shared pad the label began at a negative SVG x and the
+// viewport clipped it: a date axis a reader could not read.
+const forecastChartPadLeft = 72.0
+
 func forecastBoundsOf(w, h int, tStart, tEnd time.Time, etaMin, etaMax time.Time) forecastBounds {
 	width := float64(w)
 	height := float64(h)
-	xMin := ChartPadLeft
+	xMin := forecastChartPadLeft
 	xMax := width - ChartPadRight
 	yMin := ChartPadTop
 	yMax := height - ChartPadBottom

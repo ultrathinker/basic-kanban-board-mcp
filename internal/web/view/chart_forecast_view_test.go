@@ -376,3 +376,67 @@ func TestChart_Forecast_TooltipCallsAPastPromiseOverdue(t *testing.T) {
 		t.Errorf("rendered forecast chart describes a past promise as imminent:\n%s", svg)
 	}
 }
+
+// 10. REVIEW C #6: no text on a forecast chart may start left of the SVG
+// viewport. Both surfaces anchor a full "2006-01-02" label left of the plot
+// area — the inline panel's earliest-ETA reference and the modal's date
+// axis — and the shared ChartPadLeft (36px) gave a 10-character date less
+// than half the room it needs (~60px), so the viewport clipped the left
+// half of every axis date.
+//
+// SVG has no server-side text metrics, so the check estimates each label's
+// width at 0.5em per glyph — deliberately UNDER the real width of the
+// alphabet these labels use (digits, '-', ':', ' ' measure ~0.53em in the
+// system UI fonts, so 0.5 can only understate). An understated width makes
+// the check lenient: it may pass a label that is a pixel or two over the
+// edge, but it can never fail one that fits, and the two-thirds-of-the-
+// label clip the old pad produced is far past any estimation error.
+func TestChart_Forecast_DateLabelsAreNotClippedByTheLeftEdge(t *testing.T) {
+	t0 := time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local)
+	// The ETA span crosses the 31-day switch in formatForecastAxisDate, so
+	// the modal's axis prints FULL dates — the widest, most easily clipped
+	// case — and always five of them.
+	marks := []domain.ProgressMark{
+		{ID: "m1", Assessor: "alpha", Percent: 30, CreatedAt: t0, ETA: forecastPt(t0.Add(5 * 24 * time.Hour))},
+		{ID: "m2", Assessor: "alpha", Percent: 50, CreatedAt: t0.Add(time.Hour), ETA: forecastPt(t0.Add(95 * 24 * time.Hour))},
+	}
+
+	textRe := regexp.MustCompile(`<text x="(-?[\d.]+)" y="[-\d.]+" text-anchor="(start|middle|end)" font-size="(\d+)"[^>]*>([^<]+)</text>`)
+	check := func(svg, what string) {
+		t.Helper()
+		matches := textRe.FindAllStringSubmatch(svg, -1)
+		if len(matches) == 0 {
+			t.Fatalf("%s: no labelled text elements found to check", what)
+		}
+		dateLabels := 0
+		for _, m := range matches {
+			x, _ := strconv.ParseFloat(m[1], 64)
+			fs, _ := strconv.ParseFloat(m[3], 64)
+			label, anchor := m[4], m[2]
+			left := x
+			switch anchor {
+			case "end":
+				left = x - 0.5*fs*float64(len(label))
+			case "middle":
+				left = x - 0.5*fs*float64(len(label))/2
+			}
+			if left < 0 {
+				t.Errorf("%s: label %q at x=%.1f (font %.0f, anchor %s) starts at x=%.1f — left of the SVG edge, the reader sees a clipped tail",
+					what, label, x, fs, anchor, left)
+			}
+			if strings.HasPrefix(label, "2026-") {
+				dateLabels++
+			}
+		}
+		// The guard must actually be looking at full dates, not merely at
+		// whatever labels happen to be present: a fixture change that
+		// shrank the ETA span would otherwise turn this into a test of
+		// short "Mon DD" labels and quietly stop covering the defect.
+		if what == "modal" && dateLabels < 5 {
+			t.Fatalf("modal: expected the five full-date axis labels, saw %d — the fixture no longer covers the 10-character case", dateLabels)
+		}
+	}
+
+	check(string(RenderForecastChart(marks, DefaultChartWidth, DefaultChartHeight)), "inline panel")
+	check(string(RenderForecastChartDetailed(marks, DetailChartWidth, DetailChartHeight)), "modal")
+}
