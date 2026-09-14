@@ -366,6 +366,46 @@ func TestExportImport_BackwardCompatibleOldShape(t *testing.T) {
 	}
 }
 
+// TestImportRejectsDanglingHistoryBeforeCreatingProjects pins the preflight
+// that prevents a malformed history row from stranding a half-imported board.
+func TestImportRejectsDanglingHistoryBeforeCreatingProjects(t *testing.T) {
+	source, destination := t.TempDir(), t.TempDir()
+	seedBoardWithProgressAndChat(t, source)
+	exportFile := filepath.Join(t.TempDir(), "export.json")
+	if err := runExport([]string{"--data", source, "--out", exportFile}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(exportFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc exportDocument
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	doc.ProgressMarks = append(doc.ProgressMarks, exportProgressMark{ID: "bad", Project: "NOPE"})
+	broken, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	brokenFile := filepath.Join(t.TempDir(), "broken.json")
+	if err := os.WriteFile(brokenFile, broken, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := runImport([]string{"--data", destination, "--in", brokenFile}); err == nil {
+		t.Fatal("dangling mark import succeeded")
+	}
+	st := mustOpenStore(t, destination)
+	actor := service.Actor{Name: "test", Scopes: domain.Scopes{domain.ScopeRead}}
+	board, err := service.New(st, nil).BoardGet(context.Background(), actor, service.BoardGetInput{View: service.ViewSummary})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(board.Projects) != 0 {
+		t.Fatalf("projects after rejected import = %d, want 0", len(board.Projects))
+	}
+}
+
 // mustOpenStore is a thin helper that wraps openStore and fails the test
 // on error — used in tests that need a store handle inline without the
 // full deferred Close dance.

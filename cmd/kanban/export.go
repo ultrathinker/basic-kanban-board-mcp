@@ -377,6 +377,9 @@ func importBoard(ctx context.Context, svc service.Service, st store.Store, actor
 	if len(doc.Projects) == 0 {
 		return fmt.Errorf("import: no projects found in input")
 	}
+	if err := validateImportReferences(doc); err != nil {
+		return err
+	}
 
 	for _, bp := range doc.Projects {
 		if err := importProject(ctx, svc, actor, bp, doc); err != nil {
@@ -393,6 +396,39 @@ func importBoard(ctx context.Context, svc service.Service, st store.Store, actor
 	// above, each of which wrote its own (import-time) journal entries as
 	// an unavoidable store-layer side effect.
 	return importJournal(ctx, st, doc)
+}
+
+// validateImportReferences refuses dangling history before the first service
+// write. Full cross-layer atomicity needs a service transaction contract; this
+// preflight at least guarantees malformed history cannot leave a new board
+// behind before importDated discovers it.
+func validateImportReferences(doc exportDocument) error {
+	projects := make(map[string]struct{}, len(doc.Projects))
+	tasks := make(map[string]struct{})
+	for _, bp := range doc.Projects {
+		projects[bp.Key] = struct{}{}
+		for _, col := range bp.Columns {
+			for _, task := range col.Tasks {
+				tasks[bp.Key+"/"+task.Key] = struct{}{}
+			}
+		}
+	}
+	for _, mark := range doc.ProgressMarks {
+		if _, ok := projects[mark.Project]; !ok {
+			return fmt.Errorf("import progress mark %s: project %q not in document", mark.ID, mark.Project)
+		}
+		if mark.Task != "" {
+			if _, ok := tasks[mark.Project+"/"+mark.Task]; !ok {
+				return fmt.Errorf("import progress mark %s: task %q not in document project %q", mark.ID, mark.Task, mark.Project)
+			}
+		}
+	}
+	for _, msg := range doc.ChatMessages {
+		if _, ok := projects[msg.Project]; !ok {
+			return fmt.Errorf("import chat message %s: project %q not in document", msg.ID, msg.Project)
+		}
+	}
+	return nil
 }
 
 // importProject mirrors the body of the existing runImport's project
