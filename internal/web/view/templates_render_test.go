@@ -422,6 +422,34 @@ func renderCases() []renderCase {
 			notWants: []string{"<no value>"},
 		},
 		{
+			// KANB-39: the standing prompt — the one paste-ready rule that
+			// goes into AGENTS.md / system prompt — carries the feed
+			// discipline: first post, stage-transition posts, pulse
+			// (~five minutes of ACTIVE work, not a wall clock), named
+			// pause reason, closing summary, and the explicit
+			// never-shows-an-online-dot clause. A future edit could
+			// quietly drop any of these; this test pins the contract.
+			name:     "chrome/standing-prompt-feed-rules",
+			template: "prompt-cards",
+			data:     boardPage(),
+			wants: []string{
+				// First post + closing summary: the two bookends.
+				"FIRST thought at the start",
+				"final SUMMARY post",
+				// The pulse rule must mention active work, not a fixed
+				// cadence — the brief says "about every five minutes
+				// of active work", and the prompt translates it that
+				// way so a wall-clock cadence does not become a
+				// heartbeat that outlives a crashed process.
+				"five minutes of ACTIVE work",
+				"REASON when you stop",
+				// The explicit no-online-dot clause — the prompt has to
+				// own the rule rather than rely on the reader knowing it.
+				`never shows an &#34;online&#34; dot`,
+			},
+			notWants: []string{"<no value>"},
+		},
+		{
 			// Nothing to chart: the modal body renders empty, and app.js
 			// prints its own "no history yet" rather than showing a frame
 			// around nothing.

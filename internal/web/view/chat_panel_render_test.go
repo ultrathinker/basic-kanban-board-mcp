@@ -220,6 +220,132 @@ func TestChatEntriesNewestFirst_Empty(t *testing.T) {
 	}
 }
 
+// TestChatPanel_LatestAndSilence (KANB-39): the panel carries the time
+// the most recent post landed and the human-readable gap to "now", so a
+// long pause is visible without an invented "online" indicator. The
+// panel header prints both.
+//
+// Newest-first ordering is preserved by ChatEntriesNewestFirst, so
+// entries[0] is always the latest post and its CreatedAt is what the
+// panel header calls "last activity".
+func TestChatPanel_LatestAndSilence(t *testing.T) {
+	now := time.Date(2026, 9, 12, 12, 30, 0, 0, time.Local)
+	older := time.Date(2026, 9, 12, 12, 0, 0, 0, time.Local)  // 30m earlier
+	oldest := time.Date(2026, 9, 12, 11, 0, 0, 0, time.Local) // 90m earlier
+	msgs := []domain.ChatMessage{
+		{ID: "m3", Author: "agent-c", Body: "newest", CreatedAt: now},
+		{ID: "m2", Author: "agent-b", Body: "middle", CreatedAt: older},
+		{ID: "m1", Author: "agent-a", Body: "oldest", CreatedAt: oldest},
+	}
+	// The panel's silence is computed against `now`, not against the
+	// newest entry's time — it asks "how long since the last post",
+	// so the panel needs the page renderer's "now", passed here.
+	panel := view.NewChatPanel(msgs, "", now, nil)
+	if panel.LatestAt.IsZero() {
+		t.Fatal("LatestAt is zero — the panel did not capture the latest entry's CreatedAt")
+	}
+	if !panel.LatestAt.Equal(now) {
+		t.Fatalf("LatestAt = %v, want %v (the newest entry's CreatedAt)", panel.LatestAt, now)
+	}
+	if panel.Silence != "just now" {
+		t.Fatalf("Silence = %q, want \"just now\" for a 0s gap", panel.Silence)
+	}
+}
+
+// TestChatPanel_SilenceFormatsGapsHumanly pins the human-readable form
+// the panel header uses: "just now" under a minute, "Nm" under an hour,
+// "Nh" under a day, "Nd" beyond. Same vocabulary the activity feed uses,
+// so the two cannot drift apart.
+func TestChatPanel_SilenceFormatsGapsHumanly(t *testing.T) {
+	cases := []struct {
+		gap  time.Duration
+		want string
+	}{
+		{0, "just now"},
+		{30 * time.Second, "just now"},
+		{1 * time.Minute, "1m ago"},
+		{30 * time.Minute, "30m ago"},
+		{1 * time.Hour, "1h ago"},
+		{2 * time.Hour, "2h ago"},
+		{24 * time.Hour, "1d ago"},
+		{5 * 24 * time.Hour, "5d ago"},
+	}
+	for _, c := range cases {
+		now := time.Date(2026, 9, 12, 12, 0, 0, 0, time.Local)
+		msgs := []domain.ChatMessage{
+			{ID: "m1", Author: "x", Body: "single post", CreatedAt: now.Add(-c.gap)},
+		}
+		panel := view.NewChatPanel(msgs, "", now, nil)
+		if panel.Silence != c.want {
+			t.Errorf("gap %v: Silence = %q, want %q", c.gap, panel.Silence, c.want)
+		}
+	}
+}
+
+// TestChatPanel_EmptyHasNoLatestOrSilence: an empty page does NOT report
+// a last activity time. Rendering "last at HH:MM · 0s ago" for a panel
+// with zero entries would be a worse lie than no line at all — there is
+// no last activity to report, so the template's `{{if .Chat.LatestAt}}`
+// guard skips the whole element.
+func TestChatPanel_EmptyHasNoLatestOrSilence(t *testing.T) {
+	panel := view.NewChatPanel(nil, "", chatFixtureNow, nil)
+	if !panel.LatestAt.IsZero() {
+		t.Fatalf("LatestAt = %v, want zero for an empty panel", panel.LatestAt)
+	}
+	if panel.Silence != "" {
+		t.Fatalf("Silence = %q, want empty for an empty panel", panel.Silence)
+	}
+}
+
+// TestBoardPage_ThoughtsHeaderShowsLastAndSilence (KANB-39): the board
+// page renders "last HH:MM · silence" inside the thoughts panel header
+// when there are messages, and renders NEITHER (not "0s ago") when
+// there are none. A "online" dot is forbidden by the brief.
+func TestBoardPage_ThoughtsHeaderShowsLastAndSilence(t *testing.T) {
+	withMsgs := boardWithChat(view.NewChatPanel(chatFixtureMsgs, "", chatFixtureNow, nil), true)
+	html := renderProgress(t, "page-board", view.SamplePage("Test", "board", withMsgs))
+
+	if !strings.Contains(html, "chat-panel-silence") {
+		t.Fatal("the thoughts panel header is missing its silence line (KANB-39)")
+	}
+	if !strings.Contains(html, "last ") {
+		t.Fatal("the silence line is missing the 'last' prefix")
+	}
+	// The full RFC3339 of the most recent message lands in the
+	// hover title — same rule the existing chat-entry uses, so the
+	// two cannot show different times for the same instant.
+	if !strings.Contains(html, chatFixtureMsgs[0].CreatedAt.Format(time.RFC3339)) {
+		t.Fatal("the silence line lost the RFC3339 hover title")
+	}
+	// KANB-39: NO online indicator — neither a CSS class the owner
+	// could mistake for a status dot, nor a data-attribute the board
+	// might later wire to one. The literal word "online" CAN appear
+	// inside the agent-setup prompt text ("...never shows an online
+	// dot...") — that is the prompt explaining WHY there is no such
+	// indicator, not the indicator itself. The check below looks for
+	// the shapes the indicator would actually take.
+	for _, marker := range []string{
+		"online-dot", "agent-active", "agent-active-dot",
+		"is-online", "agent-live", "is-live-agent",
+		"data-online", "data-agent-active",
+	} {
+		if strings.Contains(html, marker) {
+			t.Fatalf("page carries a forbidden %q online-indicator shape", marker)
+		}
+	}
+
+	empty := boardWithChat(view.NewChatPanel(nil, "", chatFixtureNow, nil), true)
+	emptyHTML := renderProgress(t, "page-board", view.SamplePage("Test", "board", empty))
+	// The chat-panel-silence class only appears when LatestAt is non-zero.
+	// The page also has the "online" word in the standing prompt (the
+	// prompt explains why there is no online indicator), so checking
+	// for the literal "online" would always trip — look for the class
+	// name that the silence line carries.
+	if strings.Contains(emptyHTML, "chat-panel-silence") {
+		t.Fatal("an empty panel still rendered the silence line (KANB-39: no last activity to report)")
+	}
+}
+
 // TestChatTextEscaped: message bodies are stored verbatim by the service and
 // must arrive on the page as TEXT — a script tag is escaped and inert, an
 // ampersand is encoded, and any non-ASCII alphabet passes through untouched.

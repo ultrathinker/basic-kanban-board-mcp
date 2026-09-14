@@ -130,6 +130,7 @@ var standardPrompts = []PromptCard{
 			"- Always send if_version on fields that compete with other writers; on a conflict, merge and retry.\n" +
 			"- Never send an \"actor\" field — identity comes from the bearer token.\n" +
 			"- Creating or reconfiguring a project is an admin action; if you lack admin scope, ask the human instead of guessing.\n\n" +
+			"Thoughts feed (KANB-39): post the FIRST thought at the start of work, then KEEP POSTING as the task moves through its stages — one post per stage transition (claimed, started, blocked, unblocked, finished). Pulse roughly every five minutes of ACTIVE work — not on a wall clock, only while you are actually doing things for the task — so a long quiet stretch between posts is the honest signal that nothing has happened, not invented activity. Always name the REASON when you stop (waiting on a tool, waiting on a human, paused for the night), and always write a final SUMMARY post when you finish or stop. The board shows the time of the last post and the gap since, and never shows an \"online\" dot — it does not know whether your process is alive, and a fake indicator would lie exactly when a real failure matters most.\n\n" +
 			"Always reply to the human in the language they are writing in. The board is English; the conversation is not.",
 	},
 	{
@@ -181,6 +182,15 @@ type ChatEntry struct {
 	// never user input and needs no escaping, but html/template escapes it
 	// like any other field anyway.
 	AuthorColor string
+	// CreatedAt is the post's actual moment on the server's clock — UTC,
+	// stored verbatim. The template never prints it directly; the visible
+	// `When` is the same instant formatted by chatEntryTime, and the
+	// `ChatPanel.LatestAt` (KANB-39) reads it through here so the panel
+	// header can name "last activity" in absolute terms. Keeping the raw
+	// time on the entry, rather than only the formatted string, means a
+	// future change to the time format cannot silently drift from the
+	// header's "last at HH:MM" — both read the same field.
+	CreatedAt time.Time
 	// When is the compact ABSOLUTE timestamp shown next to the message:
 	// hours:minutes for a message posted today, a date-qualified form for
 	// anything older (see chatEntryTime, which reuses chart.go's own
@@ -210,10 +220,27 @@ type ChatEntry struct {
 // restore, or to follow. What keeps the panel a readable length instead is
 // the initial cap of chatInitialLimit entries with the rest behind "show
 // more" (KANB-24).
+//
+// KANB-39: LatestAt is the moment of the most recent post on the page
+// (entries[0].CreatedAt; zero when the page is empty), and Silence is the
+// human-readable gap between LatestAt and `now` ("2h ago", "12d ago") —
+// the panel header prints both, so a long pause is visible without an
+// invented "agent active" indicator. The board does NOT know whether the
+// agent process is alive; it only knows the last time an agent actually
+// said something, which is the honest signal.
 type ChatPanel struct {
 	Entries    []ChatEntry
 	Count      int
 	NextCursor string // keyset cursor for older messages; empty when exhausted
+	// LatestAt is the time the panel's most recent entry was posted (zero
+	// when the page has no entries). Carried through to the template so
+	// the header can name "last activity" in absolute terms — same shape
+	// as chatEntryTime, so the two cannot drift.
+	LatestAt time.Time
+	// Silence is the human-readable gap between LatestAt and "now" at the
+	// moment the page was rendered ("2h ago", "12d ago"). Zero when the
+	// page is empty.
+	Silence string
 }
 
 // NewChatPanel maps one ChatList page onto the panel view. now anchors the
@@ -222,6 +249,12 @@ type ChatPanel struct {
 // order, so NewChatPanel maps fields via ChatEntriesNewestFirst without
 // reordering — the same helper the "older messages" endpoint uses for its
 // pages, so the two rendering paths cannot drift apart.
+//
+// KANB-39: also captures LatestAt (the time of the most recent post on
+// the page, zero when empty) and Silence (the human-readable gap between
+// LatestAt and `now` — the same relTime vocabulary the activity feed uses,
+// so a "1h ago" on the activity row and a "1h" on the thoughts header
+// cannot drift).
 //
 // knownKeys is the set of task keys (canonical uppercase form) that the
 // caller has already confirmed exist, for exactly the messages in this page
@@ -232,11 +265,20 @@ type ChatPanel struct {
 // and simply means no message body gets a link, which is safe.
 func NewChatPanel(msgs []domain.ChatMessage, nextCursor string, now time.Time, knownKeys map[string]struct{}) *ChatPanel {
 	entries := ChatEntriesNewestFirst(msgs, now, knownKeys)
-	return &ChatPanel{
+	p := &ChatPanel{
 		Entries:    entries,
 		Count:      len(entries),
 		NextCursor: nextCursor,
 	}
+	// KANB-39: only set LatestAt / Silence when there IS a most-recent
+	// post. Empty page -> zero values, so the template's "if" guard skips
+	// the line entirely (rendering "0s ago" or "never" would be a worse
+	// lie than nothing — there is no last activity to report).
+	if len(entries) > 0 {
+		p.LatestAt = entries[0].CreatedAt
+		p.Silence = relTime(p.LatestAt, now)
+	}
+	return p
 }
 
 // ChatEntriesNewestFirst maps a ChatList page (newest first, the service's
@@ -257,6 +299,7 @@ func ChatEntriesNewestFirst(msgs []domain.ChatMessage, now time.Time, knownKeys 
 			ID:          m.ID,
 			Author:      m.Author,
 			AuthorColor: authorColorClass(m.Author),
+			CreatedAt:   m.CreatedAt,
 			When:        chatEntryTime(m.CreatedAt, now),
 			FullTime:    m.CreatedAt.Format(time.RFC3339),
 			Text:        m.Body,

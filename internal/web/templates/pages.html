@@ -156,6 +156,14 @@
           <span aria-hidden="true">⟳</span>
         </button>
         <span class="mono text-subtle">{{.Chat.Count}}</span>
+        {{- /* KANB-39: last activity + silence. Two facts, never an
+             "online" dot — the board does not know whether the agent
+             process is alive, it only knows the last moment an agent
+             said something. Rendered together as "last HH:MM · silence
+             ago" so a long pause is visible without inventing a
+             status. Zero LatestAt (empty panel) skips the line entirely
+             — there is no last activity to report, not "0s ago". */ -}}
+        {{if .Chat.Silence}}<span class="mono text-subtle chat-panel-silence" title="Last activity time and silence">last {{.Chat.LatestAt.Format "15:04"}} · {{.Chat.Silence}}</span>{{end}}
         <span class="spacer"></span>
         <button type="button" class="section-toggle" data-thoughts-toggle aria-controls="panel-section-thoughts-body" aria-expanded="true">hide</button>
       </header>
