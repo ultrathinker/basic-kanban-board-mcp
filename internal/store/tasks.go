@@ -107,6 +107,11 @@ func (r *taskRepo) Create(tx Tx, t *domain.Task) error {
 		}
 		return fmt.Errorf("store: insert task: %w", err)
 	}
+	// KANB-30: the lifecycle journal is written here, in the mutation's own
+	// transaction, so a rollback takes the entry with it.
+	if err := r.s.taskHistory().recordCreated(tx, t); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -155,6 +160,12 @@ func (r *taskRepo) Update(tx Tx, t *domain.Task, ifVersion *int) error {
 	if err := r.validateReparent(tx, t); err != nil {
 		return err
 	}
+	// KANB-30: read the estimate and parent this Update is about to overwrite,
+	// so the journal entry can carry both halves of the change.
+	projectID, before, err := r.s.taskHistory().lifecycleBefore(tx, t.ID)
+	if err != nil {
+		return err
+	}
 	tagsJSON, err := encodeJSON(t.Tags)
 	if err != nil {
 		return err
@@ -191,6 +202,10 @@ func (r *taskRepo) Update(tx Tx, t *domain.Task, ifVersion *int) error {
 	n, _ := res.RowsAffected()
 	if n == 0 {
 		return domain.NotFound("task", t.ID)
+	}
+	after := taskLifecycleState{estimate: t.Estimate, parent: t.ParentID}
+	if err := r.s.taskHistory().recordContentChange(tx, projectID, t.ID, t.UpdatedBy, before, after); err != nil {
+		return err
 	}
 	t.Version++
 	return nil
@@ -412,6 +427,12 @@ func (r *taskRepo) Archive(tx Tx, id string, archived bool, actor string) error 
 	if err != nil {
 		return err
 	}
+	// KANB-30: the journal needs the flag as it stands before the write, since
+	// Archive is idempotent and a no-op call must not record a change.
+	projectID, before, err := r.s.taskHistory().lifecycleBefore(tx, id)
+	if err != nil {
+		return err
+	}
 	// archived_at is TEXT in the schema and every reader parses it with
 	// parseTime, so it has to be written in the canonical layout — handing
 	// the driver a time.Time lets it choose its own encoding.
@@ -430,6 +451,9 @@ func (r *taskRepo) Archive(tx Tx, id string, archived bool, actor string) error 
 	n, _ := res.RowsAffected()
 	if n == 0 {
 		return domain.NotFound("task", id)
+	}
+	if err := r.s.taskHistory().recordArchive(tx, projectID, id, actor, before.archived, archived); err != nil {
+		return err
 	}
 	return nil
 }
@@ -563,6 +587,12 @@ func (r *taskRepo) Move(tx Tx, id, columnID string, rank int64, actor string) er
 			"Use backlog, active or done.")
 	}
 
+	// KANB-30: the column the card is leaving, and what that column means.
+	projectID, before, err := r.s.taskHistory().lifecycleBefore(tx, id)
+	if err != nil {
+		return err
+	}
+
 	var curColumn string
 	var startedAt, doneAt sql.NullString
 	if err := tw.tx.QueryRowContext(tw.ctx(),
@@ -610,6 +640,9 @@ func (r *taskRepo) Move(tx Tx, id, columnID string, rank int64, actor string) er
 	n, _ := res.RowsAffected()
 	if n == 0 {
 		return domain.NotFound("task", id)
+	}
+	if err := r.s.taskHistory().recordMove(tx, projectID, id, actor, before, columnID, kind); err != nil {
+		return err
 	}
 	return nil
 }

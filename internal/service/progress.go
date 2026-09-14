@@ -307,6 +307,13 @@ func (s *svc) ProjectProgress(ctx context.Context, a Actor, in ProjectProgressIn
 		if share, ok := autoPercent(result.DoneTasks, result.TotalTasks); ok {
 			result.Auto = &share
 		}
+		// KANB-30: hand out the moment the lifecycle journal became
+		// trustworthy, so nothing draws a history it does not have.
+		origin, err := s.store.TaskHistory().Origin(tx)
+		if err != nil {
+			return err
+		}
+		result.HistoryStartsAt = origin
 		return nil
 	})
 	if err != nil {

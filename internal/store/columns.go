@@ -96,6 +96,21 @@ func (r *columnRepo) Update(tx Tx, c *domain.Column) error {
 			"Use one of: backlog, active, done.")
 	}
 	tw := tx.(*txWrap)
+	// KANB-30: a column's kind is what decides whether the cards sitting in it
+	// count as done. Changing it finishes (or un-finishes) every one of them
+	// without touching a single task row, so the lifecycle journal has to hear
+	// about it or a replay would quietly disagree with the live board.
+	var projectID string
+	var prevKind domain.Kind
+	err := tw.tx.QueryRowContext(tw.ctx(),
+		"SELECT project_id, kind FROM columns WHERE id = ?", c.ID,
+	).Scan(&projectID, &prevKind)
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.NotFound("column", c.ID)
+	}
+	if err != nil {
+		return fmt.Errorf("store: read column kind: %w", err)
+	}
 	res, err := tw.tx.ExecContext(tw.ctx(), `
 		UPDATE columns SET name=?, position=?, kind=?, wip_limit=?
 		WHERE id=?`,
@@ -107,6 +122,13 @@ func (r *columnRepo) Update(tx Tx, c *domain.Column) error {
 	n, _ := res.RowsAffected()
 	if n == 0 {
 		return domain.NotFound("column", c.ID)
+	}
+	actor, _ := actorFromTx(tx)
+	if actor == "" {
+		actor = "system"
+	}
+	if err := r.s.taskHistory().recordColumnKind(tx, projectID, c.ID, actor, prevKind, c.Kind); err != nil {
+		return err
 	}
 	return nil
 }

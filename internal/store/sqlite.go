@@ -428,6 +428,17 @@ func (s *sqlStore) Chat() ChatRepo {
 func (s *sqlStore) Events() EventRepo {
 	return s.repo("events", func() any { return &eventRepo{s: s} }).(EventRepo)
 }
+func (s *sqlStore) TaskHistory() TaskHistoryRepo {
+	return s.taskHistory()
+}
+
+// taskHistory is the store-internal handle on the lifecycle journal. The
+// mutation paths use this rather than the exported TaskHistory() so they get
+// the concrete type and its record* helpers, which are deliberately not part
+// of the public repo interface: nothing outside the store may append here.
+func (s *sqlStore) taskHistory() *taskHistoryRepo {
+	return s.repo("task_history", func() any { return &taskHistoryRepo{s: s} }).(*taskHistoryRepo)
+}
 func (s *sqlStore) Tokens() TokenRepo {
 	return s.repo("tokens", func() any { return &tokenRepo{s: s} }).(TokenRepo)
 }

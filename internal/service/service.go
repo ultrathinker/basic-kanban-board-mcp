@@ -747,6 +747,14 @@ type ProjectProgressResult struct {
 	// purpose as TaskProgressItem.Tracks, for the project-level scope. Empty
 	// when nobody assessed the project as a whole.
 	ManualTracks []AssessorTrack
+	// HistoryStartsAt is the instant from which the board's lifecycle journal
+	// is trustworthy — the moment migration 0006 ran (KANB-30). Everything
+	// before it happened while nothing was recording: cards moved, were
+	// finished, reopened and archived, and none of that was written down. It
+	// is returned so a renderer can draw NOTHING before this instant instead
+	// of a line reconstructed from created_at. Half a truth on a chart is
+	// worse than an honest gap, because the reader cannot see which half.
+	HistoryStartsAt time.Time
 }
 
 // ProgressHistoryInput asks for the full mark history behind one progress

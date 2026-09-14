@@ -69,6 +69,10 @@ type Store interface {
 	Progress() ProgressRepo
 	Chat() ChatRepo
 	Events() EventRepo
+	// TaskHistory is the permanent task lifecycle journal (KANB-30). It is
+	// written by the store itself inside each mutation's transaction; callers
+	// only read it.
+	TaskHistory() TaskHistoryRepo
 	Tokens() TokenRepo
 	Sessions() SessionRepo
 	Idempotency() IdempotencyRepo
