@@ -93,10 +93,11 @@ The web interface (`http://127.0.0.1:8080/`) uses browser cookie sessions.
 - Lifespans: 7 days idle timeout, 30 days absolute timeout.
 
 ### Cross-Site Request Forgery (CSRF) Protection
-Browser-driven state mutations (form POSTs and htmx fragment calls) are protected by a double-submit CSRF cookie pattern:
-1. On page load, the server issues an opaque, cryptographically random CSRF token via cookie (`kanban_csrf`).
+Browser-driven state mutations (form POSTs and htmx fragment calls) are protected by a per-session CSRF token:
+1. When a session is established, the server derives a per-session token: `HMAC-SHA256(per-process key, session id)`, truncated to the same byte length a random `IssueCSRF` token would carry. The derived value is identical on every render of the same session, which is what lets the SSE-driven board page re-read itself without invalidating its own `<meta name="csrf-token">`. The session cookie is `HttpOnly`, so a cross-origin attacker who can write a sibling cookie cannot produce the derived token — only the session itself can.
 2. HTML templates include this token in a hidden `<input type="hidden" name="csrf_token" value="...">` field or in the `X-CSRF-Token` header.
-3. Every mutating UI endpoint (`/fragments/*`, `/admin/*`, `/logout`) validates that the request value matches the cookie value using constant-time comparison.
+3. Every mutating UI endpoint (`/fragments/*`, `/admin/*`, `/logout`) verifies the request value against the derived value using constant-time comparison. A request without a session (the login form) keeps the legacy stateless double-submit check: the form value must equal the `kanban_csrf` cookie's value, and the cookie itself is the only anchor.
+4. **Why derive from the session id rather than mint a fresh random token on every render.** The board page re-loads itself over GET after every SSE signal, so a per-render token would mean every signal invalidates the form the user might submit next. The previous workaround — reuse whatever value the request's own `kanban_csrf` cookie carried, validated only for SHAPE — meant the server embedded a token the CLIENT supplied; a sibling-host cookie-write could pin that token to a known value. Derivation replaces shape-only validation with an authenticity check the client cannot forge.
 
 ### Bearer Token Exemption (Deliberate Design)
 API requests authenticated via `Authorization: Bearer ...` or `X-API-Key: ...` are **exempt from CSRF validation by design**.

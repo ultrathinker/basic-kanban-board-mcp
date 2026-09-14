@@ -10,7 +10,7 @@
 4. **Mutate fields:** When editing mutable fields (title, body, column, acceptance criteria, etc.), always provide `if_version` from your previous read. If a conflict occurs, merge into `error.current` and retry with that version.
 5. **Finish work:** `task_update(patches: [{key: "KEY-1", column: "Done", if_version: N}])`.
 
-## The Nine MCP Tools
+## The MCP Tools (registry-derived count: see docs/MCP-TOOLS.md)
 
 - `board_get`: Read the board. Default is token-cheap compact text grammar (`compact_version=1`); `format: "json"` gives pretty JSON text. Output structuredContent always full JSON.
 - `task_next`: Find, claim, or start the next ready task. Algorithm orders by priority desc → due_at asc → rank asc. Returns `data.tasks[]` with `meta.reasons`.
@@ -21,6 +21,10 @@
 - `task_claim`: Atomically claim, renew, or release a task lease (CAS). Leases do not bump `version`.
 - `task_remove`: Soft archive (or restore) tasks in batches. Hard delete is CLI-only (`kanban task purge`). Returns `data.items[]`.
 - `project_upsert`: Create or update project configuration and workflow columns. Requires explicit `mode: "create"` or `mode: "update"` to prevent typos from forking the board.
+- `project_post`: Post a live progress update to the project chat feed.
+- `progress_set`: Record a progress assessment and a forecast for a task or a project.
+- `progress_history`: Read the full mark history behind one metric.
+- `board_guide`: Read the operating guide and the registry snapshot (tool count + per-tool summary).
 
 ## Key Rules for AI Models
 
