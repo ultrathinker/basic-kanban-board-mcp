@@ -329,6 +329,13 @@ func (w *Web) handleProgressChart(rw http.ResponseWriter, r *http.Request) {
 		// missing data.
 		Forecast: view.NewForecastChartView(result.Marks, view.DefaultChartWidth, view.DefaultChartHeight),
 		Items:    view.NewItemsChartView(result.Replay, view.DefaultChartWidth, view.DefaultChartHeight),
+		// KANB-53: the historical readiness curve, from the same replay, so
+		// its caption (service's own sentence about point-in-time estimates)
+		// always has the curve beside it. Nil for a task scope (no replay is
+		// asked for) and when nothing was ever estimated — a frame around
+		// nothing, with the warning but no picture, would be worse than
+		// neither.
+		Readiness: view.NewReadinessChartView(result.Replay, view.DefaultChartWidth, view.DefaultChartHeight),
 	}
 	if frag.Empty() {
 		// Nothing to draw at all: render the empty body app.js already

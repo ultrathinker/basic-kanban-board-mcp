@@ -388,12 +388,13 @@ func itemsStepPath(b itemsBounds, points []service.HistoryPoint, pick func(servi
 // apart is the same discipline that keeps "assessed" and "tasks done" as
 // two bars instead of one blended number.
 type ProgressChartFragment struct {
-	Progress *ProgressChartView
-	Forecast *ForecastChartView
-	Items    *ItemsChartView
+	Progress  *ProgressChartView
+	Forecast  *ForecastChartView
+	Items     *ItemsChartView
+	Readiness *ReadinessChartView
 }
 
 // Empty reports whether there is nothing at all to render.
 func (f *ProgressChartFragment) Empty() bool {
-	return f == nil || (f.Progress == nil && f.Forecast == nil && f.Items == nil)
+	return f == nil || (f.Progress == nil && f.Forecast == nil && f.Items == nil && f.Readiness == nil)
 }

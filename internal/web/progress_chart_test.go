@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"html"
 	"net/http"
 	"strings"
 	"testing"
@@ -192,11 +193,20 @@ func chartDetailFixture() *service.ProgressHistoryResult {
 		},
 		Total: 2,
 		Replay: []service.HistoryPoint{
-			{At: base, TotalTasks: 4, OpenTasks: 4, DoneTasks: 0},
-			{At: base.Add(2 * time.Hour), TotalTasks: 9, OpenTasks: 3, DoneTasks: 6},
+			{At: base, TotalTasks: 4, OpenTasks: 4, DoneTasks: 0,
+				Readiness: service.EstimateReadiness{Basis: service.ReadinessEstimates,
+					Percent: readinessPct(25), Coverage: "2 of 4 estimated",
+					HistoricalNote: service.HistoricalReadinessNote}},
+			{At: base.Add(2 * time.Hour), TotalTasks: 9, OpenTasks: 3, DoneTasks: 6,
+				Readiness: service.EstimateReadiness{Basis: service.ReadinessEstimates,
+					Percent: readinessPct(67), Coverage: "4 of 5 estimated",
+					HistoricalNote: service.HistoricalReadinessNote}},
 		},
 	}
 }
+
+// readinessPct is the local shorthand for the optional readiness percent.
+func readinessPct(v int) *int { return &v }
 
 // etaAt is the local shorthand for optional forecast dates in fixtures.
 func etaAt(t time.Time, d time.Duration) *time.Time {
@@ -260,6 +270,29 @@ func TestProgressChartDetail_ItemsAreReadOnlyForTheProjectScope(t *testing.T) {
 	do(w, "GET", "/p/BMB/progress/chart?task=BMB-1", nil, sessionCookie(sess))
 	if svc.lastIn.IncludeReplay {
 		t.Error("a per-task chart asked for the project's journal replay, paying for a read it cannot use")
+	}
+}
+
+// TestProgressChart_ReadinessNoteReachesTheFragment (KANB-53): the sentence
+// the service stamps on every replayed point must reach the page standing
+// next to the readiness curve — the whole point of the note is to be in
+// plain sight where the early, "wrong-looking" points are visible, not in a
+// tooltip behind a click.
+func TestProgressChart_ReadinessNoteReachesTheFragment(t *testing.T) {
+	svc := &progressChartStubService{result: chartDetailFixture()}
+	w, sess := newProgressChartTestWeb(t, svc)
+	rw := do(w, "GET", "/p/BMB/progress/chart", nil, sessionCookie(sess))
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200\n%s", rw.Code, rw.Body.String())
+	}
+	body := rw.Body.String()
+	if !strings.Contains(body, `data-series="readiness"`) {
+		t.Errorf("the fragment has no readiness curve:\n%s", body)
+	}
+	// html/template escapes the apostrophe mechanically; the comparison is
+	// still against the service constant, so a reworded note would not match.
+	if !strings.Contains(body, html.EscapeString(service.HistoricalReadinessNote)) {
+		t.Errorf("the readiness note did not reach the fragment verbatim:\n%s", body)
 	}
 }
 

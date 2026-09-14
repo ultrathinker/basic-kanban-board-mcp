@@ -995,17 +995,19 @@ select, .field input, .field textarea {
   .modal.modal-wide .modal-body { overflow-y: auto; }
   .chart-detail-plot { min-height: 12rem; }
 }
-.items-chart-caption {
+.chart-caption {
   display: flex;
   align-items: baseline;
   gap: 0.4rem;
   margin-bottom: 0.25rem;
 }
-/* KANB-34: the scope sentence under the item chart. The counts come from the
-   lifecycle journal for the WHOLE project — the board's column filter does
-   not reach them, and the panel says so in words so the numbers are never
-   read as filtered ones. */
-.items-chart-note {
+/* KANB-34: the scope sentence under the item chart; KANB-53 reuses it for
+   the readiness note, which must stand in plain sight next to its curve.
+   The counts come from the lifecycle journal for the WHOLE project — the
+   board's column filter does not reach them — and the readiness curve is
+   computed from the estimates current at each instant. Both say so in words
+   so the numbers are never read as something they are not. */
+.chart-note {
   margin: 0.25rem 0 0;
   font-size: 0.72rem;
 }

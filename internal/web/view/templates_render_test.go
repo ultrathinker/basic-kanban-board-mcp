@@ -268,7 +268,10 @@ func renderCases() []renderCase {
 				"<svg",
 				`data-assessor="alpha"`,
 			},
-			notWants: []string{"<no value>", "items-chart"},
+			notWants: []string{"<no value>", "items-chart", "readiness-chart",
+				// The readiness note must not appear without a readiness
+				// curve to stand beside.
+				"Historical points use the estimates"},
 		},
 		{
 			// The project scope carries a second panel: the item counts.
@@ -301,6 +304,41 @@ func renderCases() []renderCase {
 				`data-chart-zoom="items"`,
 			},
 			notWants: []string{"<no value>"},
+		},
+		{
+			// KANB-53: the historical readiness panel. The fixture's note is
+			// deliberately NOT the service constant: the template must print
+			// the note the POINT carries ({{.Readiness.Note}}), and a
+			// sentence hardcoded into the markup would fail this case while
+			// still containing the real constant — so the constant is an
+			// explicit notWant here. That the constant itself survives the
+			// whole chain in a real render is pinned by the handler test in
+			// package web; that the view carries it off the points verbatim
+			// is pinned in chart_readiness_test.go.
+			name:     "progress-chart-fragment/with-readiness",
+			template: "progress-chart-fragment",
+			data: &view.ProgressChartFragment{
+				Readiness: view.NewReadinessChartView([]service.HistoryPoint{
+					{At: time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local),
+						Readiness: service.EstimateReadiness{Basis: service.ReadinessEstimates,
+							Percent: ptrInt(25), Coverage: "3 of 4 estimated",
+							HistoricalNote: "fixture note: the curve says what the estimates said then"}},
+					{At: time.Date(2026, 9, 12, 11, 0, 0, 0, time.Local),
+						Readiness: service.EstimateReadiness{Basis: service.ReadinessEstimates,
+							Percent: ptrInt(50), Coverage: "3 of 4 estimated",
+							HistoricalNote: "fixture note: the curve says what the estimates said then"}},
+				}, view.DefaultChartWidth, view.DefaultChartHeight),
+			},
+			wants: []string{
+				"readiness-chart",
+				`data-series="readiness"`,
+				"fixture note: the curve says what the estimates said then",
+				"50%, 3 of 4 estimated",
+			},
+			notWants: []string{"<no value>",
+				// A hardcoded copy of the service sentence in the template
+				// would be the drift this note exists to avoid.
+				"Historical points use the estimates"},
 		},
 		{
 			// KANB-36: a fragment with all three panels. The forecast
@@ -853,6 +891,9 @@ func forecastAt(daysFromT0 int) *time.Time {
 	v := t0.Add(time.Duration(daysFromT0) * 24 * time.Hour)
 	return &v
 }
+
+// ptrInt is the shorthand for the optional percents readiness fixtures carry.
+func ptrInt(v int) *int { return &v }
 
 func columnNamed(b view.BoardModel, name string) view.ColumnView {
 	for _, c := range b.Columns {
