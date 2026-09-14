@@ -17,7 +17,7 @@ import (
 // ---------------------------------------------------------------------------
 
 // TestNested_FailedItemLeavesNothingBehind is the test that proves the
-// promise the nine tools make: a batch reports per-item results, and the
+// promise the batch tools make: a batch reports per-item results, and the
 // item reported as failed must have written nothing at all.
 //
 // Each item here does several writes before it can fail — it renames the
