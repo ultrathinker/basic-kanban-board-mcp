@@ -711,6 +711,26 @@ type ChatListResult struct {
 	Messages   []domain.ChatMessage
 	NextCursor *domain.ChatCursor
 	Cursor     string // string-encoded NextCursor, or empty if nil
+	// Meta resolves, per message id, the display data the raw rows only
+	// reference (KANB-48): who a recipient id is, what a reply answers, and
+	// whether a command has been accepted. Ids absent from the map have
+	// nothing to resolve — a plain update that addresses nobody and replies
+	// to nothing never appears here. Filled in the same read transaction as
+	// Messages, so a page can never show a quote or an acceptance that the
+	// listed messages do not have.
+	Meta map[string]ChatListEntryMeta
+}
+
+// ChatListEntryMeta is the resolved display data for ONE listed message.
+// Every field is optional: RecipientName/ExecutorName are "" when the row
+// names no token, Parent is nil when the message is not a reply, Acceptance
+// is nil until the command has actually been accepted (KANB-47) — an
+// unaccepted command must not look accepted.
+type ChatListEntryMeta struct {
+	RecipientName string // display name of Recipient, "" for unset/"all"
+	ExecutorName  string // display name of ResolvedExecutor, "" when none
+	Parent        *domain.ChatMessage // the message this one replies to
+	Acceptance    *domain.CommandAcceptance
 }
 
 type ChatMessageListResult = ChatListResult

@@ -205,6 +205,110 @@ type ChatEntry struct {
 	// linkifyChatText / CandidateTaskKeys) turned into a link. It is the only
 	// field the chat-entry template renders for the body.
 	TextHTML template.HTML
+
+	// Kind is the message's protocol kind ("update", "question", "command").
+	// The template badges only question and command: update is the quiet
+	// default, and the card is explicit that a neutral post must not LOOK
+	// like a directive — the inverse is true too, a neutral post must not
+	// carry a directive's badge.
+	Kind string
+	// Recipient is the ready-to-render address line: the participant's
+	// display name, or "all" for a broadcast. Empty when the message
+	// addresses nobody (the ordinary room-wide update).
+	Recipient string
+	// AuthorTokenID is the authorized sender of the message (tokens.id). The
+	// reply affordance carries it so "reply" can preselect the right
+	// addressee in the composer; it is never rendered as text.
+	AuthorTokenID string
+	// ReplyAuthor / ReplyText are the short quote a reply shows of the
+	// message it answers: who wrote it and the first chatQuoteMaxRunes of
+	// the body. Empty when the message is not a reply.
+	ReplyAuthor string
+	ReplyText   string
+	// Accepted marks a command whose acceptance exists (KANB-47): the
+	// "accepted" state of the three the UI distinguishes. AwaitingAccept is
+	// a command WITHOUT one — merely delivered. Both false for every other
+	// kind.
+	Accepted       bool
+	AwaitingAccept bool
+	// Tasks are the tasks the acceptance created, each with its own done
+	// state read from the linked task itself — the aggregate command state
+	// is derived here, never tracked in a parallel status machine
+	// (KANB-48). Empty for everything but an accepted command.
+	Tasks []ChatEntryTask
+}
+
+// ChatEntryTask is one linked task on an accepted command: the key the
+// template links and whether that task already sits in a done column.
+type ChatEntryTask struct {
+	Key  string
+	Done bool
+}
+
+// chatQuoteMaxRunes caps the reply quote's length. A quote is an
+// orientation hint, not a re-post: long enough to recognize the message,
+// short enough that the reply stays the loudest thing in its own bubble.
+const chatQuoteMaxRunes = 80
+
+// chatQuoteExcerpt cuts a quote source to chatQuoteMaxRunes runes, counting
+// runes not bytes so the cut lands the same way on Cyrillic and Latin text,
+// and appends the ellipsis only when something was actually cut.
+func chatQuoteExcerpt(s string) string {
+	r := []rune(s)
+	if len(r) <= chatQuoteMaxRunes {
+		return s
+	}
+	return string(r[:chatQuoteMaxRunes]) + "…"
+}
+
+// ChatEntryMeta is the resolved display data for ONE listed message, handed
+// in by the caller — the web layer resolves it through the service (see
+// service.ChatListEntryMeta) and maps it here; the view package renders
+// data it is given and fetches none of its own. Zero value is a plain
+// update: no named recipient, no quote, no acceptance.
+type ChatEntryMeta struct {
+	RecipientName string // display name of the addressed participant; "" = none/"all"
+	ExecutorName  string // the command's fixed executor; "" when none
+	ParentAuthor  string // the quoted message's author, for a reply
+	ParentBody    string // the quoted message's body, verbatim; excerpt cut here
+	Accepted      bool
+	Tasks         []ChatEntryTask
+}
+
+// ChatComposerView is the feed's composer: whether the current session may
+// post at all, and who can be addressed. Nil on the panel means no
+// composer — a read-only session renders the feed without one.
+type ChatComposerView struct {
+	CanPost    bool
+	Recipients []ChatRecipient
+}
+
+// ChatRecipient is one entry of the composer's recipient select. ID is what
+// travels as the send's recipient — "" means the coordinator default the
+// service resolves at send time, "all" is the broadcast.
+type ChatRecipient struct {
+	ID    string
+	Label string
+}
+
+// NewChatComposer assembles the recipient select in a fixed order —
+// coordinator first (the default, resolved by the service at send time for
+// the kinds that need an executor), then every participant by id, then the
+// "all" broadcast. A session without the write scope gets nil: no composer
+// renders, and the reply affordances hide with it.
+func NewChatComposer(canPost bool, coordinator string, participants []ChatRecipient) *ChatComposerView {
+	if !canPost {
+		return nil
+	}
+	label := "coordinator"
+	if coordinator != "" {
+		label += " (" + coordinator + ")"
+	}
+	recipients := make([]ChatRecipient, 0, len(participants)+2)
+	recipients = append(recipients, ChatRecipient{ID: "", Label: label})
+	recipients = append(recipients, participants...)
+	recipients = append(recipients, ChatRecipient{ID: "all", Label: "all"})
+	return &ChatComposerView{CanPost: true, Recipients: recipients}
 }
 
 // ChatPanel is the project's "AI thoughts" side panel: the short messages
@@ -241,6 +345,10 @@ type ChatPanel struct {
 	// moment the page was rendered ("2h ago", "12d ago"). Zero when the
 	// page is empty.
 	Silence string
+	// Compose is the feed's composer (KANB-48). Nil for a session without
+	// the write scope: the panel then renders read-only, and the reply
+	// affordances on the entries hide with it.
+	Compose *ChatComposerView
 }
 
 // NewChatPanel maps one ChatList page onto the panel view. now anchors the
@@ -263,8 +371,8 @@ type ChatPanel struct {
 // is rendered as plain escaped text, never as a link: this is what keeps a
 // stale or made-up key from ever becoming a broken link. A nil map is valid
 // and simply means no message body gets a link, which is safe.
-func NewChatPanel(msgs []domain.ChatMessage, nextCursor string, now time.Time, knownKeys map[string]struct{}) *ChatPanel {
-	entries := ChatEntriesNewestFirst(msgs, now, knownKeys)
+func NewChatPanel(msgs []domain.ChatMessage, nextCursor string, now time.Time, knownKeys map[string]struct{}, meta map[string]ChatEntryMeta) *ChatPanel {
+	entries := ChatEntriesNewestFirst(msgs, now, knownKeys, meta)
 	p := &ChatPanel{
 		Entries:    entries,
 		Count:      len(entries),
@@ -297,20 +405,56 @@ func NewChatPanel(msgs []domain.ChatMessage, nextCursor string, now time.Time, k
 // which renders one page of older messages to append below the panel's
 // current last entry.
 //
-// See NewChatPanel for what knownKeys means.
-func ChatEntriesNewestFirst(msgs []domain.ChatMessage, now time.Time, knownKeys map[string]struct{}) []ChatEntry {
+// See NewChatPanel for what knownKeys means. meta is the per-message
+// display data resolved by the caller (KANB-48) — see ChatEntryMeta; a nil
+// map is valid and renders every entry as the plain room-wide update it
+// then is, which is also what the pre-KANB-48 callers pass.
+func ChatEntriesNewestFirst(msgs []domain.ChatMessage, now time.Time, knownKeys map[string]struct{}, meta map[string]ChatEntryMeta) []ChatEntry {
 	entries := make([]ChatEntry, len(msgs))
 	for i, m := range msgs {
-		entries[i] = ChatEntry{
-			ID:          m.ID,
-			Author:      m.Author,
-			AuthorColor: authorColorClass(m.Author),
-			CreatedAt:   m.CreatedAt,
-			When:        chatEntryTime(m.CreatedAt, now),
-			FullTime:    m.CreatedAt.Format(time.RFC3339),
-			Text:        m.Body,
-			TextHTML:    linkifyChatText(m.Body, knownKeys),
+		e := ChatEntry{
+			ID:            m.ID,
+			Author:        m.Author,
+			AuthorColor:   authorColorClass(m.Author),
+			CreatedAt:     m.CreatedAt,
+			When:          chatEntryTime(m.CreatedAt, now),
+			FullTime:      m.CreatedAt.Format(time.RFC3339),
+			Text:          m.Body,
+			TextHTML:      linkifyChatText(m.Body, knownKeys),
+			Kind:          string(m.Kind),
+			AuthorTokenID: m.AuthorTokenID,
 		}
+		if e.Kind == "" {
+			e.Kind = string(domain.MessageUpdate)
+		}
+		if m.Recipient == "all" {
+			// A broadcast names its audience even where no token name is
+			// involved — the addressing is the fact, not the name.
+			e.Recipient = "all"
+		}
+		if mt, ok := meta[m.ID]; ok {
+			if mt.RecipientName != "" {
+				e.Recipient = mt.RecipientName
+			} else if m.Recipient == "all" {
+				e.Recipient = "all"
+			}
+			// A question/command fixed on one executor shows THAT person —
+			// the one who must answer or accept — ahead of the raw
+			// addressing.
+			if mt.ExecutorName != "" {
+				e.Recipient = mt.ExecutorName
+			}
+			if mt.ParentAuthor != "" || mt.ParentBody != "" {
+				e.ReplyAuthor = mt.ParentAuthor
+				e.ReplyText = chatQuoteExcerpt(mt.ParentBody)
+			}
+			e.Accepted = mt.Accepted
+			e.Tasks = mt.Tasks
+			e.AwaitingAccept = m.Kind == domain.MessageCommand && !mt.Accepted
+		} else {
+			e.AwaitingAccept = m.Kind == domain.MessageCommand
+		}
+		entries[i] = e
 	}
 	return entries
 }

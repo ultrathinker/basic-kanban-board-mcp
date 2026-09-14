@@ -151,6 +151,9 @@ func (w *Web) routes(mux *http.ServeMux) {
 	// only an explicit click. See handleChatOlder's doc comment for the
 	// response shape.
 	mux.HandleFunc("GET /p/{key}/chat/older", w.handleChatOlder)
+	// JS-driven fragment mutation: the thoughts panel's composer (KANB-48).
+	// POST + CSRF like the /fragments/* handlers; the body is the message.
+	mux.HandleFunc("POST /p/{key}/chat", w.handleChatPost)
 	// JS-driven fragment, not a page: a progress bar's history chart,
 	// fetched the first time it is clicked open. See handleProgressChart's
 	// own doc comment for the response shape.

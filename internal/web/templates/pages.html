@@ -143,7 +143,7 @@
          legacy .chat-panel-head class is kept on this header so the
          existing app.js hooks (data-chat-refresh, the count print) keep
          finding the same DOM without changes. */ -}}
-    <section class="panel-section panel-section-thoughts" aria-labelledby="panel-section-thoughts-label">
+    <section class="panel-section panel-section-thoughts" aria-labelledby="panel-section-thoughts-label"{{if .Chat.Compose}} data-can-post{{end}}>
       <header class="panel-section-head chat-panel-head">
         <span class="caps" id="panel-section-thoughts-label">thoughts</span>
         {{- /* KANB-22: a refresh icon in the panel HEADER — outside .chat-feed,
@@ -198,6 +198,41 @@
           <button type="button" data-chat-show-more>Show more</button>
           <button type="button" data-chat-hide-history hidden>Hide all history</button>
         </div>
+        {{end}}
+        {{- /* KANB-48: the composer. Rendered only when the session may
+             post (Chat.Compose nil otherwise); the type select is a real,
+             always-visible <select> because the card's warning is exactly
+             about a neutral post silently becoming a command — no hidden
+             default, no mode remembered behind the user's back. The
+             recipient "coordinator" option posts with no explicit
+             recipient, which the service resolves against the project's
+             coordinator at send time for the kinds that need one. app.js
+             owns draft survival (nothing in this form is inside a live
+             region, so no refresh can wipe it) and the per-attempt
+             idempotency key. */ -}}
+        {{if .Chat.Compose}}
+        <form class="chat-compose" data-chat-compose>
+          <div class="chat-compose-reply" data-chat-compose-reply hidden>
+            <span class="chat-compose-reply-quote text-subtle text-xs" data-chat-compose-reply-quote></span>
+            <button type="button" class="icon-btn" data-chat-compose-reply-cancel aria-label="Cancel the reply" title="Cancel the reply">&#10005;</button>
+          </div>
+          <textarea class="chat-compose-text" data-chat-compose-text rows="2" aria-label="Message text" placeholder="Write to the project feed&#8230;"></textarea>
+          <div class="chat-compose-row">
+            <label class="text-subtle text-xs" for="chat-compose-recipient">to</label>
+            <select id="chat-compose-recipient" class="chat-compose-select" data-chat-compose-recipient>
+              {{range .Chat.Compose.Recipients}}<option value="{{.ID}}">{{.Label}}</option>{{end}}
+            </select>
+            <label class="text-subtle text-xs" for="chat-compose-kind">type</label>
+            <select id="chat-compose-kind" class="chat-compose-select" data-chat-compose-kind>
+              <option value="update">message</option>
+              <option value="question">question</option>
+              <option value="command">command</option>
+            </select>
+            <span class="spacer"></span>
+            <button type="button" class="btn btn-sm" data-chat-compose-send>send</button>
+          </div>
+          <p class="chat-compose-error text-xs" data-chat-compose-error hidden></p>
+        </form>
         {{end}}
       </div>
     </section>
@@ -260,10 +295,26 @@
 {{- /* chat-entry renders one thoughts-panel message. Shared by the board
      page's initial <ol> range above and by "chat-entries" below, so there is
      exactly one definition of what a chat entry looks like — the reason
-     "card" is a shared template rather than being inlined twice. */ -}}
-{{define "chat-entry"}}<li class="chat-entry" data-chat-id="{{.ID}}">
-  <div class="chat-head"><span class="chat-author {{.AuthorColor}}">{{.Author}}</span> <span class="text-subtle text-xs" title="{{.FullTime}}">{{.When}}</span></div>
+     "card" is a shared template rather than being inlined twice.
+
+     KANB-48: the entry also carries the communication protocol in plain
+     sight. question/command get a kind badge (an update stays unlabeled —
+     a neutral post must not look like a directive); a reply shows a short
+     quote of what it answers; an addressed message shows its addressee; a
+     command shows WHICH of the three states it is in — delivered
+     ("awaiting acceptance"), accepted with links to the tasks its
+     acceptance created, or those tasks' own done state inline. The
+     aggregate comes from the linked tasks, never from a parallel status
+     machine. The reply button renders on every entry; CSS shows it only
+     inside a [data-can-post] section, because whether one may post is the
+     session's property, not the message's. */ -}}
+{{define "chat-entry"}}<li class="chat-entry" data-chat-id="{{.ID}}"{{if .AuthorTokenID}} data-author-token="{{.AuthorTokenID}}"{{end}}>
+  <div class="chat-head"><span class="chat-author {{.AuthorColor}}">{{.Author}}</span>{{if or (eq .Kind "command") (eq .Kind "question")}} <span class="chat-kind">{{.Kind}}</span>{{end}} <span class="text-subtle text-xs" title="{{.FullTime}}">{{.When}}</span></div>
+  {{- if .ReplyAuthor}}<div class="chat-reply-quote text-subtle text-xs" data-chat-quote>&#8627; {{.ReplyAuthor}}: &#8220;{{.ReplyText}}&#8221;</div>{{end}}
   <div class="chat-text">{{.TextHTML}}</div>
+  {{- if .Recipient}}<div class="chat-addr text-subtle text-xs">&rarr; {{.Recipient}}</div>{{end}}
+  {{- if or .Accepted .AwaitingAccept}}<div class="chat-accept{{if .AwaitingAccept}} chat-accept-waiting{{end}}" data-chat-accept>{{if .Accepted}}accepted{{range .Tasks}} &#8594; <a href="/t/{{.Key}}">{{.Key}}</a>{{if .Done}} (done){{end}}{{end}}{{else}}awaiting acceptance{{end}}</div>{{end}}
+  <button type="button" class="chat-reply-btn text-subtle text-xs" data-chat-reply="{{.ID}}" data-chat-reply-author="{{.Author}}">reply</button>
 </li>
 {{end}}
 

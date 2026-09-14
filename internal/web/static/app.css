@@ -1318,6 +1318,106 @@ select, .field input, .field textarea {
   white-space: pre-wrap;
 }
 .chat-empty { padding: 0.75rem; }
+/* KANB-48: the communication protocol made visible on each entry, plus the
+   composer under the feed. Deliberately greyscale — the whole panel is, and
+   the three command states (awaiting / accepted / done) differ in WORDS and
+   weight, not hue, so the distinction survives the greyscale test and
+   colour blindness alike. The kind badge is a quiet caps label, the same
+   vocabulary the panel headers use; only an accepted command's task links
+   underline, because they are the one thing on the entry that opens
+   somewhere. */
+.chat-kind {
+  font-size: var(--fs-2);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--ink-muted);
+}
+.chat-reply-quote,
+.chat-addr {
+  margin-top: 0.125rem;
+  overflow-wrap: anywhere;
+}
+.chat-accept {
+  margin-top: 0.125rem;
+  font-size: var(--fs-3);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.chat-accept a { color: inherit; }
+.chat-accept-waiting {
+  font-weight: 400;
+  color: var(--ink-muted);
+}
+/* The reply affordance exists only where a composer does: the section
+   carries data-can-post when the session may write, and the button hides
+   everywhere else — entries rendered by the "older messages" endpoint land
+   inside the same section, so one rule covers every entry ever shown. */
+.chat-reply-btn {
+  display: none;
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  font-size: var(--fs-2);
+  color: var(--ink-muted);
+  text-decoration: underline;
+  text-decoration-color: var(--rule-strong);
+  cursor: pointer;
+  margin-top: 0.125rem;
+}
+[data-can-post] .chat-reply-btn { display: inline-block; }
+.chat-reply-btn:hover {
+  color: var(--ink);
+  text-decoration-color: currentColor;
+}
+/* The composer: one column, a reply strip that appears above the text only
+   while a reply is armed, then one row of address/type/send. The type
+   select is never hidden nor replaced by a toggle — the card's point is
+   that what will be sent must be readable at a glance. */
+.chat-compose {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  border-top: 1px solid var(--rule);
+  padding: 0.5rem 0.75rem;
+}
+.chat-compose-reply {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.375rem;
+  border-left: 2px solid var(--rule-strong);
+  padding: 0.125rem 0.375rem;
+}
+.chat-compose-reply-quote { overflow-wrap: anywhere; }
+.chat-compose-text {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  min-height: 2.4em;
+  padding: 0.25rem 0.4rem;
+  border: 1px solid var(--rule-strong);
+  border-radius: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-size: var(--fs-3);
+}
+.chat-compose-text:focus {
+  outline: 1px solid var(--ink);
+  outline-offset: -1px;
+}
+.chat-compose-row {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  flex-wrap: wrap;
+}
+.chat-compose-select { max-width: 11rem; }
+.chat-compose-error {
+  margin: 0;
+  font-weight: 600;
+  color: var(--ink);
+}
 /* With the panel eating width, a 15rem column floor would push late
    columns onto a second row on common screens; an 11rem floor keeps a
    four-column board on one row down to ~1100px of remaining board width
