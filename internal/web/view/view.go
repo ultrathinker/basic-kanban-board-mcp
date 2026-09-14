@@ -275,7 +275,13 @@ func NewChatPanel(msgs []domain.ChatMessage, nextCursor string, now time.Time, k
 	// the line entirely (rendering "0s ago" or "never" would be a worse
 	// lie than nothing — there is no last activity to report).
 	if len(entries) > 0 {
-		p.LatestAt = entries[0].CreatedAt
+		// .Local(), for the same reason the feed's own timestamps go through
+		// formatChartTime: the header prints "last 15:04" right beside the
+		// entry it describes, and CreatedAt is stored in UTC. Printing it raw
+		// put "last 22:00" next to a post stamped 00:00 — two clocks, one
+		// line, and the reader left to guess which one they are on. KANB-39
+		// asks for the opposite: times that agree.
+		p.LatestAt = entries[0].CreatedAt.Local()
 		p.Silence = relTime(p.LatestAt, now)
 	}
 	return p

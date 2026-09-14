@@ -1,6 +1,7 @@
 package view_test
 
 import (
+	gohtml "html"
 	"regexp"
 	"strings"
 	"testing"
@@ -12,7 +13,14 @@ import (
 
 // chatFixtureNow anchors the fixture timestamps; the relative ages in the
 // rendered feed are computed against it.
-var chatFixtureNow = time.Date(2026, 9, 12, 12, 0, 0, 0, time.UTC)
+//
+// time.Local, not time.UTC. A UTC fixture hid a real defect: the panel header
+// printed "last 22:00" beside a post the feed stamped 00:00, because the
+// header printed CreatedAt raw while the feed put it through formatChartTime,
+// which converts. On a machine running UTC the two agree by accident and the
+// bug is invisible. Anchoring the fixture to the reader's own clock is what
+// makes the disagreement show up as a failure.
+var chatFixtureNow = time.Date(2026, 9, 12, 12, 0, 0, 0, time.Local)
 
 // chatFixtureMsgs is a ChatList page in the service's own order: newest
 // first. Two authors so author rendering cannot pass by accident.
@@ -49,8 +57,11 @@ func TestChatPanel_RendersMessagesWithAuthorsAndTimes(t *testing.T) {
 			t.Fatalf("panel is missing %q", want)
 		}
 	}
-	// The full timestamp rides along as the hover title.
-	if !strings.Contains(html, `title="`+chatFixtureNow.Format(time.RFC3339)+`"`) {
+	// The full timestamp rides along as the hover title. Unescaped first:
+	// html/template writes the "+" of a zone offset as &#43; inside an
+	// attribute, so a fixture on the reader's own clock would otherwise fail
+	// this on the escaping rather than on the timestamp.
+	if !strings.Contains(gohtml.UnescapeString(html), `title="`+chatFixtureNow.Format(time.RFC3339)+`"`) {
 		t.Fatal("panel does not carry the full timestamp for the hover title")
 	}
 	// The keyset cursor for older messages is preserved for the next task,
@@ -314,7 +325,7 @@ func TestBoardPage_ThoughtsHeaderShowsLastAndSilence(t *testing.T) {
 	// The full RFC3339 of the most recent message lands in the
 	// hover title — same rule the existing chat-entry uses, so the
 	// two cannot show different times for the same instant.
-	if !strings.Contains(html, chatFixtureMsgs[0].CreatedAt.Format(time.RFC3339)) {
+	if !strings.Contains(gohtml.UnescapeString(html), chatFixtureMsgs[0].CreatedAt.Format(time.RFC3339)) {
 		t.Fatal("the silence line lost the RFC3339 hover title")
 	}
 	// KANB-39: NO online indicator — neither a CSS class the owner
@@ -367,5 +378,44 @@ func TestChatTextEscaped(t *testing.T) {
 		if !strings.Contains(html, want) {
 			t.Fatalf("escaped body lost %q", want)
 		}
+	}
+}
+
+// TestChatPanel_HeaderAndFeedAgreeOnTheClock (KANB-39 item 4): the "last
+// HH:MM" in the panel header and the timestamp on the entry it describes must
+// name the same reading.
+//
+// They did not. The feed's timestamp goes through formatChartTime, which
+// converts to the reader's zone; the header printed CreatedAt raw, and chat
+// messages are stored in UTC. The result was "last 22:00" sitting directly
+// above a post stamped 00:00 — two clocks on one line, with nothing saying
+// which was which.
+//
+// The fixture builds its instant in a zone that is deliberately NOT the test
+// machine's, so the assertion means the same thing on a laptop in Warsaw and
+// on a UTC build agent. A fixture on UTC is exactly what hid this.
+func TestChatPanel_HeaderAndFeedAgreeOnTheClock(t *testing.T) {
+	// A fixed offset far from any plausible local zone, so raw-vs-converted
+	// can never coincide by luck.
+	odd := time.FixedZone("ODD", 7*3600+1800) // +07:30
+	posted := time.Date(2026, 9, 12, 23, 40, 0, 0, odd)
+	now := posted.Add(90 * time.Minute)
+
+	msgs := []domain.ChatMessage{
+		{ID: "m1", Author: "agent-alpha", Body: "the only post", CreatedAt: posted},
+	}
+	panel := view.NewChatPanel(msgs, "", now, nil)
+
+	want := posted.Local().Format("15:04")
+	if got := panel.LatestAt.Format("15:04"); got != want {
+		t.Errorf("the panel header names %q as the last activity, the reader's clock says %q.\n"+
+			"The feed converts the same instant (formatChartTime does), so the header must too — "+
+			"otherwise the two sit side by side showing different times for one post.", got, want)
+	}
+
+	m := boardWithChat(panel, true)
+	html := renderProgress(t, "page-board", view.SamplePage("Test", "board", m))
+	if !strings.Contains(html, "last "+want) {
+		t.Errorf("the rendered header does not carry %q; the page shows a different clock than the feed", "last "+want)
 	}
 }
