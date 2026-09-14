@@ -337,8 +337,13 @@ func NewForecastChartDetail(history []domain.ProgressMark) *ChartDetailView {
 	}
 }
 
-// NewItemsChartDetail builds the enlarged item-count chart.
-func NewItemsChartDetail(points []service.ItemCountPoint) *ChartDetailView {
+// NewItemsChartDetail builds the enlarged item-count chart from the journal
+// replay (KANB-34). The legend gains an "archived" entry whenever the curve
+// recorded departures, naming what the baseline ticks mean — a falling total
+// is work LEAVING, and the modal is where there is room to say so in full.
+// The axis sentence also carries the scope: these counts cover every card in
+// the project, and the board's column filter does not apply to them.
+func NewItemsChartDetail(points []service.HistoryPoint) *ChartDetailView {
 	svg := RenderItemsChart(points, DetailChartWidth, DetailChartHeight)
 	if svg == "" {
 		return nil
@@ -346,39 +351,55 @@ func NewItemsChartDetail(points []service.ItemCountPoint) *ChartDetailView {
 	first, last := points[0], points[len(points)-1]
 
 	maxTotal := 0
+	archivedTicks := 0
 	for _, p := range points {
-		if p.Total > maxTotal {
-			maxTotal = p.Total
+		if p.TotalTasks > maxTotal {
+			maxTotal = p.TotalTasks
+		}
+		if p.Archived > 0 {
+			archivedTicks++
 		}
 	}
 	peakOpen := 0
 	for _, p := range points {
-		if p.Open > peakOpen {
-			peakOpen = p.Open
+		if p.OpenTasks > peakOpen {
+			peakOpen = p.OpenTasks
 		}
 	}
 
-	return &ChartDetailView{
-		Title: "Items on the board",
-		SVG:   svg,
-		Legend: []ChartLegendEntry{
-			{
-				Label:  "total",
-				Width:  2.0,
-				Note:   fmt.Sprintf("%d -> %d — every task in the project, including work added along the way", first.Total, last.Total),
-				Points: len(points),
-			},
-			{
-				Label:  "open",
-				Dash:   itemsOpenDashArray,
-				Width:  1.4,
-				Note:   fmt.Sprintf("%d -> %d — not yet in a done column; peaked at %d", first.Open, last.Open, peakOpen),
-				Points: len(points),
-			},
+	legend := []ChartLegendEntry{
+		{
+			Label:  "total",
+			Width:  2.0,
+			Note:   fmt.Sprintf("%d -> %d — every task in the project, including work added along the way", first.TotalTasks, last.TotalTasks),
+			Points: len(points),
 		},
-		Axis:     fmt.Sprintf("number of tasks, 0 to %d", maxTotal),
+		{
+			Label:  "open",
+			Dash:   itemsOpenDashArray,
+			Width:  1.4,
+			Note:   fmt.Sprintf("%d -> %d — not yet in a done column; peaked at %d", first.OpenTasks, last.OpenTasks, peakOpen),
+			Points: len(points),
+		},
+	}
+	if archivedTicks > 0 {
+		legend = append(legend, ChartLegendEntry{
+			Label: "archived",
+			Width: 1.5,
+			Note:  fmt.Sprintf("%d archival instant(s) marked on the baseline — there the total fell because cards LEFT the project, not because they were finished", archivedTicks),
+			// The tick count, truthfully: this entry describes the ticks,
+			// and each tick stands on one replayed point.
+			Points: archivedTicks,
+		})
+	}
+
+	return &ChartDetailView{
+		Title:    "Items on the board",
+		SVG:      svg,
+		Legend:   legend,
+		Axis:     fmt.Sprintf("number of tasks, 0 to %d — every card in the project, parents included; the board filter does not apply", maxTotal),
 		Span:     spanNote(first.At, last.At),
-		Subtitle: fmt.Sprintf("%d of %d done, %d still open", last.Total-last.Open, last.Total, last.Open),
+		Subtitle: fmt.Sprintf("%d of %d done, %d still open", last.TotalTasks-last.OpenTasks, last.TotalTasks, last.OpenTasks),
 	}
 }
 

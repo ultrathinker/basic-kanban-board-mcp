@@ -889,27 +889,15 @@ type ProgressHistoryInput struct {
 	// rather than trimming the result: the bound is applied in SQL, so
 	// trimming afterwards would read every row the limit was meant to skip.
 	Limit int
-	// IncludeItems asks for the project's item-count history alongside the
-	// marks (Result.Items). It is meaningful only for the project scope — a
-	// single task has no item count — and is ignored when TaskKey is set.
-	// Off by default: it is a second read, and the only caller that wants it
-	// is the browser's chart.
-	IncludeItems bool
 	// IncludeReplay asks for the project's history REPLAYED FROM THE
-	// LIFECYCLE JOURNAL (Result.Replay), which is the honest version of the
-	// same curves: it sees reopenings, archivals and estimates as they stood
-	// at each instant, none of which tasks.done_at can remember. Like
-	// IncludeItems it is project-scope only and off by default.
+	// LIFECYCLE JOURNAL (Result.Replay). This is the ONE historical curve of
+	// the item counts (KANB-34): it sees reopenings, archivals and estimates
+	// as they stood at each instant, none of which tasks.done_at can
+	// remember, and the count chart is built from it — there is no second,
+	// created_at-based curve beside it. Project-scope only (a single task
+	// has no item count) and off by default: it is a second read, and the
+	// only caller that wants it is the browser's chart.
 	IncludeReplay bool
-}
-
-// ItemCountPoint is one step in a project's item-count history: at time At
-// the project held Total live tasks, of which Open were not in a done
-// column. Points appear only where a count actually changed.
-type ItemCountPoint struct {
-	At    time.Time
-	Total int
-	Open  int
 }
 
 // ProgressHistoryResult carries the marks in chronological order (the store's
@@ -923,9 +911,6 @@ type ProgressHistoryResult struct {
 	// Limit trimmed the read. It is what tells a caller that older history
 	// exists beyond the page it asked for.
 	Total int
-	// Items is the project's item-count history, present only when the
-	// caller set IncludeItems on a project-scope read. Oldest first.
-	Items []ItemCountPoint
 	// Replay is the project's history rebuilt from the lifecycle journal,
 	// present only when the caller set IncludeReplay on a project-scope read.
 	// Oldest first, one point per recorded instant. It carries the item

@@ -170,6 +170,11 @@ type replayCard struct {
 type replayWalker struct {
 	cards   map[string]*replayCard
 	colKind map[string]domain.Kind
+	// archivedTicks counts the archival entries applied so far. A chart
+	// cannot tell an archival from a completion by looking at the counts —
+	// both make a bucket fall — so the curve must CARRY which instants were
+	// archival, and the walker is where that fact passes through.
+	archivedTicks int
 }
 
 func newReplayWalker() *replayWalker {
@@ -216,6 +221,7 @@ func (w *replayWalker) apply(e store.TaskHistoryEntry) {
 		}
 	case store.HistoryArchived:
 		c.archived = true
+		w.archivedTicks++
 	case store.HistoryRestored:
 		c.archived = false
 	case store.HistoryEstimate:
@@ -300,6 +306,13 @@ type HistoryPoint struct {
 	TotalTasks int
 	OpenTasks  int
 	DoneTasks  int
+	// Archived is how many cards LEFT the project at this instant. Archival
+	// is the one thing that makes total fall without work finishing, and a
+	// falling total reads as lost data — so a renderer flags these instants
+	// on its time axis (the same way it flags a scope_change) instead of
+	// letting the drop speak for itself. Zero almost everywhere; never set
+	// for a mere move to done, which is work FINISHING, not work leaving.
+	Archived int
 	// Leaves / DoneLeaves / LeavesEstimated describe the working set the
 	// estimate rollup is computed over: live cards with no live children.
 	Leaves          int
@@ -317,13 +330,14 @@ type HistoryPoint struct {
 	Readiness EstimateReadiness
 }
 
-func pointAt(at time.Time, c boardCounts, unit string) HistoryPoint {
+func pointAt(at time.Time, c boardCounts, unit string, archived int) HistoryPoint {
 	return HistoryPoint{
 		At:              at,
 		Readiness:       readinessFrom(c, unit),
 		TotalTasks:      c.TotalTasks,
 		OpenTasks:       c.OpenTasks,
 		DoneTasks:       c.DoneTasks,
+		Archived:        archived,
 		Leaves:          c.Leaves,
 		DoneLeaves:      c.DoneLeaves,
 		LeavesEstimated: c.LeavesEstimated,
@@ -347,12 +361,18 @@ func buildHistoryPoints(entries []store.TaskHistoryEntry, unit string) []History
 	}
 	out := make([]HistoryPoint, 0, len(entries))
 	w := newReplayWalker()
+	counted := 0
 	for i, e := range entries {
 		w.apply(e)
 		if i+1 < len(entries) && entries[i+1].TS.Equal(e.TS) {
 			continue
 		}
-		out = append(out, pointAt(e.TS, w.counts(), unit))
+		// Whatever archivals applied since the last emitted point land on
+		// this one — a collapsed run of same-instant entries is one visual
+		// instant, and its flag should say everything that happened in it.
+		archived := w.archivedTicks - counted
+		counted = w.archivedTicks
+		out = append(out, pointAt(e.TS, w.counts(), unit, archived))
 	}
 	return out
 }

@@ -1001,6 +1001,14 @@ select, .field input, .field textarea {
   gap: 0.4rem;
   margin-bottom: 0.25rem;
 }
+/* KANB-34: the scope sentence under the item chart. The counts come from the
+   lifecycle journal for the WHOLE project — the board's column filter does
+   not reach them, and the panel says so in words so the numbers are never
+   read as filtered ones. */
+.items-chart-note {
+  margin: 0.25rem 0 0;
+  font-size: 0.72rem;
+}
 
 /* The header pair: manual ("assessed") and automatic ("tasks done") stand
    side by side, each with its caps label, so the two numbers are never

@@ -191,9 +191,9 @@ func chartDetailFixture() *service.ProgressHistoryResult {
 			{ID: "m2", Assessor: "alpha", Percent: 72, CreatedAt: base.Add(2 * time.Hour), ETA: etaAt(base, 10*24*time.Hour)},
 		},
 		Total: 2,
-		Items: []service.ItemCountPoint{
-			{At: base, Total: 4, Open: 4},
-			{At: base.Add(2 * time.Hour), Total: 9, Open: 3},
+		Replay: []service.HistoryPoint{
+			{At: base, TotalTasks: 4, OpenTasks: 4, DoneTasks: 0},
+			{At: base.Add(2 * time.Hour), TotalTasks: 9, OpenTasks: 3, DoneTasks: 6},
 		},
 	}
 }
@@ -247,19 +247,19 @@ func TestProgressChartDetail_ItemsOpensOnlyTheItemChart(t *testing.T) {
 }
 
 // TestProgressChartDetail_ItemsAreReadOnlyForTheProjectScope: an item count
-// is a property of a project, not of one task, so the second read must not
-// be requested on a per-task chart.
+// is a property of a project, not of one task, so the journal replay behind
+// it must not be requested on a per-task chart.
 func TestProgressChartDetail_ItemsAreReadOnlyForTheProjectScope(t *testing.T) {
 	svc := &progressChartStubService{result: chartDetailFixture()}
 	w, sess := newProgressChartTestWeb(t, svc)
 
 	do(w, "GET", "/p/BMB/progress/chart", nil, sessionCookie(sess))
-	if !svc.lastIn.IncludeItems {
-		t.Error("the project-scope chart did not ask for the item counts")
+	if !svc.lastIn.IncludeReplay {
+		t.Error("the project-scope chart did not ask for the journal replay")
 	}
 	do(w, "GET", "/p/BMB/progress/chart?task=BMB-1", nil, sessionCookie(sess))
-	if svc.lastIn.IncludeItems {
-		t.Error("a per-task chart asked for the project's item counts, paying for a read it cannot use")
+	if svc.lastIn.IncludeReplay {
+		t.Error("a per-task chart asked for the project's journal replay, paying for a read it cannot use")
 	}
 }
 

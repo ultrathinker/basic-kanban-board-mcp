@@ -272,8 +272,10 @@ func renderCases() []renderCase {
 		},
 		{
 			// The project scope carries a second panel: the item counts.
-			// Both are present, and the caption prints the two current
-			// numbers so nobody has to measure a line to read them.
+			// Both are present, the caption prints the two current numbers
+			// so nobody has to measure a line to read them, and the panel
+			// says in words that the board's filter does not reach these
+			// counts (KANB-34) — otherwise they read as filtered ones.
 			name:     "progress-chart-fragment/with-items",
 			template: "progress-chart-fragment",
 			data: &view.ProgressChartFragment{
@@ -281,10 +283,10 @@ func renderCases() []renderCase {
 					{ID: "m1", Assessor: "alpha", Percent: 30, CreatedAt: time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local)},
 					{ID: "m2", Assessor: "alpha", Percent: 55, CreatedAt: time.Date(2026, 9, 12, 11, 0, 0, 0, time.Local)},
 				}, view.DefaultChartWidth, view.DefaultChartHeight),
-				Items: view.NewItemsChartView([]service.ItemCountPoint{
-					{At: time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local), Total: 4, Open: 4},
-					{At: time.Date(2026, 9, 12, 11, 0, 0, 0, time.Local), Total: 7, Open: 5},
-					{At: time.Date(2026, 9, 12, 12, 0, 0, 0, time.Local), Total: 7, Open: 2},
+				Items: view.NewItemsChartView([]service.HistoryPoint{
+					{At: time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local), TotalTasks: 4, OpenTasks: 4},
+					{At: time.Date(2026, 9, 12, 11, 0, 0, 0, time.Local), TotalTasks: 7, OpenTasks: 5},
+					{At: time.Date(2026, 9, 12, 12, 0, 0, 0, time.Local), TotalTasks: 7, OpenTasks: 2},
 				}, view.DefaultChartWidth, view.DefaultChartHeight),
 			},
 			wants: []string{
@@ -292,6 +294,7 @@ func renderCases() []renderCase {
 				`data-series="items-total"`,
 				`data-series="items-open"`,
 				"7 total · 2 open",
+				"the board filter does not apply",
 				// Each panel names WHICH chart it opens: one click, one
 				// chart, and the two must not both open the same one.
 				`data-chart-zoom="progress"`,
@@ -315,8 +318,8 @@ func renderCases() []renderCase {
 					{ID: "m1", Assessor: "alpha", Percent: 30, CreatedAt: time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local), ETA: forecastAt(7)},
 					{ID: "m2", Assessor: "alpha", Percent: 55, CreatedAt: time.Date(2026, 9, 12, 11, 0, 0, 0, time.Local), ETA: forecastAt(10)},
 				}, view.DefaultChartWidth, view.DefaultChartHeight),
-				Items: view.NewItemsChartView([]service.ItemCountPoint{
-					{At: time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local), Total: 4, Open: 4},
+				Items: view.NewItemsChartView([]service.HistoryPoint{
+					{At: time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local), TotalTasks: 4, OpenTasks: 4},
 				}, view.DefaultChartWidth, view.DefaultChartHeight),
 			},
 			wants: []string{
@@ -362,9 +365,9 @@ func renderCases() []renderCase {
 			// The item-count chart, opened from the other panel.
 			name:     "chart-detail-fragment/items",
 			template: "chart-detail-fragment",
-			data: view.NewItemsChartDetail([]service.ItemCountPoint{
-				{At: time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local), Total: 4, Open: 4},
-				{At: time.Date(2026, 9, 12, 12, 0, 0, 0, time.Local), Total: 9, Open: 3},
+			data: view.NewItemsChartDetail([]service.HistoryPoint{
+				{At: time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local), TotalTasks: 4, OpenTasks: 4},
+				{At: time.Date(2026, 9, 12, 12, 0, 0, 0, time.Local), TotalTasks: 9, OpenTasks: 3, Archived: 1},
 			}),
 			wants: []string{
 				`data-chart-title="Items on the board"`,
@@ -372,6 +375,10 @@ func renderCases() []renderCase {
 				"6 of 9 done, 3 still open",
 				`data-series="items-total"`,
 				`data-series="items-open"`,
+				// The replay recorded a departure, so the legend names what
+				// the baseline ticks mean (KANB-34).
+				"archived",
+				"1 archival instant(s) marked on the baseline",
 			},
 			notWants: []string{"<no value>", "Assessed progress"},
 		},
@@ -406,20 +413,23 @@ func renderCases() []renderCase {
 		},
 		{
 			// The panel define on its own, so it stays covered even if the
-			// fragment above changes shape.
+			// fragment above changes shape. No archival anywhere in the
+			// curve, so the "archived" legend entry must stay out — a
+			// legend entry with nothing to describe is noise.
 			name:     "chart-detail-panel/items-only",
 			template: "chart-detail-panel",
-			data: view.NewItemsChartDetail([]service.ItemCountPoint{
-				{At: time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local), Total: 2, Open: 2},
-				{At: time.Date(2026, 9, 12, 11, 0, 0, 0, time.Local), Total: 2, Open: 0},
+			data: view.NewItemsChartDetail([]service.HistoryPoint{
+				{At: time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local), TotalTasks: 2, OpenTasks: 2},
+				{At: time.Date(2026, 9, 12, 11, 0, 0, 0, time.Local), TotalTasks: 2, OpenTasks: 0},
 			}),
 			wants: []string{
 				`data-chart-title="Items on the board"`,
 				"vertical: number of tasks, 0 to 2",
 				"2 of 2 done, 0 still open",
 				`data-series="items-open"`,
+				"the board filter does not apply",
 			},
-			notWants: []string{"<no value>"},
+			notWants: []string{"<no value>", "archived"},
 		},
 		{
 			// KANB-39: the standing prompt — the one paste-ready rule that

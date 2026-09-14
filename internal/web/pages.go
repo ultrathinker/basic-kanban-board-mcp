@@ -288,11 +288,11 @@ func (w *Web) handleProgressChart(rw http.ResponseWriter, r *http.Request) {
 		ProjectKey: key,
 		TaskKey:    taskKey,
 		// The item-count panel is a project-level reading — how much work
-		// the board holds and how much of it is still open — so it is asked
-		// for only on the project scope. The service ignores the flag when a
-		// task is named, but not asking keeps the second read off the
-		// per-task path entirely.
-		IncludeItems: taskKey == "",
+		// the board holds and how much of it is still open — so the journal
+		// replay behind it is asked for only on the project scope. The
+		// service ignores the flag when a task is named, but not asking
+		// keeps the replay off the per-task path entirely.
+		IncludeReplay: taskKey == "",
 	})
 	if err != nil {
 		apiError(rw, err)
@@ -312,7 +312,7 @@ func (w *Web) handleProgressChart(rw http.ResponseWriter, r *http.Request) {
 		w.renderChartDetail(rw, r, view.NewForecastChartDetail(result.Marks))
 		return
 	case "items":
-		w.renderChartDetail(rw, r, view.NewItemsChartDetail(result.Items))
+		w.renderChartDetail(rw, r, view.NewItemsChartDetail(result.Replay))
 		return
 	default:
 		apiError(rw, domain.Invalid("detail",
@@ -328,7 +328,7 @@ func (w *Web) handleProgressChart(rw http.ResponseWriter, r *http.Request) {
 		// "render nothing" rule the percent chart already follows for
 		// missing data.
 		Forecast: view.NewForecastChartView(result.Marks, view.DefaultChartWidth, view.DefaultChartHeight),
-		Items:    view.NewItemsChartView(result.Items, view.DefaultChartWidth, view.DefaultChartHeight),
+		Items:    view.NewItemsChartView(result.Replay, view.DefaultChartWidth, view.DefaultChartHeight),
 	}
 	if frag.Empty() {
 		// Nothing to draw at all: render the empty body app.js already
