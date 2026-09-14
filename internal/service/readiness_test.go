@@ -329,6 +329,26 @@ func TestReadinessFrom_BoundaryCases(t *testing.T) {
 		{"rounds half up", boardCounts{
 			Leaves: 2, DoneLeaves: 1, LeavesEstimated: 2, EstimateTotal: 8, EstimateDone: 3,
 		}, ReadinessEstimates, intPtrLocal(38)},
+		// Pathological estimate that would compute to more than 100% if the
+		// upper clamp were lifted: EstimateDone (10) > EstimateTotal (2).
+		// The clamp must keep the figure at 100% — a progress bar past its
+		// end is worse than a misdrawn number, and the journal records the
+		// raw values for forensic inspection.
+		{"clamped above 100", boardCounts{
+			Leaves: 2, DoneLeaves: 2, LeavesEstimated: 2, EstimateTotal: 2, EstimateDone: 10,
+		}, ReadinessEstimates, intPtrLocal(100)},
+		// All-negative estimates: the only branch that handles a non-positive
+		// denominator is the "no data" branch (c.EstimateTotal > 0), and the
+		// estimate-weighted figure is NOT meaningful. DoneLeaves=0 keeps it on
+		// the estimates branch, where the negative sum goes to "no data"
+		// rather than to a percentage.
+		{"all-negative estimates", boardCounts{
+			Leaves: 2, LeavesEstimated: 2, EstimateTotal: -5, EstimateDone: -10,
+		}, ReadinessNone, nil},
+		// Mixed signs, negative total: same outcome — the "no data" branch.
+		{"mixed signs, negative total", boardCounts{
+			Leaves: 2, LeavesEstimated: 2, EstimateTotal: -3, EstimateDone: 4,
+		}, ReadinessNone, nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -343,6 +363,34 @@ func TestReadinessFrom_BoundaryCases(t *testing.T) {
 				t.Fatalf("percent = none, want %d", *tc.percent)
 			case tc.percent != nil && *r.Percent != *tc.percent:
 				t.Fatalf("percent = %d, want %d", *r.Percent, *tc.percent)
+			}
+		})
+	}
+}
+
+// percentOfEffort is the lower-level helper behind the clamp. Its contract
+// is "0 when total<=0, clamped to 0..100 otherwise, rounded half up" — none
+// of which the live path can be said to honour without a direct test.
+func TestPercentOfEffort_ClampsAndRounds(t *testing.T) {
+	cases := []struct {
+		name     string
+		done     float64
+		total    float64
+		expected int
+	}{
+		{"non-positive total is zero", 5, 0, 0},
+		{"negative total is zero", 5, -3, 0},
+		{"rounds 50.5 up to 51", 50.5, 100, 51},
+		{"rounds 50.4 down to 50", 50.4, 100, 50},
+		{"clamps above 100", 10, 2, 100},
+		{"clamps below 0", -10, 2, 0},
+		{"exact zero", 0, 8, 0},
+		{"exact hundred", 8, 8, 100},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := percentOfEffort(tc.done, tc.total); got != tc.expected {
+				t.Fatalf("percentOfEffort(%v, %v) = %d, want %d", tc.done, tc.total, got, tc.expected)
 			}
 		})
 	}
