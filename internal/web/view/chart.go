@@ -485,36 +485,77 @@ func decimateKeepMask(values []int64, maxPoints int, worseIsHigher bool) []bool 
 		}
 	}
 
-	// If critical points alone exceed maxPoints, prioritize the biggest moves.
+	// If the critical points alone overflow the budget, ranking them by how
+	// sharp each one is LOCALLY throws the worst news away. Measured on a
+	// history of 400 forecasts with early churn and a late slide: the slide to
+	// 90 days did not survive at all and the reader saw a ceiling of 40 days,
+	// while the percent chart drew a floor of 20% over data that reached 10%.
+	//
+	// Three things conspired. A local score (this step plus the next) rates a
+	// long gentle slide below a short violent wobble, even when the slide is the
+	// larger move overall. sort.SliceStable on equal scores keeps the earlier
+	// index, so survival drifts systematically toward the start of the history.
+	// And nothing outside the critical set survived at all, so whole stretches
+	// of the timeline went unrepresented.
+	//
+	// The replacement is envelope decimation: cut the timeline into equal
+	// buckets and keep each bucket's highest and lowest value. That preserves
+	// the outline of the series rather than its sharpest corners, and — the
+	// property that matters here — the global extreme of EITHER side is the
+	// extreme of its own bucket, so it always survives. The drawn range can
+	// therefore never be narrower than the data's, which is exactly the promise
+	// the owner cares about: the fall from 91% to 72%, and the promise that
+	// slid from two weeks to three months, stay on the chart.
+	//
+	// Polarity plays no part here: keeping both ends of the envelope protects
+	// the bad side whichever way it points.
 	if criticalCount > maxPoints {
-		type scoredIndex struct {
-			idx   int
-			score int64
-		}
-		var scored []scoredIndex
-		for i := 1; i < n-1; i++ {
-			if isCritical[i] {
-				prevDiff := absInt64(values[i] - values[i-1])
-				nextDiff := int64(0)
-				if i+1 < n {
-					nextDiff = absInt64(values[i] - values[i+1])
-				}
-				scored = append(scored, scoredIndex{idx: i, score: prevDiff + nextDiff})
-			}
-		}
-		sort.SliceStable(scored, func(i, j int) bool {
-			return scored[i].score > scored[j].score
-		})
-
 		keep[0] = true
 		keep[n-1] = true
-		budget := maxPoints - 2
-		if budget > len(scored) {
-			budget = len(scored)
+
+		// Each bucket spends at most two of the remaining budget (its min and
+		// its max), so the number of buckets is half of what is left.
+		buckets := (maxPoints - 2) / 2
+		if buckets < 1 {
+			buckets = 1
 		}
-		for i := 0; i < budget; i++ {
-			keep[scored[i].idx] = true
+		for b := 0; b < buckets; b++ {
+			lo := 1 + (n-2)*b/buckets
+			hi := 1 + (n-2)*(b+1)/buckets
+			if hi > n-1 {
+				hi = n - 1
+			}
+			if lo >= hi {
+				continue
+			}
+			minIdx, maxIdx := lo, lo
+			for i := lo; i < hi; i++ {
+				if values[i] < values[minIdx] {
+					minIdx = i
+				}
+				if values[i] > values[maxIdx] {
+					maxIdx = i
+				}
+			}
+			keep[minIdx] = true
+			keep[maxIdx] = true
 		}
+
+		// Belt and braces: pin the series-wide extremes outright. The bucket
+		// pass already reaches them, and saying so here means a later change to
+		// the bucketing cannot quietly drop the one guarantee this branch is
+		// for.
+		gMin, gMax := 0, 0
+		for i := 1; i < n; i++ {
+			if values[i] < values[gMin] {
+				gMin = i
+			}
+			if values[i] > values[gMax] {
+				gMax = i
+			}
+		}
+		keep[gMin] = true
+		keep[gMax] = true
 		return keep
 	}
 

@@ -64,6 +64,17 @@ func TestChart_Forecast_DecimatesLargeHistory(t *testing.T) {
 	if len(coords) < 2 {
 		t.Errorf("forecast track over-decimated to %d points", len(coords))
 	}
+
+	// The consensus line is the other half of the same promise. Measuring only
+	// the per-assessor track left the consensus free to carry all 500 points:
+	// removing its decimation call kept the whole package green.
+	cons := parsePolylinePoints(t, extractPolylinePoints(t, svg, `data-series="consensus"`))
+	if len(cons) > MaxChartPoints {
+		t.Errorf("consensus track not decimated: got %d points, want <= %d", len(cons), MaxChartPoints)
+	}
+	if len(cons) < 2 {
+		t.Errorf("consensus track over-decimated to %d points", len(cons))
+	}
 }
 
 // 2a. An isolated slip: the promise held, jumped once, held again.
@@ -247,6 +258,144 @@ func TestChart_Forecast_AllSameInstantDoesNotDivideByZero(t *testing.T) {
 	for _, c := range coords {
 		if absFloat(c[1]-midline) > 0.2 {
 			t.Fatalf("all-same-instant forecast not on the neutral midline: got %v, want y=%.1f", coords, midline)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// The hard half of the rule: what happens when the critical points alone
+// overflow the budget.
+//
+// The two tests above build ONE bad stretch on an otherwise quiet history, so
+// the critical set stays well under MaxChartPoints and the overflow branch of
+// decimateKeepMask never runs. That left the branch that actually decides
+// dense histories completely unguarded, and it was throwing the worst news
+// away: on the shape below the forecast chart drew a ceiling of 40 days over
+// data that reached 90, and the percent chart drew a floor of 20% over data
+// that reached 10%. The reader saw a calm line and early fidgeting, while the
+// legend went on quoting the true first and last values from the raw data.
+//
+// The shape that produces it — and the shape no earlier test had — is early
+// churn followed by a late slide. The churn fills the critical set with short
+// violent steps; the slide is long and gentle, scores lower on any local
+// measure, and lost.
+//
+// The assertion is deliberately about RANGE, not about which indices
+// survived: the drawn extreme on the bad side must equal the data's. That is
+// the owner's requirement stated directly, and it does not care how the
+// decimator reaches it.
+// ---------------------------------------------------------------------------
+
+// churnThenSlideForecast builds the shape: early oscillation between 10 and 40
+// days, a quiet stretch, then a slide out to 90 days, then a recovery.
+func churnThenSlideForecast(t0 time.Time, n int) []forecastPoint {
+	pts := make([]forecastPoint, 0, n)
+	for i := 0; i < n; i++ {
+		days := 10
+		switch {
+		case i < 170:
+			if i%2 == 0 {
+				days = 40
+			}
+		case i < 250:
+			days = 10
+		case i < 290:
+			days = 10 + (i-250)*2 // the slide: 10 -> 88
+		case i < 331:
+			days = 90 - (i-290)*2 // the recovery
+		}
+		pts = append(pts, forecastPoint{
+			CreatedAt: t0.Add(time.Duration(i) * time.Minute),
+			ETA:       t0.Add(time.Duration(days) * 24 * time.Hour),
+		})
+	}
+	return pts
+}
+
+func TestChart_Forecast_DecimationKeepsTheWorstNewsWhenCriticalsOverflow(t *testing.T) {
+	t0 := time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local)
+
+	for _, n := range []int{200, 300, 400} {
+		points := churnThenSlideForecast(t0, n)
+
+		dataMax := time.Time{}
+		for _, p := range points {
+			if p.ETA.After(dataMax) {
+				dataMax = p.ETA
+			}
+		}
+
+		kept := decimateForecastPoints(points, MaxChartPoints)
+		if len(kept) > MaxChartPoints {
+			t.Fatalf("n=%d: decimation exceeded the budget: %d > %d", n, len(kept), MaxChartPoints)
+		}
+
+		drawnMax := time.Time{}
+		for _, p := range kept {
+			if p.ETA.After(drawnMax) {
+				drawnMax = p.ETA
+			}
+		}
+
+		if !drawnMax.Equal(dataMax) {
+			t.Errorf("n=%d: the latest promise in the data is %s but the chart only draws out to %s."+
+				" The worst news of the history is missing from the picture: the reader sees a calmer"+
+				" project than the data describes. Decimation must never narrow the drawn range on the"+
+				" bad side.",
+				n, dataMax.Format("2006-01-02"), drawnMax.Format("2006-01-02"))
+		}
+	}
+}
+
+func TestChart_Decimation_KeepsTheWorstNewsOnThePercentChartWhenCriticalsOverflow(t *testing.T) {
+	t0 := time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local)
+
+	for _, n := range []int{200, 300, 400} {
+		points := make([]chartPoint, 0, n)
+		for i := 0; i < n; i++ {
+			pct := 50
+			switch {
+			case i < 170:
+				if i%2 != 0 {
+					pct = 20
+				}
+			case i < 250:
+				pct = 50
+			case i < 290:
+				pct = 50 - (i - 250) // the fall: 50 -> 11
+			case i < 331:
+				pct = 10 + (i - 290) // the recovery
+			}
+			if pct < 10 {
+				pct = 10
+			}
+			points = append(points, chartPoint{Time: t0.Add(time.Duration(i) * time.Minute), Percent: pct})
+		}
+
+		dataMin := 100
+		for _, p := range points {
+			if p.Percent < dataMin {
+				dataMin = p.Percent
+			}
+		}
+
+		kept := decimatePoints(points, MaxChartPoints)
+		if len(kept) > MaxChartPoints {
+			t.Fatalf("n=%d: decimation exceeded the budget: %d > %d", n, len(kept), MaxChartPoints)
+		}
+
+		drawnMin := 100
+		for _, p := range kept {
+			if p.Percent < drawnMin {
+				drawnMin = p.Percent
+			}
+		}
+
+		if drawnMin != dataMin {
+			t.Errorf("n=%d: readiness fell to %d%% in the data but the chart bottoms out at %d%%."+
+				" The fall the owner opens this chart to see is not drawn. Decimation must never"+
+				" narrow the drawn range on the bad side.",
+				n, dataMin, drawnMin)
 		}
 	}
 }
