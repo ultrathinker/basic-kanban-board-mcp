@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/domain"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/store"
 )
@@ -896,8 +898,8 @@ func TestReplay_HardDeleteTakesTheJournalWithIt(t *testing.T) {
 // is the defect that hid the empty-unit regression.
 func TestSamePoint_ComparesUnit(t *testing.T) {
 	base := HistoryPoint{
-		At:              time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
-		TotalTasks:      1, OpenTasks: 0, DoneTasks: 1,
+		At:         time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+		TotalTasks: 1, OpenTasks: 0, DoneTasks: 1,
 		Leaves: 1, DoneLeaves: 1, LeavesEstimated: 1,
 		EstimateTotal: 5, EstimateDone: 5,
 		Readiness: EstimateReadiness{
@@ -927,4 +929,266 @@ func TestSamePoint_ComparesUnit(t *testing.T) {
 			t.Fatalf("changing %s did not change samePoint's verdict", name)
 		}
 	}
+}
+
+// Acceptance: entries that share one timestamp collapse into ONE point, and
+// that point's state is the state AFTER the last of them — never an earlier
+// state of the same instant.
+//
+// The clock cache inside a transaction makes every entry in one Write share a
+// timestamp, so the collapse is exercised on the product path every time
+// task_update touches more than one field at once. But that path's behaviour
+// is timing-dependent: separate Writes land in different milliseconds and
+// the test sees the desired answer for the wrong reason (three points, three
+// timestamps, never a collision). A test that exercises the rule must put
+// the entries in one millisecond by hand — explicit TS on each Append — so
+// the assertion is independent of the clock.
+func TestHistoryPoints_SameInstantCollapsesToOnePoint(t *testing.T) {
+	env := openTestEnv(t)
+
+	// Four cards, three lifecycle moves, all stamped at one instant. A move
+	// that finishes a card, an estimate change on a card already there, and
+	// a parent change that turns a card into a leaf — three real shapes of
+	// a task_update, sharing a timestamp.
+	makeBacklogTask(t, env, "stays open")
+	finish := makeBacklogTask(t, env, "will finish")
+	parent := makeBacklogTask(t, env, "becomes a parent")
+	leaf := makeBacklogTask(t, env, "becomes a leaf")
+
+	sharedInstant := time.Date(2030, 1, 1, 12, 0, 0, 0, time.UTC)
+
+	if err := env.Write(context.Background(), func(tx store.Tx) error {
+		doneKind := domain.KindDone
+		finishCol := env.cols["Done"].ID
+		backlogKind := domain.KindBacklog
+		finishFromCol := env.cols["Backlog"].ID
+		est1 := 4.0
+		if err := env.TaskHistory().Append(tx, &store.TaskHistoryEntry{
+			TS:         sharedInstant,
+			Actor:      env.actor.Name,
+			ProjectID:  env.proj.ID,
+			TaskID:     &finish.ID,
+			Kind:       store.HistoryMoved,
+			FromColumn: &finishFromCol,
+			FromKind:   &backlogKind,
+			ToColumn:   &finishCol,
+			ToKind:     &doneKind,
+		}); err != nil {
+			return err
+		}
+		if err := env.TaskHistory().Append(tx, &store.TaskHistoryEntry{
+			TS:          sharedInstant,
+			Actor:       env.actor.Name,
+			ProjectID:   env.proj.ID,
+			TaskID:      &leaf.ID,
+			Kind:        store.HistoryEstimate,
+			OldEstimate: nil,
+			NewEstimate: &est1,
+		}); err != nil {
+			return err
+		}
+		return env.TaskHistory().Append(tx, &store.TaskHistoryEntry{
+			TS:        sharedInstant,
+			Actor:     env.actor.Name,
+			ProjectID: env.proj.ID,
+			TaskID:    &leaf.ID,
+			Kind:      store.HistoryParent,
+			OldParent: nil,
+			NewParent: &parent.ID,
+		})
+	}); err != nil {
+		t.Fatalf("seed same-instant entries: %v", err)
+	}
+
+	pts := buildHistoryPoints(journalOf(t, env), env.proj.EstimateUnit)
+
+	// Exactly one curve point must sit at the shared instant. The seed
+	// creates land at distinct millisecond stamps and contribute their own
+	// points (we do not care how many); what the collapse MUST guarantee
+	// is that three same-instant entries produce exactly one point.
+	atShared := 0
+	var sharedPoint *HistoryPoint
+	for i := range pts {
+		if pts[i].At.Equal(sharedInstant) {
+			atShared++
+			sharedPoint = &pts[i]
+		}
+	}
+	if atShared != 1 {
+		var ats []string
+		for _, p := range pts {
+			ats = append(ats, p.At.Format(time.RFC3339Nano))
+		}
+		t.Fatalf("the curve has %d points at the shared instant, want exactly 1: %v", atShared, ats)
+	}
+	if sharedPoint == nil {
+		t.Fatal("the shared-instant point disappeared entirely")
+	}
+	p := sharedPoint
+	// State AFTER the last of the three: leaf is estimated (4) and now has a
+	// parent (so parent is no longer a leaf — leaf is), and finish is done.
+	if p.DoneTasks != 1 {
+		t.Fatalf("DoneTasks = %d, want 1 (finish moved to Done in the run)", p.DoneTasks)
+	}
+	if p.EstimateTotal != 4 {
+		t.Fatalf("EstimateTotal = %v, want 4 (the estimate landed at the same instant as the move)", p.EstimateTotal)
+	}
+	// Leaves after reparenting: stays-open (leaf, no estimate), parent (now
+	// a leaf because leaf moved under it — but parent has no estimate),
+	// leaf (estimated, 4), finish (done, leaf). So Leaves = 3 and only leaf
+	// is estimated.
+	if p.LeavesEstimated != 1 {
+		t.Fatalf("LeavesEstimated = %d, want 1 (only the reparented leaf carries 4)", p.LeavesEstimated)
+	}
+}
+
+// And the negative: each same-instant entry MUST, on its own, change the
+// point it would have produced — otherwise the collapse is a no-op and the
+// state at the lone point could be ANY of the two, which is not what the
+// promise says. The second entry adds an estimate to a card that was JUST
+// moved to Done, so the point must carry the estimate (proving the collapse
+// took the LAST state, not the FIRST).
+func TestHistoryPoints_SameInstantCollapsesToTheLastState(t *testing.T) {
+	env := openTestEnv(t)
+
+	task := makeBacklogTask(t, env, "single card")
+	sharedInstant := time.Date(2031, 6, 15, 9, 30, 0, 0, time.UTC)
+	doneCol := env.cols["Done"].ID
+	doneKind := domain.KindDone
+	backlogCol := env.cols["Backlog"].ID
+	backlogKind := domain.KindBacklog
+
+	if err := env.Write(context.Background(), func(tx store.Tx) error {
+		if err := env.TaskHistory().Append(tx, &store.TaskHistoryEntry{
+			TS:         sharedInstant,
+			Actor:      env.actor.Name,
+			ProjectID:  env.proj.ID,
+			TaskID:     &task.ID,
+			Kind:       store.HistoryMoved,
+			FromColumn: &backlogCol,
+			FromKind:   &backlogKind,
+			ToColumn:   &doneCol,
+			ToKind:     &doneKind,
+		}); err != nil {
+			return err
+		}
+		// Second entry at the SAME instant: an estimate change. State after
+		// this one is "done, estimated". Without the collapse the first entry
+		// would have produced a point with DoneTasks=1 but EstimateTotal=0.
+		est := 7.0
+		return env.TaskHistory().Append(tx, &store.TaskHistoryEntry{
+			TS:          sharedInstant,
+			Actor:       env.actor.Name,
+			ProjectID:   env.proj.ID,
+			TaskID:      &task.ID,
+			Kind:        store.HistoryEstimate,
+			OldEstimate: nil,
+			NewEstimate: &est,
+		})
+	}); err != nil {
+		t.Fatalf("seed same-instant entries: %v", err)
+	}
+
+	pts := buildHistoryPoints(journalOf(t, env), env.proj.EstimateUnit)
+	var shared *HistoryPoint
+	for i := range pts {
+		if pts[i].At.Equal(sharedInstant) {
+			shared = &pts[i]
+			break
+		}
+	}
+	if shared == nil {
+		t.Fatalf("no point at the shared instant %s; collapse produced no result", sharedInstant)
+	}
+	p := shared
+	if p.DoneTasks != 1 {
+		t.Fatalf("DoneTasks = %d, want 1", p.DoneTasks)
+	}
+	if p.EstimateTotal != 7 || p.EstimateDone != 7 {
+		t.Fatalf("the collapsed point reads total=%v done=%v, want 7/7 — the estimate landed but the collapse kept the moved-only state",
+			p.EstimateTotal, p.EstimateDone)
+	}
+}
+
+// Determinism: a sequence of moves that all happen in the same transaction
+// (so they share a timestamp) must yield one curve point, with state after
+// the last of them. This is the property that real product writes rely on
+// when task_update touches estimate and parent together.
+func TestHistoryPoints_OneTransactionCollapsesToOnePoint(t *testing.T) {
+	env := openTestEnv(t)
+
+	task := makeBacklogTask(t, env, "one update, two fields")
+
+	// One Write, two Appends: the writer's transaction clock is cached, so
+	// both Appends with a zero TS get the SAME timestamp. This is the shape
+	// of every task_update that changes estimate and parent.
+	if err := env.Write(context.Background(), func(tx store.Tx) error {
+		col := env.cols["Backlog"].ID
+		kind := domain.KindBacklog
+		est1 := 1.0
+		shared := sharedInstant() // explicit so the test is independent of the cached clock
+		if err := env.TaskHistory().Append(tx, &store.TaskHistoryEntry{
+			TS:          shared,
+			Actor:       env.actor.Name,
+			ProjectID:   env.proj.ID,
+			TaskID:      &task.ID,
+			Kind:        store.HistoryEstimate,
+			OldEstimate: nil,
+			NewEstimate: &est1,
+			ToColumn:    &col,
+			ToKind:      &kind,
+		}); err != nil {
+			return err
+		}
+		est2 := 2.0
+		return env.TaskHistory().Append(tx, &store.TaskHistoryEntry{
+			TS:          shared,
+			Actor:       env.actor.Name,
+			ProjectID:   env.proj.ID,
+			TaskID:      &task.ID,
+			Kind:        store.HistoryEstimate,
+			OldEstimate: &est1,
+			NewEstimate: &est2,
+			ToColumn:    &col,
+			ToKind:      &kind,
+		})
+	}); err != nil {
+		t.Fatalf("seed two estimates in one transaction: %v", err)
+	}
+
+	pts := buildHistoryPoints(journalOf(t, env), env.proj.EstimateUnit)
+	shared := sharedInstant()
+	atShared := 0
+	for i := range pts {
+		if pts[i].At.Equal(shared) {
+			atShared++
+		}
+	}
+	if atShared != 1 {
+		var ats []string
+		for _, p := range pts {
+			ats = append(ats, p.At.Format(time.RFC3339Nano))
+		}
+		var entries []string
+		for _, e := range journalOf(t, env) {
+			entries = append(entries, fmt.Sprintf("%s/%s", e.TS.Format(time.RFC3339Nano), e.Kind))
+		}
+		t.Fatalf("two same-instant entries produced %d points at %s, want exactly 1:\n  points: %v\n  entries: %v", atShared, shared, ats, entries)
+	}
+	for _, p := range pts {
+		if p.At.Equal(shared) && p.EstimateTotal != 2 {
+			t.Fatalf("the collapsed point reads EstimateTotal=%v, want 2 (the second estimate, not the first)",
+				p.EstimateTotal)
+		}
+	}
+}
+
+// Use uuid here so the build flags catch a stale import if anything above
+// stops using it.
+var _ = uuid.NewString
+
+// sharedInstant returns a fixed instant so tests can put several Appends in
+// the same millisecond without depending on the database clock cache.
+func sharedInstant() time.Time {
+	return time.Date(2032, 3, 4, 5, 6, 7, 0, time.UTC)
 }
