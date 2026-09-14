@@ -12,14 +12,14 @@ import (
 // KANB-47 — task_create(source_message) on the MCP surface.
 // ---------------------------------------------------------------------------
 
-// TestTaskCreate_SourceMessageForwarded: the parameter reaches the service,
-// the response flags a replayed acceptance in meta, and the tool description
-// states the external-actions caveat the acceptance guarantee does NOT cover.
+// TestTaskCreate_SourceMessageForwarded verifies that an acceptance reaches
+// the service and uses its own meta flag, distinct from an idempotency replay.
 func TestTaskCreate_SourceMessageForwarded(t *testing.T) {
 	t.Parallel()
 	cs, svc := roundtripServer(t, NewServer)
 	svc.DefaultTaskCreate = &service.TaskCreateResult{
 		Tasks:           []domain.TaskView{fixedTask("KANB-9")},
+		Replayed:        true,
 		AlreadyAccepted: true,
 	}
 
@@ -41,6 +41,9 @@ func TestTaskCreate_SourceMessageForwarded(t *testing.T) {
 	meta, _ := sc["meta"].(map[string]any)
 	if meta["already_accepted"] != true {
 		t.Errorf("meta.already_accepted = %v, want true on a replayed acceptance", meta["already_accepted"])
+	}
+	if _, present := meta["replayed"]; present {
+		t.Errorf("meta.replayed = %v, want omitted: command acceptance is not an idempotency-key replay", meta["replayed"])
 	}
 
 	tool := toolByName(t, cs, "task_create")
