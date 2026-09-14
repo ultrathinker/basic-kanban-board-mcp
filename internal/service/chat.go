@@ -353,6 +353,12 @@ func (s *svc) ChatList(ctx context.Context, a Actor, in ChatListInput) (*ChatLis
 			msgs = make([]domain.ChatMessage, 0)
 		}
 		result.Messages = msgs
+		// KANB-48: resolve the display data the raw rows only reference,
+		// inside the same read so a page never names a token that vanished
+		// or quotes a parent it does not have. Best-effort per entry the
+		// same way the rest of the read path is: a resolution that cannot
+		// complete simply leaves the field zero, never fakes a value.
+		result.Meta = s.resolveChatListMeta(tx, msgs)
 		return nil
 	})
 	if err != nil {
@@ -515,6 +521,76 @@ func (s *svc) ChatFeed(ctx context.Context, a Actor, in ChatFeedInput) (*ChatFee
 // ChatMessageAdd is an alias for ChatAdd.
 func (s *svc) ChatMessageAdd(ctx context.Context, a Actor, in ChatAddInput) (*domain.ChatMessage, error) {
 	return s.ChatAdd(ctx, a, in)
+}
+
+// resolveChatListMeta builds ChatListResult.Meta for one page: the display
+// names of every recipient/executor the page addresses, the parent message
+// behind every reply (the short quote the UI shows), and the acceptance of
+// every command that HAS one (KANB-48). All lookups are batched — one token
+// list, one acceptance query for the whole page, one point lookup per
+// distinct parent — and everything happens inside the caller's read
+// transaction so the page cannot mix rows from two moments.
+//
+// Zero values are information here, not failures: a recipient id that no
+// longer resolves (a revoked-and-deleted token) leaves RecipientName empty,
+// and the UI shows the raw id rather than inventing a name.
+func (s *svc) resolveChatListMeta(tx store.Tx, msgs []domain.ChatMessage) map[string]ChatListEntryMeta {
+	meta := make(map[string]ChatListEntryMeta, len(msgs))
+	if len(msgs) == 0 {
+		return meta
+	}
+	for _, m := range msgs {
+		meta[m.ID] = ChatListEntryMeta{}
+	}
+
+	names := make(map[string]string)
+	toks, err := s.store.Tokens().List(tx)
+	if err == nil {
+		for _, t := range toks {
+			names[t.ID] = t.Name
+		}
+	}
+
+	ids := make([]string, 0, len(msgs))
+	for _, m := range msgs {
+		ids = append(ids, m.ID)
+	}
+	acceptances, err := s.store.Acceptances().ByMessages(tx, ids)
+	if err != nil {
+		acceptances = nil
+	}
+
+	parents := make(map[string]*domain.ChatMessage)
+	for _, m := range msgs {
+		if m.ReplyToID == "" {
+			continue
+		}
+		if _, seen := parents[m.ReplyToID]; seen {
+			continue
+		}
+		var p *domain.ChatMessage
+		if parent, err := s.store.Chat().Get(tx, m.ReplyToID); err == nil && parent != nil {
+			p = parent
+		}
+		parents[m.ReplyToID] = p
+	}
+
+	for _, m := range msgs {
+		e := meta[m.ID]
+		if m.Recipient != "" && m.Recipient != RecipientAll {
+			e.RecipientName = names[m.Recipient]
+		}
+		if m.ResolvedExecutor != "" {
+			e.ExecutorName = names[m.ResolvedExecutor]
+		}
+		e.Parent = parents[m.ReplyToID]
+		if a, ok := acceptances[m.ID]; ok {
+			acc := a
+			e.Acceptance = &acc
+		}
+		meta[m.ID] = e
+	}
+	return meta
 }
 
 // ChatMessageList is an alias for ChatList.

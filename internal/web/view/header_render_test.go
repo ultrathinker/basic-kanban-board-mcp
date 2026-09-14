@@ -142,7 +142,7 @@ func TestActivityPage_LiveIndicatorGoneUpdateLinkPresent(t *testing.T) {
 // the metrics live in the subhead, and the old "Thoughts" header button
 // (data-chat-toggle) is gone from the page — it has no caller any more.
 func TestBoardPage_ProgressMovesToSubhead(t *testing.T) {
-	m := boardWithChat(view.NewChatPanel(chatFixtureMsgs, "", chatFixtureNow, nil), true)
+	m := boardWithChat(view.NewChatPanel(chatFixtureMsgs, "", chatFixtureNow, nil, nil), true)
 	// boardWithChat does not set progress metrics; attach both so this test
 	// also exercises the "both present" layout, matching the real header.
 	m.ManualProgress = view.NewAssessedProgress(percentPtr(42), 2, nil, "")

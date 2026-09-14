@@ -43,7 +43,7 @@ func boardWithChat(chat *view.ChatPanel, open bool) view.BoardModel {
 // message with its author and its time — the two things the owner needs to
 // tell one agent's thought from another's.
 func TestChatPanel_RendersMessagesWithAuthorsAndTimes(t *testing.T) {
-	m := boardWithChat(view.NewChatPanel(chatFixtureMsgs, "next-cursor-str", chatFixtureNow, nil), true)
+	m := boardWithChat(view.NewChatPanel(chatFixtureMsgs, "next-cursor-str", chatFixtureNow, nil, nil), true)
 	html := renderProgress(t, "page-board", view.SamplePage("Test", "board", m))
 
 	for _, want := range []string{
@@ -78,7 +78,7 @@ func TestChatPanel_RendersMessagesWithAuthorsAndTimes(t *testing.T) {
 // obsolete) order; it is a deliberate rewrite, not a weakened test — see
 // REPORT.md.
 func TestChatFeed_NewestFirstAtTop(t *testing.T) {
-	m := boardWithChat(view.NewChatPanel(chatFixtureMsgs, "", chatFixtureNow, nil), true)
+	m := boardWithChat(view.NewChatPanel(chatFixtureMsgs, "", chatFixtureNow, nil, nil), true)
 	html := renderProgress(t, "page-board", view.SamplePage("Test", "board", m))
 
 	newest := strings.Index(html, "found the root cause")
@@ -100,7 +100,7 @@ func TestChatFeed_NewestFirstAtTop(t *testing.T) {
 // panel itself renders. What still matters is that the empty state is
 // explicit and that a failed chat read does NOT render a placeholder.
 func TestChatPanel_EmptyProjectShowsSaneEmptiness(t *testing.T) {
-	m := boardWithChat(view.NewChatPanel(nil, "", chatFixtureNow, nil), true)
+	m := boardWithChat(view.NewChatPanel(nil, "", chatFixtureNow, nil, nil), true)
 	html := renderProgress(t, "page-board", view.SamplePage("Test", "board", m))
 	if !strings.Contains(html, "No thoughts yet") {
 		t.Fatalf("empty project panel does not explain itself: %s", html)
@@ -134,7 +134,7 @@ func TestChatPanel_EmptyProjectShowsSaneEmptiness(t *testing.T) {
 // app.js wires the three buttons by data-attribute and persists the state
 // per project in localStorage; the markup must carry the hooks.
 func TestBoardLayout_PanelControlsRenderOnThePanel(t *testing.T) {
-	m := boardWithChat(view.NewChatPanel(chatFixtureMsgs, "", chatFixtureNow, nil), true)
+	m := boardWithChat(view.NewChatPanel(chatFixtureMsgs, "", chatFixtureNow, nil, nil), true)
 	html := renderProgress(t, "page-board", view.SamplePage("Test", "board", m))
 
 	if !strings.Contains(html, `id="chat-panel"`) {
@@ -166,7 +166,7 @@ func TestBoardLayout_PanelControlsRenderOnThePanel(t *testing.T) {
 // classes), no inline event handlers (the toggle is wired in app.js by
 // data-attribute).
 func TestChatMarkup_NoInlineStylesNoHandlers(t *testing.T) {
-	m := boardWithChat(view.NewChatPanel(chatFixtureMsgs, "", chatFixtureNow, nil), true)
+	m := boardWithChat(view.NewChatPanel(chatFixtureMsgs, "", chatFixtureNow, nil, nil), true)
 	html := renderProgress(t, "page-board", view.SamplePage("Test", "board", m))
 	if strings.Contains(html, `style="`) || strings.Contains(html, `style='`) {
 		t.Fatal("board page carries an inline style attribute")
@@ -197,7 +197,7 @@ func TestChatEntriesNewestFirst_FullOrder(t *testing.T) {
 		{ID: "m2", Author: "agent-b", Body: "second", CreatedAt: now.Add(-time.Minute)},
 		{ID: "m1", Author: "agent-a", Body: "first, oldest", CreatedAt: now.Add(-2 * time.Minute)},
 	}
-	entries := view.ChatEntriesNewestFirst(msgs, now, nil)
+	entries := view.ChatEntriesNewestFirst(msgs, now, nil, nil)
 	if len(entries) != 3 {
 		t.Fatalf("got %d entries, want 3", len(entries))
 	}
@@ -225,7 +225,7 @@ func TestChatEntriesNewestFirst_FullOrder(t *testing.T) {
 // TestChatEntriesNewestFirst_Empty: an empty page maps to an empty (not
 // nil-that-panics-on-range, not one-element) slice.
 func TestChatEntriesNewestFirst_Empty(t *testing.T) {
-	entries := view.ChatEntriesNewestFirst(nil, chatFixtureNow, nil)
+	entries := view.ChatEntriesNewestFirst(nil, chatFixtureNow, nil, nil)
 	if len(entries) != 0 {
 		t.Fatalf("got %d entries for an empty page, want 0", len(entries))
 	}
@@ -251,7 +251,7 @@ func TestChatPanel_LatestAndSilence(t *testing.T) {
 	// The panel's silence is computed against `now`, not against the
 	// newest entry's time — it asks "how long since the last post",
 	// so the panel needs the page renderer's "now", passed here.
-	panel := view.NewChatPanel(msgs, "", now, nil)
+	panel := view.NewChatPanel(msgs, "", now, nil, nil)
 	if panel.LatestAt.IsZero() {
 		t.Fatal("LatestAt is zero — the panel did not capture the latest entry's CreatedAt")
 	}
@@ -286,7 +286,7 @@ func TestChatPanel_SilenceFormatsGapsHumanly(t *testing.T) {
 		msgs := []domain.ChatMessage{
 			{ID: "m1", Author: "x", Body: "single post", CreatedAt: now.Add(-c.gap)},
 		}
-		panel := view.NewChatPanel(msgs, "", now, nil)
+		panel := view.NewChatPanel(msgs, "", now, nil, nil)
 		if panel.Silence != c.want {
 			t.Errorf("gap %v: Silence = %q, want %q", c.gap, panel.Silence, c.want)
 		}
@@ -299,7 +299,7 @@ func TestChatPanel_SilenceFormatsGapsHumanly(t *testing.T) {
 // no last activity to report, so the template's `{{if .Chat.LatestAt}}`
 // guard skips the whole element.
 func TestChatPanel_EmptyHasNoLatestOrSilence(t *testing.T) {
-	panel := view.NewChatPanel(nil, "", chatFixtureNow, nil)
+	panel := view.NewChatPanel(nil, "", chatFixtureNow, nil, nil)
 	if !panel.LatestAt.IsZero() {
 		t.Fatalf("LatestAt = %v, want zero for an empty panel", panel.LatestAt)
 	}
@@ -313,7 +313,7 @@ func TestChatPanel_EmptyHasNoLatestOrSilence(t *testing.T) {
 // when there are messages, and renders NEITHER (not "0s ago") when
 // there are none. A "online" dot is forbidden by the brief.
 func TestBoardPage_ThoughtsHeaderShowsLastAndSilence(t *testing.T) {
-	withMsgs := boardWithChat(view.NewChatPanel(chatFixtureMsgs, "", chatFixtureNow, nil), true)
+	withMsgs := boardWithChat(view.NewChatPanel(chatFixtureMsgs, "", chatFixtureNow, nil, nil), true)
 	html := renderProgress(t, "page-board", view.SamplePage("Test", "board", withMsgs))
 
 	if !strings.Contains(html, "chat-panel-silence") {
@@ -345,7 +345,7 @@ func TestBoardPage_ThoughtsHeaderShowsLastAndSilence(t *testing.T) {
 		}
 	}
 
-	empty := boardWithChat(view.NewChatPanel(nil, "", chatFixtureNow, nil), true)
+	empty := boardWithChat(view.NewChatPanel(nil, "", chatFixtureNow, nil, nil), true)
 	emptyHTML := renderProgress(t, "page-board", view.SamplePage("Test", "board", empty))
 	// The chat-panel-silence class only appears when LatestAt is non-zero.
 	// The page also has the "online" word in the standing prompt (the
@@ -364,7 +364,7 @@ func TestChatTextEscaped(t *testing.T) {
 	msgs := []domain.ChatMessage{
 		{ID: "m1", Author: "agent-x", Body: `<script>alert(1)</script> A & B καλημέρα`, CreatedAt: chatFixtureNow},
 	}
-	m := boardWithChat(view.NewChatPanel(msgs, "", chatFixtureNow, nil), true)
+	m := boardWithChat(view.NewChatPanel(msgs, "", chatFixtureNow, nil, nil), true)
 	html := renderProgress(t, "page-board", view.SamplePage("Test", "board", m))
 
 	if strings.Contains(html, "<script>alert(1)") {
@@ -404,7 +404,7 @@ func TestChatPanel_HeaderAndFeedAgreeOnTheClock(t *testing.T) {
 	msgs := []domain.ChatMessage{
 		{ID: "m1", Author: "agent-alpha", Body: "the only post", CreatedAt: posted},
 	}
-	panel := view.NewChatPanel(msgs, "", now, nil)
+	panel := view.NewChatPanel(msgs, "", now, nil, nil)
 
 	want := posted.Local().Format("15:04")
 	if got := panel.LatestAt.Format("15:04"); got != want {

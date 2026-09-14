@@ -414,6 +414,87 @@ func TestReplay_ArchivalMovesTheRightCounter(t *testing.T) {
 	}
 }
 
+// KANB-34: the curve must CARRY which instants were archival. A chart cannot
+// tell an archival from a completion by looking at the counts — both make a
+// bucket fall — so each replayed point names how many cards left the project
+// AT that instant, and the renderer turns that into the axis tick that stops
+// a falling total from being read as lost data or as finished work.
+//
+// Both archival cases must appear: an open card leaving drops total AND open,
+// a finished card leaving drops total while open holds — and a plain move to
+// done, which is work FINISHING, must carry no tick at all.
+func TestHistoryPoints_FlagTheArchivalInstants(t *testing.T) {
+	env := openTestEnv(t)
+	openCard := makeBacklogTask(t, env, "archived while open")
+	finished := makeBacklogTask(t, env, "archived when done")
+	mover := makeBacklogTask(t, env, "moved to done, never archived")
+
+	moveTask(t, env, finished, "Done")
+	waitForClockTick(t, env)
+	archiveTask(t, env, openCard, true)
+	waitForClockTick(t, env)
+	archiveTask(t, env, finished, true)
+	waitForClockTick(t, env)
+	moveTask(t, env, mover, "Done")
+
+	pts := buildHistoryPoints(journalOf(t, env), env.proj.EstimateUnit)
+	if len(pts) < 4 {
+		t.Fatalf("the curve has %d points, want at least 4 — the fixture collapsed into fewer instants than it exercised", len(pts))
+	}
+
+	flagged := 0
+	for i := 1; i < len(pts); i++ {
+		p, prev := pts[i], pts[i-1]
+		switch {
+		case p.Archived == 0:
+			// A non-archival instant may not lose work. The one other thing
+			// that lowers a bucket is a completion, and that leaves total
+			// alone.
+			if p.TotalTasks < prev.TotalTasks {
+				t.Fatalf("point %d: total fell %d -> %d with no archival flag — the drop would be drawn in silence",
+					i, prev.TotalTasks, p.TotalTasks)
+			}
+		default:
+			flagged++
+			if p.Archived != 1 {
+				t.Fatalf("point %d flags %d archived, want 1", i, p.Archived)
+			}
+			if p.TotalTasks != prev.TotalTasks-1 {
+				t.Fatalf("archival point %d: total %d -> %d, want a drop of exactly 1",
+					i, prev.TotalTasks, p.TotalTasks)
+			}
+			if p.DoneTasks > prev.DoneTasks {
+				t.Fatalf("archival point %d raised done, which archival must never do", i)
+			}
+			if flagged == 1 {
+				// The open card left: open falls with total.
+				if p.OpenTasks != prev.OpenTasks-1 {
+					t.Fatalf("archiving the OPEN card: open %d -> %d, want a drop of 1",
+						prev.OpenTasks, p.OpenTasks)
+				}
+			} else {
+				// The finished card left: open must hold.
+				if p.OpenTasks != prev.OpenTasks {
+					t.Fatalf("archiving the DONE card: open %d -> %d, want it unchanged",
+						prev.OpenTasks, p.OpenTasks)
+				}
+			}
+		}
+	}
+	if flagged != 2 {
+		t.Fatalf("the curve flags %d archival instants, want exactly 2 (one open card, one finished card)", flagged)
+	}
+	// The last point is the plain completion, not an archival: the flag
+	// belongs to departures, never to work finishing.
+	if last := pts[len(pts)-1]; last.Archived != 0 {
+		t.Fatalf("the final point (a plain move to done) carries an archival flag")
+	}
+	if last := pts[len(pts)-1]; last.OpenTasks != pts[len(pts)-2].OpenTasks-1 || last.TotalTasks != pts[len(pts)-2].TotalTasks {
+		t.Fatalf("the final point is not the completion: total %d -> %d, open %d -> %d",
+			pts[len(pts)-2].TotalTasks, last.TotalTasks, pts[len(pts)-2].OpenTasks, last.OpenTasks)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Acceptance 7: today's estimate edits do not move yesterday's points.
 // ---------------------------------------------------------------------------
@@ -565,6 +646,7 @@ func waitForClockTick(t *testing.T, env *testEnv) {
 func samePoint(a, b HistoryPoint) bool {
 	if !a.At.Equal(b.At) ||
 		a.TotalTasks != b.TotalTasks || a.OpenTasks != b.OpenTasks || a.DoneTasks != b.DoneTasks ||
+		a.Archived != b.Archived ||
 		a.Leaves != b.Leaves || a.DoneLeaves != b.DoneLeaves || a.LeavesEstimated != b.LeavesEstimated ||
 		a.EstimateTotal != b.EstimateTotal || a.EstimateDone != b.EstimateDone {
 		return false

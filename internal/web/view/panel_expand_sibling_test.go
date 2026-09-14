@@ -26,7 +26,7 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestBoardLayout_ExpandButtonIsASiblingOfThePanel(t *testing.T) {
-	m := boardWithChat(view.NewChatPanel(chatFixtureMsgs, "", chatFixtureNow, nil), true)
+	m := boardWithChat(view.NewChatPanel(chatFixtureMsgs, "", chatFixtureNow, nil, nil), true)
 	html := renderProgress(t, "page-board", view.SamplePage("Test", "board", m))
 
 	expand := strings.Index(html, "data-panel-expand")

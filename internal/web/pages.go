@@ -48,6 +48,148 @@ func knownChatTaskKeys(ctx context.Context, svc service.Service, a service.Actor
 	return known
 }
 
+// chatAcceptanceDoneKeys resolves, for every accepted command on one page,
+// which of the acceptance's task keys currently sit in a done column
+// (KANB-48: the aggregate command state comes from the linked tasks, never
+// from a parallel status machine). One batched TaskGet for the whole page —
+// the same shape as knownChatTaskKeys — best-effort like every other chat
+// read: a failed lookup yields an empty map, which renders the keys without
+// their done state rather than inventing one.
+func chatAcceptanceDoneKeys(ctx context.Context, svc service.Service, a service.Actor, chat *service.ChatListResult) map[string]bool {
+	done := make(map[string]bool)
+	if chat == nil {
+		return done
+	}
+	var keys []string
+	seen := make(map[string]struct{})
+	for _, meta := range chat.Meta {
+		if meta.Acceptance == nil {
+			continue
+		}
+		for _, k := range meta.Acceptance.TaskKeys {
+			up := strings.ToUpper(k)
+			if _, dup := seen[up]; dup {
+				continue
+			}
+			seen[up] = struct{}{}
+			keys = append(keys, k)
+		}
+	}
+	for len(keys) > 0 {
+		chunk := keys
+		if len(chunk) > domain.MaxGetKeys {
+			chunk = chunk[:domain.MaxGetKeys]
+		}
+		keys = keys[len(chunk):]
+		res, err := svc.TaskGet(ctx, a, service.TaskGetInput{Keys: chunk})
+		if err != nil {
+			return done
+		}
+		for _, t := range res.Tasks {
+			done[strings.ToUpper(t.Key)] = t.ColumnKind == domain.KindDone
+		}
+	}
+	return done
+}
+
+// scopeChangeFeedPage and scopeChangeFeedMaxPages bound the forward walk of
+// the whole feed that the chart's scope marks need: the marks must cover the
+// journal's entire span, not just the panel's freshest page, and ChatFeed is
+// the one read that starts at the beginning of history. One hundred pages of
+// one hundred messages is far past any feed this board has carried; at the
+// cap the oldest marks silently drop out rather than the chart hanging.
+const (
+	scopeChangeFeedPage     = 100
+	scopeChangeFeedMaxPages = 100
+)
+
+// scopeChangeNotes walks the project's whole feed and collects the
+// scope_change declarations for the items chart's axis (KANB-38). Each note
+// carries the message's own instant, author and body — the chart's tooltip
+// quotes the declaration, and the href leads to the entry in the Thoughts
+// feed, whose entries render with the matching id anchor. Best-effort like
+// every other chat read feeding a page (see knownChatTaskKeys): a failed
+// read costs the marks, not the chart.
+func scopeChangeNotes(ctx context.Context, svc service.Service, a service.Actor, projectKey string) []view.ScopeChangeNote {
+	after := ""
+	var notes []view.ScopeChangeNote
+	for page := 0; page < scopeChangeFeedMaxPages; page++ {
+		res, err := svc.ChatFeed(ctx, a, service.ChatFeedInput{
+			ProjectKey: projectKey,
+			After:      after,
+			Limit:      scopeChangeFeedPage,
+		})
+		if err != nil {
+			return notes
+		}
+		for _, m := range res.Messages {
+			if m.Message.Kind != domain.MessageScopeChange {
+				continue
+			}
+			notes = append(notes, view.ScopeChangeNote{
+				At:     m.Message.CreatedAt,
+				Author: m.Message.Author,
+				Body:   m.Message.Body,
+				Href:   "/p/" + projectKey + "#chat-" + m.Message.ID,
+			})
+		}
+		if !res.HasMore {
+			return notes
+		}
+		after = res.NextCursor
+	}
+	return notes
+}
+
+// chatEntryMetaView maps the service's resolved display data onto the view's
+// own meta type — the view package renders what it is handed and reaches
+// nowhere for data, so the field-by-field translation lives here, next to
+// the read that produced it. done is chatAcceptanceDoneKeys's result.
+func chatEntryMetaView(chat *service.ChatListResult, done map[string]bool) map[string]view.ChatEntryMeta {
+	if chat == nil || len(chat.Meta) == 0 {
+		return nil
+	}
+	out := make(map[string]view.ChatEntryMeta, len(chat.Meta))
+	for id, m := range chat.Meta {
+		vm := view.ChatEntryMeta{
+			RecipientName: m.RecipientName,
+			ExecutorName:  m.ExecutorName,
+		}
+		if m.Parent != nil {
+			vm.ParentAuthor = m.Parent.Author
+			vm.ParentBody = m.Parent.Body
+		}
+		if m.Acceptance != nil {
+			vm.Accepted = true
+			vm.Tasks = make([]view.ChatEntryTask, 0, len(m.Acceptance.TaskKeys))
+			for _, k := range m.Acceptance.TaskKeys {
+				vm.Tasks = append(vm.Tasks, view.ChatEntryTask{Key: k, Done: done[strings.ToUpper(k)]})
+			}
+		}
+		out[id] = vm
+	}
+	return out
+}
+
+// chatParticipants maps the board read's participants onto the composer's
+// recipient options: id and display name only, the same shape
+// service.Participant already carries.
+func chatParticipants(p service.BoardProject) []view.ChatRecipient {
+	out := make([]view.ChatRecipient, 0, len(p.Participants))
+	for _, t := range p.Participants {
+		out = append(out, view.ChatRecipient{ID: t.TokenID, Label: t.Name})
+	}
+	return out
+}
+
+// coordinatorName is the appointed coordinator's display name, "" when none.
+func coordinatorName(p service.BoardProject) string {
+	if p.Coordinator == nil {
+		return ""
+	}
+	return p.Coordinator.Name
+}
+
 // formatEstimateLabel renders an estimate number + unit as the compact
 // "2h"/"30m" string the drawer pill shows. It mirrors internal/web/view's
 // own formatEstimate logic for the integer case (view.formatEstimate is
@@ -162,7 +304,14 @@ func (w *Web) handleBoard(rw http.ResponseWriter, r *http.Request) {
 		Limit:      chatInitialLimit,
 	}); err == nil {
 		known := knownChatTaskKeys(r.Context(), w.d.Service, actorFor(tok), chat.Messages)
-		model.Chat = view.NewChatPanel(chat.Messages, chat.Cursor, w.d.Now(), known)
+		done := chatAcceptanceDoneKeys(r.Context(), w.d.Service, actorFor(tok), chat)
+		model.Chat = view.NewChatPanel(chat.Messages, chat.Cursor, w.d.Now(), known, chatEntryMetaView(chat, done))
+		// The composer renders only for a session that may actually post;
+		// NewChatComposer returns nil otherwise and the panel stays
+		// read-only. The participant list comes from the board read the
+		// page already made — no second service call.
+		model.Chat.Compose = view.NewChatComposer(tok.Scopes.Has(domain.ScopeWrite),
+			coordinatorName(board.Projects[0]), chatParticipants(board.Projects[0]))
 	}
 
 	page := w.newPage(r.Context(), rw, r, tok, "board")
@@ -238,9 +387,63 @@ func (w *Web) handleChatOlder(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	known := knownChatTaskKeys(r.Context(), w.d.Service, actorFor(tok), result.Messages)
-	entries := view.ChatEntriesNewestFirst(result.Messages, w.d.Now(), known)
+	done := chatAcceptanceDoneKeys(r.Context(), w.d.Service, actorFor(tok), result)
+	entries := view.ChatEntriesNewestFirst(result.Messages, w.d.Now(), known, chatEntryMetaView(result, done))
 	rw.Header().Set("X-Chat-Next-Cursor", result.Cursor)
 	w.renderFragment(rw, r, http.StatusOK, "chat-entries", entries)
+}
+
+// handleChatPost is "POST /p/{key}/chat": the thoughts panel's composer
+// (KANB-48). body is required and stored verbatim; kind, recipient,
+// reply_to and idempotency_key are the protocol fields passed through to
+// service.ChatAdd, which owns every rule about them (valid kinds, recipient
+// resolution, the reply target, and retry deduplication scoped to the
+// sender's token).
+//
+// The idempotency key deserves its own sentence, because the card makes it
+// the UI's obligation: the composer generates one per send attempt and
+// keeps it until the send succeeds, so a second click — or a retried
+// request after a network error — carries the SAME key and the service
+// returns the first message instead of creating a twin command. The handler
+// does not invent a key when the field is empty: a caller that omits it
+// said what it wanted, and silently adding one would trade an explicit
+// behaviour for an unspecified one.
+//
+// The response is a small JSON body, not rendered markup: the feed renders
+// entries through exactly one path (the shared chat-entry template, reached
+// by the initial page render and by the live refresh the SSE event this
+// very post triggers), so a successful send refetches like any other
+// arrival and can never draw its message differently from how every other
+// message is drawn. requireAPIAuth + verifyCSRF: the same JS-driven
+// fragment mutation shape the /fragments/* handlers use.
+func (w *Web) handleChatPost(rw http.ResponseWriter, r *http.Request) {
+	tok, ok := w.requireAPIAuth(rw, r, domain.ScopeWrite)
+	if !ok {
+		return
+	}
+	r.Body = http.MaxBytesReader(rw, r.Body, domain.MaxRequestBodyBytes)
+	if err := w.verifyCSRF(r); err != nil {
+		apiError(rw, err)
+		return
+	}
+	key, err := domain.ValidateProjectKey(r.PathValue("key"))
+	if err != nil {
+		apiError(rw, err)
+		return
+	}
+	m, err := w.d.Service.ChatAdd(r.Context(), actorFor(tok), service.ChatAddInput{
+		ProjectKey:     key,
+		Body:           r.PostFormValue("body"),
+		Kind:           r.PostFormValue("kind"),
+		Recipient:      r.PostFormValue("recipient"),
+		ReplyTo:        r.PostFormValue("reply_to"),
+		IdempotencyKey: r.PostFormValue("idempotency_key"),
+	})
+	if err != nil {
+		apiError(rw, err)
+		return
+	}
+	writeJSONIndent(rw, map[string]any{"ok": true, "id": m.ID})
 }
 
 // handleProgressChart is "GET /p/{key}/progress/chart?task=<key>": the
@@ -288,15 +491,23 @@ func (w *Web) handleProgressChart(rw http.ResponseWriter, r *http.Request) {
 		ProjectKey: key,
 		TaskKey:    taskKey,
 		// The item-count panel is a project-level reading — how much work
-		// the board holds and how much of it is still open — so it is asked
-		// for only on the project scope. The service ignores the flag when a
-		// task is named, but not asking keeps the second read off the
-		// per-task path entirely.
-		IncludeItems: taskKey == "",
+		// the board holds and how much of it is still open — so the journal
+		// replay behind it is asked for only on the project scope. The
+		// service ignores the flag when a task is named, but not asking
+		// keeps the replay off the per-task path entirely.
+		IncludeReplay: taskKey == "",
 	})
 	if err != nil {
 		apiError(rw, err)
 		return
+	}
+	// KANB-38: the scope_change declarations ride the items chart's time
+	// axis. They come from the feed, not the journal, so this is one extra
+	// read on the project scope only — the per-task charts have no items
+	// panel and ask for no replay either.
+	var scopeMarks []view.ChartAxisMark
+	if taskKey == "" {
+		scopeMarks = view.ScopeChangeMarks(scopeChangeNotes(r.Context(), w.d.Service, actorFor(tok), key))
 	}
 	switch detail {
 	case "":
@@ -312,7 +523,7 @@ func (w *Web) handleProgressChart(rw http.ResponseWriter, r *http.Request) {
 		w.renderChartDetail(rw, r, view.NewForecastChartDetail(result.Marks))
 		return
 	case "items":
-		w.renderChartDetail(rw, r, view.NewItemsChartDetail(result.Items))
+		w.renderChartDetail(rw, r, view.NewItemsChartDetail(result.Replay, scopeMarks...))
 		return
 	default:
 		apiError(rw, domain.Invalid("detail",
@@ -328,7 +539,14 @@ func (w *Web) handleProgressChart(rw http.ResponseWriter, r *http.Request) {
 		// "render nothing" rule the percent chart already follows for
 		// missing data.
 		Forecast: view.NewForecastChartView(result.Marks, view.DefaultChartWidth, view.DefaultChartHeight),
-		Items:    view.NewItemsChartView(result.Items, view.DefaultChartWidth, view.DefaultChartHeight),
+		Items:    view.NewItemsChartView(result.Replay, view.DefaultChartWidth, view.DefaultChartHeight, scopeMarks...),
+		// KANB-53: the historical readiness curve, from the same replay, so
+		// its caption (service's own sentence about point-in-time estimates)
+		// always has the curve beside it. Nil for a task scope (no replay is
+		// asked for) and when nothing was ever estimated — a frame around
+		// nothing, with the warning but no picture, would be worse than
+		// neither.
+		Readiness: view.NewReadinessChartView(result.Replay, view.DefaultChartWidth, view.DefaultChartHeight),
 	}
 	if frag.Empty() {
 		// Nothing to draw at all: render the empty body app.js already

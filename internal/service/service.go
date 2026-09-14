@@ -711,6 +711,26 @@ type ChatListResult struct {
 	Messages   []domain.ChatMessage
 	NextCursor *domain.ChatCursor
 	Cursor     string // string-encoded NextCursor, or empty if nil
+	// Meta resolves, per message id, the display data the raw rows only
+	// reference (KANB-48): who a recipient id is, what a reply answers, and
+	// whether a command has been accepted. Ids absent from the map have
+	// nothing to resolve — a plain update that addresses nobody and replies
+	// to nothing never appears here. Filled in the same read transaction as
+	// Messages, so a page can never show a quote or an acceptance that the
+	// listed messages do not have.
+	Meta map[string]ChatListEntryMeta
+}
+
+// ChatListEntryMeta is the resolved display data for ONE listed message.
+// Every field is optional: RecipientName/ExecutorName are "" when the row
+// names no token, Parent is nil when the message is not a reply, Acceptance
+// is nil until the command has actually been accepted (KANB-47) — an
+// unaccepted command must not look accepted.
+type ChatListEntryMeta struct {
+	RecipientName string              // display name of Recipient, "" for unset/"all"
+	ExecutorName  string              // display name of ResolvedExecutor, "" when none
+	Parent        *domain.ChatMessage // the message this one replies to
+	Acceptance    *domain.CommandAcceptance
 }
 
 type ChatMessageListResult = ChatListResult
@@ -889,27 +909,15 @@ type ProgressHistoryInput struct {
 	// rather than trimming the result: the bound is applied in SQL, so
 	// trimming afterwards would read every row the limit was meant to skip.
 	Limit int
-	// IncludeItems asks for the project's item-count history alongside the
-	// marks (Result.Items). It is meaningful only for the project scope — a
-	// single task has no item count — and is ignored when TaskKey is set.
-	// Off by default: it is a second read, and the only caller that wants it
-	// is the browser's chart.
-	IncludeItems bool
 	// IncludeReplay asks for the project's history REPLAYED FROM THE
-	// LIFECYCLE JOURNAL (Result.Replay), which is the honest version of the
-	// same curves: it sees reopenings, archivals and estimates as they stood
-	// at each instant, none of which tasks.done_at can remember. Like
-	// IncludeItems it is project-scope only and off by default.
+	// LIFECYCLE JOURNAL (Result.Replay). This is the ONE historical curve of
+	// the item counts (KANB-34): it sees reopenings, archivals and estimates
+	// as they stood at each instant, none of which tasks.done_at can
+	// remember, and the count chart is built from it — there is no second,
+	// created_at-based curve beside it. Project-scope only (a single task
+	// has no item count) and off by default: it is a second read, and the
+	// only caller that wants it is the browser's chart.
 	IncludeReplay bool
-}
-
-// ItemCountPoint is one step in a project's item-count history: at time At
-// the project held Total live tasks, of which Open were not in a done
-// column. Points appear only where a count actually changed.
-type ItemCountPoint struct {
-	At    time.Time
-	Total int
-	Open  int
 }
 
 // ProgressHistoryResult carries the marks in chronological order (the store's
@@ -923,9 +931,6 @@ type ProgressHistoryResult struct {
 	// Limit trimmed the read. It is what tells a caller that older history
 	// exists beyond the page it asked for.
 	Total int
-	// Items is the project's item-count history, present only when the
-	// caller set IncludeItems on a project-scope read. Oldest first.
-	Items []ItemCountPoint
 	// Replay is the project's history rebuilt from the lifecycle journal,
 	// present only when the caller set IncludeReplay on a project-scope read.
 	// Oldest first, one point per recorded instant. It carries the item

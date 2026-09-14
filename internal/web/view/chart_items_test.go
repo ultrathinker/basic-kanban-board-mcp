@@ -45,10 +45,10 @@ func polylinePoints(t *testing.T, svg, series string) [][2]float64 {
 // has to MEAN zero, and the axis top has to mean the real maximum rather than
 // some padded round number.
 func TestItemsChart_ZeroIsOnTheBaselineAndMaxIsAtTheTop(t *testing.T) {
-	points := []service.ItemCountPoint{
-		{At: itemsAt(1), Total: 4, Open: 4},
-		{At: itemsAt(2), Total: 10, Open: 7},
-		{At: itemsAt(3), Total: 10, Open: 0},
+	points := []service.HistoryPoint{
+		{At: itemsAt(1), TotalTasks: 4, OpenTasks: 4},
+		{At: itemsAt(2), TotalTasks: 10, OpenTasks: 7},
+		{At: itemsAt(3), TotalTasks: 10, OpenTasks: 0},
 	}
 	svg := string(view.RenderItemsChart(points, view.DefaultChartWidth, view.DefaultChartHeight))
 	if svg == "" {
@@ -88,14 +88,44 @@ func TestItemsChart_ZeroIsOnTheBaselineAndMaxIsAtTheTop(t *testing.T) {
 	}
 }
 
+// TestItemsChart_AReopenIsVisibleAsARiseInOpen (KANB-34 acceptance 2): the
+// whole point of reading the journal is that a card closed, reopened and
+// closed again shows its dip and its recovery. done_at remembers only the
+// last closing; if the drawn OPEN curve does not rise at the reopen instant,
+// the chart is still drawing the old curve with new plumbing.
+//
+// The fixture: open 3 -> 2 (one finished) -> 3 (reopened) -> 2 (finished
+// again). Every point changes the count, so the step polyline jumps exactly
+// at the 2nd, 3rd and 4th instants; with one start point that puts the jump
+// destinations at polyline indices 2, 4 and 6.
+func TestItemsChart_AReopenIsVisibleAsARiseInOpen(t *testing.T) {
+	points := []service.HistoryPoint{
+		{At: itemsAt(1), TotalTasks: 3, OpenTasks: 3},
+		{At: itemsAt(2), TotalTasks: 3, OpenTasks: 2},
+		{At: itemsAt(3), TotalTasks: 3, OpenTasks: 3}, // the reopen: open climbs back
+		{At: itemsAt(4), TotalTasks: 3, OpenTasks: 2},
+	}
+	svg := string(view.RenderItemsChart(points, view.DefaultChartWidth, view.DefaultChartHeight))
+	open := polylinePoints(t, svg, "items-open")
+	if len(open) != 7 {
+		t.Fatalf("open polyline has %d points, want 7 (start + hold/jump per change)", len(open))
+	}
+	if open[4][1] >= open[2][1] {
+		t.Errorf("the reopen did not draw as a rise: open y %.1f at the reopen, %.1f before it", open[4][1], open[2][1])
+	}
+	if open[6][1] <= open[4][1] {
+		t.Errorf("the second closing did not draw as a fall: open y %.1f after, %.1f at the reopen", open[6][1], open[4][1])
+	}
+}
+
 // TestItemsChart_CountsAreDrawnAsSteps: a count never passes through a
 // fractional value, so the line must hold its level and then jump. A step
 // emits two points per change (the hold, then the jump), which is what
 // distinguishes it from a straight interpolation.
 func TestItemsChart_CountsAreDrawnAsSteps(t *testing.T) {
-	points := []service.ItemCountPoint{
-		{At: itemsAt(1), Total: 1, Open: 1},
-		{At: itemsAt(5), Total: 9, Open: 9},
+	points := []service.HistoryPoint{
+		{At: itemsAt(1), TotalTasks: 1, OpenTasks: 1},
+		{At: itemsAt(5), TotalTasks: 9, OpenTasks: 9},
 	}
 	svg := string(view.RenderItemsChart(points, view.DefaultChartWidth, view.DefaultChartHeight))
 	total := polylinePoints(t, svg, "items-total")
@@ -115,17 +145,132 @@ func TestItemsChart_CountsAreDrawnAsSteps(t *testing.T) {
 	}
 }
 
+// TestItemsChart_ArchivedTickIsDrawnForBothCases (KANB-34 acceptance 5): the
+// axis tick must appear whether the archived card was open or finished, and
+// the geometry must tell the two apart — the open card's departure drops BOTH
+// curves, the finished card's drops ONLY total, leaving open exactly where it
+// was. Rendering the second case as an open-drop would be exactly the
+// "archival passed off as a completion" lie the tick exists to prevent.
+func TestItemsChart_ArchivedTickIsDrawnForBothCases(t *testing.T) {
+	cases := []struct {
+		name   string
+		points []service.HistoryPoint
+		// openFell says whether the OPEN curve must fall at the archival.
+		openFell bool
+	}{
+		{
+			name: "an open card leaves: total and open both fall",
+			points: []service.HistoryPoint{
+				{At: itemsAt(1), TotalTasks: 4, OpenTasks: 4},
+				{At: itemsAt(2), TotalTasks: 3, OpenTasks: 3, Archived: 1},
+			},
+			openFell: true,
+		},
+		{
+			name: "a finished card leaves: total falls, open holds",
+			points: []service.HistoryPoint{
+				{At: itemsAt(1), TotalTasks: 4, OpenTasks: 1},
+				{At: itemsAt(2), TotalTasks: 3, OpenTasks: 1, Archived: 1},
+			},
+			openFell: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svg := string(view.RenderItemsChart(tc.points, view.DefaultChartWidth, view.DefaultChartHeight))
+			if !strings.Contains(svg, `data-axis-mark="-1"`) {
+				t.Errorf("the archival instant carries no axis tick:\n%s", svg)
+			}
+			total := polylinePoints(t, svg, "items-total")
+			open := polylinePoints(t, svg, "items-open")
+			totalFell := total[len(total)-1][1] > total[0][1]
+			openFell := open[len(open)-1][1] > open[0][1]
+			if !totalFell {
+				t.Error("the total curve did not fall at the archival")
+			}
+			if openFell != tc.openFell {
+				t.Errorf("open fell = %v, want %v", openFell, tc.openFell)
+			}
+		})
+	}
+}
+
+// TestItemsChart_AnArchivalDropSurvivesDecimation pins the force-keep inside
+// decimateCountPoints, on the branch that actually discards interior points.
+//
+// The fixture is 120 strictly-falling points, all open, so every step is a
+// drop — the "worse direction" rule marks all 120 critical, the shared
+// decimator overflows its budget and switches to envelope buckets, which keep
+// only bucket extremes. Point 60 (the archival) sits mid-bucket on a slope:
+// no extremum, no bucket edge, so it survives ONLY through the explicit
+// "never drop an archival point" rule. Remove that rule and the tick — drawn
+// from the SURVIVING points, so it can never point where nothing fell —
+// disappears with it, and the archival is drawn in silence.
+func TestItemsChart_AnArchivalDropSurvivesDecimation(t *testing.T) {
+	base := time.Date(2026, 9, 12, 0, 0, 0, 0, time.Local)
+	points := make([]service.HistoryPoint, 120)
+	for i := range points {
+		p := service.HistoryPoint{At: base.Add(time.Duration(i) * time.Minute), TotalTasks: 120 - i, OpenTasks: 120 - i}
+		if i == 60 {
+			p.Archived = 1
+		}
+		points[i] = p
+	}
+	svg := string(view.RenderItemsChart(points, view.DefaultChartWidth, view.DefaultChartHeight))
+	if !strings.Contains(svg, `data-axis-mark="-1"`) {
+		t.Fatalf("the archival tick did not survive decimation of a %d-point curve:\n%s", len(points), svg)
+	}
+
+	// The tick must stand on a DRAWN point, not float between them: the
+	// archival instant's x must appear among the polyline vertices. The span
+	// is 119 minutes mapped onto the plot width, and the archival is 60/119
+	// of the way along it.
+	wantX := view.ChartPadLeft + (60.0/119.0)*(float64(view.DefaultChartWidth)-view.ChartPadLeft-view.ChartPadRight)
+	total := polylinePoints(t, svg, "items-total")
+	for _, p := range total {
+		d := p[0] - wantX
+		if d < 0 {
+			d = -d
+		}
+		if d < 0.6 {
+			return // found it
+		}
+	}
+	t.Errorf("no total vertex at the archival instant (x %.1f); the tick would point at a level the line never shows", wantX)
+}
+
+// TestItemsChart_TooltipCarriesTheTimeAndBothValues (KANB-34 acceptance:
+// the tooltip names the time and the values AT the point). Both numbers, not
+// one: a tooltip naming only the total makes the reader subtract to learn
+// what is left, which is how "open" and "done" quietly get mixed up.
+func TestItemsChart_TooltipCarriesTheTimeAndBothValues(t *testing.T) {
+	points := []service.HistoryPoint{
+		{At: itemsAt(10), TotalTasks: 4, OpenTasks: 4},
+		{At: itemsAt(12), TotalTasks: 9, OpenTasks: 3},
+	}
+	svg := string(view.RenderItemsChart(points, view.DefaultChartWidth, view.DefaultChartHeight))
+	if !strings.Contains(svg, `<title>12:00, total 9, open 3</title>`) {
+		t.Errorf("the last point's tooltip does not name the time and both values:\n%s", svg)
+	}
+	if n := strings.Count(svg, "data-items-point"); n != 2 {
+		t.Errorf("%d tooltip points drawn, want one per drawn point (2)", n)
+	}
+}
+
 // TestItemsChart_SinglePointDrawsNoLine: one instant of history is not a
 // trend. Two dots, no polyline — the same rule the progress chart follows.
 func TestItemsChart_SinglePointDrawsNoLine(t *testing.T) {
-	svg := string(view.RenderItemsChart([]service.ItemCountPoint{
-		{At: itemsAt(3), Total: 6, Open: 2},
+	svg := string(view.RenderItemsChart([]service.HistoryPoint{
+		{At: itemsAt(3), TotalTasks: 6, OpenTasks: 2},
 	}, view.DefaultChartWidth, view.DefaultChartHeight))
 	if strings.Contains(svg, "<polyline") {
 		t.Errorf("a single point was drawn as a line:\n%s", svg)
 	}
 	if !strings.Contains(svg, `data-series="items-total"`) || !strings.Contains(svg, `data-series="items-open"`) {
 		t.Errorf("both counts must still be marked:\n%s", svg)
+	}
+	if !strings.Contains(svg, `<title>03:00, total 6, open 2</title>`) {
+		t.Errorf("the single point lost its tooltip:\n%s", svg)
 	}
 }
 
@@ -139,16 +284,21 @@ func TestItemsChart_EmptyRendersNothing(t *testing.T) {
 }
 
 // TestItemsChart_AllZeroCountsDoNotDivideByZero: a project whose tasks were
-// all archived can present a history whose maximum is zero.
+// all archived can present a history whose maximum is zero. The archived
+// instants must still be ticked — the emptiness of the board today is the
+// story of everything that left.
 func TestItemsChart_AllZeroCountsDoNotDivideByZero(t *testing.T) {
-	svg := string(view.RenderItemsChart([]service.ItemCountPoint{
-		{At: itemsAt(1), Total: 0, Open: 0},
-		{At: itemsAt(2), Total: 0, Open: 0},
+	svg := string(view.RenderItemsChart([]service.HistoryPoint{
+		{At: itemsAt(1), TotalTasks: 0, OpenTasks: 0},
+		{At: itemsAt(2), TotalTasks: 0, OpenTasks: 0, Archived: 1},
 	}, view.DefaultChartWidth, view.DefaultChartHeight))
 	if svg == "" {
 		t.Fatal("no SVG rendered")
 	}
 	if strings.Contains(svg, "NaN") || strings.Contains(svg, "Inf") {
 		t.Errorf("a zero maximum produced non-finite coordinates:\n%s", svg)
+	}
+	if !strings.Contains(svg, `data-axis-mark="-1"`) {
+		t.Errorf("the archival tick is missing from an all-zero history:\n%s", svg)
 	}
 }

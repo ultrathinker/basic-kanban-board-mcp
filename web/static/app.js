@@ -1331,6 +1331,46 @@
 
   var CHAT_HISTORY_PAGE_SIZE = 10; // mirrors chatInitialLimit in pages.go
 
+  // appendNewChatEntries merges one freshly rendered feed (from the full
+  // page the live refresh just fetched) into the one on screen. It never
+  // replaces the feed's markup wholesale: entries the user may be reading
+  // or replying to keep their DOM identity, only genuinely new ids are
+  // inserted, at the TOP — newest-first order (KANB-23) puts every arrival
+  // at the same edge, whether it came from SSE or from a refresh that
+  // raced one. Without this the SSE signal would swap nothing and the
+  // feed would freeze until a manual reload.
+  //
+  // Nodes are adopted from the parsed refresh document one by one, so
+  // nothing inside the live <ol> is rebuilt and any focus or selection the
+  // user holds elsewhere in the panel survives.
+  function appendNewChatEntries(fresh, doc) {
+    var feed = chatFeedEl();
+    if (!feed) return;
+    var seen = {};
+    var existing = feed.querySelectorAll('[data-chat-id]');
+    for (var i = 0; i < existing.length; i++) {
+      seen[existing[i].getAttribute('data-chat-id')] = true;
+    }
+    var incoming = fresh.querySelectorAll('[data-chat-id]');
+    var added = 0;
+    // Walk the page from its oldest end and always prepend: the last one
+    // inserted is the page's newest, which is exactly where newest-first
+    // wants it.
+    for (var j = incoming.length - 1; j >= 0; j--) {
+      var el = incoming[j];
+      var id = el.getAttribute('data-chat-id');
+      if (seen[id]) continue;
+      seen[id] = true;
+      feed.insertBefore(document.importNode(el, true), feed.firstChild);
+      added++;
+    }
+    if (added > 0) {
+      feed.hidden = false;
+      var empty = document.querySelector('[data-chat-empty]');
+      if (empty) empty.hidden = true;
+    }
+  }
+
   var chatOlderCursor = '';    // the cursor for the NEXT "show more" page
   var chatInitialCursor = '';  // the FIRST page's cursor, cached so "hide all
                                 // history" can rewind to the right boundary
@@ -1444,6 +1484,178 @@
     chatOlderCursor = cursorEl ? cursorEl.getAttribute('data-chat-next-cursor') || '' : '';
     chatInitialCursor = chatOlderCursor;
     initChatHistoryControls();
+  }
+
+  // -- 7b'. ai thoughts panel: the composer (KANB-48) -----------------------
+  //
+  // One compact form at the bottom of the thoughts section: multiline text,
+  // an addressee (coordinator default / a participant / all), a VISIBLE type
+  // select (message / question / command) and send. The card's warning is
+  // the reason the type select is a real always-rendered <select>: a neutral
+  // post must not be able to silently become a command, so there is no
+  // hidden default and no remembered mode — what the select shows is what
+  // will be sent.
+  //
+  // Draft survival is structural: the composer sits OUTSIDE every live
+  // region (refreshLiveRegions only ever swaps #board, #project-progress
+  // and appends to #chat-feed), so arrivals, card moves and refresh passes
+  // cannot touch it. A FAILED send clears nothing — the text, the reply
+  // target and the idempotency key all stay so the next click is a true
+  // retry of the same message, not a second one.
+  //
+  // The idempotency key is minted per send attempt and kept until success:
+  // a double click, or a retry after a network error, carries the SAME key
+  // and the service answers with the first message instead of creating a
+  // twin command. Editing the text after a failure mints a new key, because
+  // the service loudly refuses a known key with different content — and
+  // that refusal is exactly the guarantee the key exists for.
+  //
+  // Replies stay in the common feed (no threads): a reply is an ordinary
+  // message with reply_to set; the composer shows a short quote of what it
+  // answers and preselects the original author as addressee when their
+  // token is one the session can address.
+
+  var CHAT_QUOTE_MAX = 80; // mirrors chatQuoteMaxRunes in view.go
+
+  function newIdempotencyKey() {
+    var bytes = new Uint8Array(16);
+    if (window.crypto && window.crypto.getRandomValues) {
+      window.crypto.getRandomValues(bytes);
+    } else {
+      for (var i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+    }
+    var out = '';
+    for (var j = 0; j < bytes.length; j++) out += ('0' + bytes[j].toString(16)).slice(-2);
+    return out;
+  }
+
+  function initChatComposer() {
+    var form = document.querySelector('[data-chat-compose]');
+    if (!form) return;
+    var textEl = form.querySelector('[data-chat-compose-text]');
+    var recipEl = form.querySelector('[data-chat-compose-recipient]');
+    var kindEl = form.querySelector('[data-chat-compose-kind]');
+    var sendBtn = form.querySelector('[data-chat-compose-send]');
+    var errEl = form.querySelector('[data-chat-compose-error]');
+    var replyBox = form.querySelector('[data-chat-compose-reply]');
+    var replyQuoteEl = form.querySelector('[data-chat-compose-reply-quote]');
+    var replyCancel = form.querySelector('[data-chat-compose-reply-cancel]');
+    if (!textEl || !recipEl || !kindEl || !sendBtn) return;
+
+    var idemKey = '';
+    var inFlight = false;
+    var replyTarget = { id: '', author: '', token: '' };
+
+    function clearError() {
+      if (!errEl) return;
+      errEl.hidden = true;
+      errEl.textContent = '';
+    }
+
+    function showError(msg) {
+      if (!errEl) { toast(msg, 'error'); return; }
+      errEl.textContent = msg;
+      errEl.hidden = false;
+    }
+
+    function resetReply() {
+      replyTarget = { id: '', author: '', token: '' };
+      if (replyBox) replyBox.hidden = true;
+      if (replyQuoteEl) replyQuoteEl.textContent = '';
+    }
+
+    // Any edit after a failed send means a different message: the old key
+    // must not ride along, the service would refuse the mismatch. While a
+    // send is in flight the button is disabled, so an input event can only
+    // belong to the next message.
+    textEl.addEventListener('input', function () {
+      if (!inFlight) idemKey = '';
+      clearError();
+    });
+
+    // Reply: delegated on document, because entries arrive and leave all
+    // the time (older pages, live arrivals) and none of them carries its
+    // own listener. The quote is cut to the same length the server-side
+    // reply quotes use, so nothing grows by being replied to.
+    document.addEventListener('click', function (e) {
+      var btn = e.target.closest && e.target.closest('[data-chat-reply]');
+      if (!btn) return;
+      var entry = btn.closest('[data-chat-id]');
+      if (!entry) return;
+      replyTarget.id = entry.getAttribute('data-chat-id') || '';
+      replyTarget.author = btn.getAttribute('data-chat-reply-author') || '';
+      replyTarget.token = entry.getAttribute('data-author-token') || '';
+      if (replyQuoteEl) {
+        var bodyEl = entry.querySelector('.chat-text');
+        var q = bodyEl ? (bodyEl.textContent || '').trim() : '';
+        if (q.length > CHAT_QUOTE_MAX) q = q.slice(0, CHAT_QUOTE_MAX) + '…';
+        replyQuoteEl.textContent = (replyTarget.author ? replyTarget.author + ': ' : '') + '“' + q + '”';
+      }
+      if (replyBox) replyBox.hidden = false;
+      if (replyTarget.token) {
+        for (var i = 0; i < recipEl.options.length; i++) {
+          if (recipEl.options[i].value === replyTarget.token) {
+            recipEl.selectedIndex = i;
+            break;
+          }
+        }
+      }
+      textEl.focus();
+    });
+
+    if (replyCancel) {
+      replyCancel.addEventListener('click', function () {
+        resetReply();
+        textEl.focus();
+      });
+    }
+
+    sendBtn.addEventListener('click', function () {
+      if (inFlight) return;
+      var body = textEl.value;
+      if (!body.replace(/\s/g, '')) {
+        showError('Write a message first.');
+        return;
+      }
+      if (!idemKey) idemKey = newIdempotencyKey();
+      var key = chatProjectKey();
+      if (!key) return;
+      inFlight = true;
+      sendBtn.disabled = true;
+      postForm('/p/' + encodeURIComponent(key) + '/chat', {
+        body: body,
+        kind: kindEl.value,
+        recipient: recipEl.value,
+        reply_to: replyTarget.id,
+        idempotency_key: idemKey
+      })
+        .then(function (r) {
+          if (!r.ok) {
+            return errorMessage(r, 'could not send').then(function (msg) {
+              throw new Error(msg);
+            });
+          }
+          return r.json();
+        })
+        .then(function () {
+          // Success only: a failed send keeps text, reply and key.
+          textEl.value = '';
+          idemKey = '';
+          resetReply();
+          clearError();
+          // The post fires an SSE event anyway; this just makes the sent
+          // message appear now rather than on the event's heels, through
+          // the very same fetch-and-merge path every other arrival uses.
+          refreshLiveRegions();
+        })
+        .catch(function (err) {
+          showError(err && err.message ? err.message : 'could not send');
+        })
+        .then(function () {
+          inFlight = false;
+          sendBtn.disabled = false;
+        });
+    });
   }
 
   // initPanelState applies the per-project persisted state at parse time
@@ -1952,6 +2164,7 @@
     initAutoSubmit();
     initProjectCombobox();
     initChatPanel();
+    initChatComposer();
     initChatRefresh();
     initPanelToggle();
     initChatSplitter();

@@ -73,7 +73,7 @@ func TestBoardPage_ProjectProgressHasOwnLiveRegion(t *testing.T) {
 // It also pins the live-region declaration and the empty-state placeholder
 // wired to reappear/disappear via data-chat-empty.
 func TestBoardPage_ChatFeedIsAlwaysPresentAsALiveRegion(t *testing.T) {
-	empty := boardWithChat(view.NewChatPanel(nil, "", chatFixtureNow, nil), true)
+	empty := boardWithChat(view.NewChatPanel(nil, "", chatFixtureNow, nil, nil), true)
 	html := renderProgress(t, "page-board", view.SamplePage("Test", "board", empty))
 
 	if !strings.Contains(html, `id="chat-feed"`) {
@@ -99,7 +99,7 @@ func TestBoardPage_ChatFeedIsAlwaysPresentAsALiveRegion(t *testing.T) {
 
 	// With messages present, the relationship flips: the feed is visible and
 	// the placeholder is the one carrying hidden.
-	withMsgs := boardWithChat(view.NewChatPanel(chatFixtureMsgs, "", chatFixtureNow, nil), true)
+	withMsgs := boardWithChat(view.NewChatPanel(chatFixtureMsgs, "", chatFixtureNow, nil, nil), true)
 	htmlWithMsgs := renderProgress(t, "page-board", view.SamplePage("Test", "board", withMsgs))
 	olIdx2 := strings.Index(htmlWithMsgs, `id="chat-feed"`)
 	olTagEnd2 := strings.Index(htmlWithMsgs[olIdx2:], ">")
@@ -121,7 +121,7 @@ func TestBoardPage_ChatFeedIsAlwaysPresentAsALiveRegion(t *testing.T) {
 // tell a genuinely new message apart from one already on screen, and a live
 // refresh would either duplicate every message or append none at all.
 func TestChatEntry_CarriesDataChatID(t *testing.T) {
-	m := boardWithChat(view.NewChatPanel(chatFixtureMsgs, "", chatFixtureNow, nil), true)
+	m := boardWithChat(view.NewChatPanel(chatFixtureMsgs, "", chatFixtureNow, nil, nil), true)
 	html := renderProgress(t, "page-board", view.SamplePage("Test", "board", m))
 
 	for _, msg := range chatFixtureMsgs {
