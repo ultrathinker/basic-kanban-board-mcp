@@ -17,7 +17,7 @@ const methodCallTool = "tools/call"
 
 // schemaErrorOutput is the envelope a schema rejection carries. It is the
 // {ok, op, error} subset every tool's declared output schema already allows
-// (all nine share ok/op/data?/meta?/error?), so a client validating
+// (every tool shares ok/op/data?/meta?/error?), so a client validating
 // structuredContent against the tool's outputSchema still accepts it.
 type schemaErrorOutput struct {
 	OK    bool           `json:"ok"`

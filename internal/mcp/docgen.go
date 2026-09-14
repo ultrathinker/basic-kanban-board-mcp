@@ -49,8 +49,27 @@ func writeDocQuickReference(b *bytes.Buffer) {
 			t.Name, i+1, t.Name, oneLineForDoc(t.Description))
 	}
 	fmt.Fprintf(b, "\n")
-	fmt.Fprintf(b, "> **Tool count:** %d tools on the full server (this file). %d on `/mcp/readonly`: board_get, task_get, task_next with claim/start disabled, progress_history, board_guide. The count comes from the registry, not a constant.\n\n", len(fullToolFactories), len(readOnlyToolFactories))
+	fmt.Fprintf(b, "> **Tool count:** %d tools on the full server (this file). %d on `/mcp/readonly`: %s. The count and the list both come from the registry, not a constant or a hand-written name.\n\n", len(fullToolFactories), len(readOnlyToolFactories), readOnlyToolNamesForDoc())
 	fmt.Fprintf(b, "---\n\n")
+}
+
+// readOnlyToolNamesForDoc renders the read-only server's tool list from
+// readOnlyToolFactories — the same registry.go slice NewReadOnlyServer and
+// TestRegistryMatchesTheRunningServer use — rather than a name string typed
+// into this file by hand. task_next carries an annotation because its
+// claim/start behaviour differs on the read-only server (registerTaskNext's
+// readOnly flag); every other name is printed as the registry has it.
+func readOnlyToolNamesForDoc() string {
+	names := toolNames(readOnlyToolFactories)
+	parts := make([]string, len(names))
+	for i, n := range names {
+		if n == "task_next" {
+			parts[i] = n + " with claim/start disabled"
+			continue
+		}
+		parts[i] = n
+	}
+	return strings.Join(parts, ", ")
 }
 
 func writeDocCorePrinciples(b *bytes.Buffer) {

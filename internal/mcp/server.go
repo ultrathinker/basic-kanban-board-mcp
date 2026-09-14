@@ -21,9 +21,9 @@ import (
 // initialize.
 const ServerName = "basic-kanban-board-mcp"
 
-// NewServer builds the full thirteen-tool MCP server. version is the build
-// version reported in the MCP Implementation block (cmd/kanban's -X-linked
-// version string).
+// NewServer builds the full MCP server — every tool in registry.go's
+// fullToolFactories. version is the build version reported in the MCP
+// Implementation block (cmd/kanban's -X-linked version string).
 func NewServer(svc service.Service, version string) *gomcp.Server {
 	s := gomcp.NewServer(&gomcp.Implementation{Name: ServerName, Version: version}, &gomcp.ServerOptions{
 		Instructions: instructionsText,
@@ -42,32 +42,20 @@ func NewServer(svc service.Service, version string) *gomcp.Server {
 	registerProgressHistory(s, svc)
 	// board_guide is the first tool whose own response carries the
 	// registry snapshot (count + per-tool description + parameter list).
-	// Building the snapshot here — rather than inside the tool — keeps
-	// the registry walk to one place: the moment a new toolXTool()
-	// factory is appended below, board_guide sees it on the next call.
-	registerBoardGuide(s, svc, specsFromTools([]func() *gomcp.Tool{
-		boardGetTool,
-		taskNextTool,
-		taskGetTool,
-		taskCreateTool,
-		taskUpdateTool,
-		taskLinkTool,
-		taskClaimTool,
-		taskRemoveTool,
-		projectUpsertTool,
-		projectPostTool,
-		progressSetTool,
-		progressHistoryTool,
-		boardGuideTool,
-	}))
+	// It reads registry.go's fullToolFactories — the SAME slice
+	// TestRegistryMatchesTheRunningServer reconciles against the calls
+	// above — so there is exactly one place that lists the full server's
+	// tools, not a second copy that can drift from it.
+	registerBoardGuide(s, svc, specsFromTools(fullToolFactories))
 	s.AddReceivingMiddleware(schemaErrorEnvelope)
 	return s
 }
 
-// NewReadOnlyServer builds the five-tool /mcp/readonly server (PLAN §6
-// rule 4 + KANB-42): board_get, task_get, task_next with claim/start
-// disabled, progress_history, and board_guide — a read, so it belongs
-// on the no-write-scope surface the same as the other three. It shares
+// NewReadOnlyServer builds the /mcp/readonly server — registry.go's
+// readOnlyToolFactories (PLAN §6 rule 4 + KANB-42): board_get, task_get,
+// task_next with claim/start disabled, progress_history, and board_guide —
+// a read, so it belongs on the no-write-scope surface the same as the
+// other three. It shares
 // every line of translation logic with the full server via the same
 // register* functions — only which tools are registered, and task_next's
 // readOnly flag, differ.
@@ -79,13 +67,9 @@ func NewReadOnlyServer(svc service.Service, version string) *gomcp.Server {
 	registerTaskGet(s, svc)
 	registerTaskNext(s, svc, true)
 	registerProgressHistory(s, svc)
-	registerBoardGuide(s, svc, specsFromTools([]func() *gomcp.Tool{
-		boardGetTool,
-		taskGetTool,
-		taskNextTool,
-		progressHistoryTool,
-		boardGuideTool,
-	}))
+	// Same discipline as NewServer: read readOnlyToolFactories rather
+	// than listing the read-only surface a second time.
+	registerBoardGuide(s, svc, specsFromTools(readOnlyToolFactories))
 	s.AddReceivingMiddleware(schemaErrorEnvelope)
 	return s
 }

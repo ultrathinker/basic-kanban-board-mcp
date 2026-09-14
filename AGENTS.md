@@ -23,7 +23,9 @@ negotiable:
 ## Non-negotiables
 
 - **Go 1.27, `CGO_ENABLED=0`, stdlib `net/http`.** No web framework, no ORM.
-- **Nine MCP tools. Do not add a tenth.** Extra capability goes into parameters.
+- **Keep the MCP tool surface small; do not add a new tool lightly.** Extra capability goes into
+  parameters of an existing tool. The count itself is not a fixed number to remember — it lives in
+  `internal/mcp/registry.go` and the generated `docs/MCP-TOOLS.md`.
 - **English everywhere**: code, comments, docs, UI strings, commit messages.
 - **No npm, no node_modules.** Tailwind runs from its standalone binary; the generated CSS is
   committed so a plain `go build` always works.

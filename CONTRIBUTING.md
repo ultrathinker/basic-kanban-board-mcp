@@ -6,8 +6,10 @@ way. Please read this before opening a PR.
 
 ## Ground rules
 
-- **Nine MCP tools. There is no tenth.** New capability goes into parameters of
-  the existing tools, not a new tool. A PR that adds a tool will be declined.
+- **The MCP tool surface stays small.** New capability goes into parameters of
+  the existing tools, not a new tool; a PR that adds one without discussing it
+  first will be declined. The current count is not a number to memorize — see
+  `docs/MCP-TOOLS.md` (generated from `internal/mcp/registry.go`).
 - **English everywhere**: code, comments, docs, UI strings, commit messages.
 - **No web framework, no ORM, no npm.** Standard library `net/http`, the pure-Go
   SQLite driver, and hand-authored CSS/JS. The generated Tailwind CSS is

@@ -24,7 +24,7 @@ Every task write is a batch, every read defaults to a token-efficient compact te
 | [`progress_history`](#12-progress_history) | Read the full progress-mark history behind one metric: a project's manual estimate (project only) or one task's summary estimate (task). |
 | [`board_guide`](#13-board_guide) | Read the operating guide for this kanban board: identity rules, the canonical read-modify-write loop, lease behaviour, the compact grammar version, and the error envelope. |
 
-> **Tool count:** 13 tools on the full server (this file). 5 on `/mcp/readonly`: board_get, task_get, task_next with claim/start disabled, progress_history, board_guide. The count comes from the registry, not a constant.
+> **Tool count:** 13 tools on the full server (this file). 5 on `/mcp/readonly`: board_get, task_get, task_next with claim/start disabled, progress_history, board_guide. The count and the list both come from the registry, not a constant or a hand-written name.
 
 ---
 
