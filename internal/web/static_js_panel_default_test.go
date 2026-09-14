@@ -77,3 +77,54 @@ func TestAppJS_PanelIsVisibleByDefault(t *testing.T) {
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// KANB-33 item 5: clicking the progress bar still opens the chart.
+//
+// The panel and the charts section can each be hidden on their own, and the
+// chart is rendered INTO that section. toggleProgressChart already re-expanded
+// a collapsed panel, for exactly the stated reason that "a chart rendered into
+// a hidden panel would look like a click that did nothing" — but it did not
+// check the section. With the charts section hidden the click was fully
+// processed: the bar took aria-expanded="true" and the slot was filled, and
+// nothing appeared on screen, because the element holding it was display:none.
+//
+// Go cannot click the bar, so the guard reads the handler instead: both ways
+// of hiding the chart must be undone before it is fetched.
+// ---------------------------------------------------------------------------
+
+func TestAppJS_OpeningAChartRevealsWhateverIsHidingIt(t *testing.T) {
+	sub, err := fs.Sub(staticFS, "static")
+	if err != nil {
+		t.Fatalf("fs.Sub: %v", err)
+	}
+	raw, err := fs.ReadFile(sub, "app.js")
+	if err != nil {
+		t.Fatalf("read app.js: %v", err)
+	}
+	js := string(raw)
+
+	const marker = "function toggleProgressChart("
+	at := strings.Index(js, marker)
+	if at < 0 {
+		t.Fatal("toggleProgressChart not found in app.js; if it was renamed, move this guard with it")
+	}
+	// The handler ends where the next top-level function begins.
+	rest := js[at+len(marker):]
+	end := strings.Index(rest, "\n  function ")
+	if end < 0 {
+		end = len(rest)
+	}
+	body := rest[:end]
+
+	for _, want := range []struct{ needle, why string }{
+		{"state.collapsed", "a collapsed panel must be re-expanded before the chart is fetched"},
+		{"state.charts", "a hidden charts SECTION must be revealed too, or the chart lands in display:none"},
+	} {
+		if !strings.Contains(body, want.needle) {
+			t.Errorf("toggleProgressChart never looks at %s.\nKANB-33 item 5: %s.\n"+
+				"Without it the click is processed in full — the bar takes aria-expanded=\"true\" and the "+
+				"slot is filled — and the reader sees nothing happen at all.", want.needle, want.why)
+		}
+	}
+}

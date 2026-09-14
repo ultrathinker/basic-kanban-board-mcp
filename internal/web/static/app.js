@@ -1855,6 +1855,12 @@
     // load does not silently re-collapse the panel.
     var state = currentPanelState();
     if (state.collapsed) setPanelField('collapsed', false);
+    // The same reasoning one level in: the charts SECTION can be hidden on its
+    // own, and a chart rendered into a hidden section is just as invisible as
+    // one rendered into a collapsed panel. Without this the bar took the
+    // click, set aria-expanded="true" and filled the slot, and nothing
+    // whatsoever appeared on screen.
+    if (state.charts === 'hidden') setPanelField('charts', 'shown');
     markOpenChartBar();
     fetchProgressChart();
   }
