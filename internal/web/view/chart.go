@@ -392,35 +392,84 @@ func deduplicateSameTimestamp(points []chartPoint) []chartPoint {
 	return out
 }
 
-// decimatePoints downsamples dense point sequences for rendering while strictly
-// protecting all downward drops and local minima.
+// decimatePoints downsamples dense percent sequences for rendering while
+// strictly protecting all downward drops and local extrema. On the percent
+// chart the bad news is a FALL (readiness revised down), so worseIsHigher is
+// false — see decimateKeepMask for the shared rule.
 func decimatePoints(points []chartPoint, maxPoints int) []chartPoint {
-	n := len(points)
-	if n <= maxPoints || maxPoints < 2 {
+	if len(points) <= maxPoints || maxPoints < 2 {
 		return points
+	}
+	values := make([]int64, len(points))
+	for i, p := range points {
+		values[i] = int64(p.Percent)
+	}
+	keep := decimateKeepMask(values, maxPoints, false)
+	var result []chartPoint
+	for i := range points {
+		if keep[i] {
+			result = append(result, points[i])
+		}
+	}
+	return result
+}
+
+// decimateKeepMask is the ONE decimation rule both charts obey. It takes the
+// series as plain int64 values and answers which indices survive.
+//
+// Why one function and not one per chart: the two charts disagree about which
+// direction is bad news, and that disagreement is exactly ONE comparison (the
+// "a step in the bad direction is critical" rule below). Everything else —
+// endpoints, local extrema, the scoring when criticals alone overflow the
+// budget, the even spread of whatever budget is left — is identical. Two
+// copies would drift, and the drift would be invisible: both charts would
+// still render, just one of them would have quietly started throwing away the
+// points the owner looks at the chart to see.
+//
+// worseIsHigher says which way is bad news:
+//   - percent chart: readiness revised DOWN is the bad news -> false
+//   - forecast chart: the promised date sliding LATER is the bad news -> true
+//
+// The owner's rule this protects: the drop from 91% to 72% (and the forecast
+// that slid from "in two weeks" to "in three months") is the main event of the
+// chart, never noise. A naive "every Nth point" would throw away precisely
+// that.
+func decimateKeepMask(values []int64, maxPoints int, worseIsHigher bool) []bool {
+	n := len(values)
+	keep := make([]bool, n)
+	if n <= maxPoints || maxPoints < 2 {
+		for i := range keep {
+			keep[i] = true
+		}
+		return keep
+	}
+
+	// worse reports whether the step from a to b is the bad direction.
+	worse := func(a, b int64) bool {
+		if worseIsHigher {
+			return b > a
+		}
+		return b < a
 	}
 
 	// Mark critical points that MUST NOT be dropped:
 	// 1. Endpoints (start and finish).
-	// 2. Any drop: if points[i].Percent < points[i-1].Percent, both points[i-1] (peak)
-	//    and points[i] (valley/trough) are strictly critical.
-	// 3. Local minima: points where progress fell and now levels off or rises.
-	// 4. Local maxima: points where progress rose and now levels off or falls.
+	// 2. Any step in the bad direction: BOTH the point before it (the peak the
+	//    series fell from / the date it slid from) and the point after it.
+	// 3. Local minima and local maxima.
 	isCritical := make([]bool, n)
 	isCritical[0] = true
 	isCritical[n-1] = true
 
 	for i := 1; i < n; i++ {
-		if points[i].Percent < points[i-1].Percent {
+		if worse(values[i-1], values[i]) {
 			isCritical[i-1] = true
 			isCritical[i] = true
 		}
 	}
 
 	for i := 1; i < n-1; i++ {
-		prev := points[i-1].Percent
-		curr := points[i].Percent
-		next := points[i+1].Percent
+		prev, curr, next := values[i-1], values[i], values[i+1]
 		if (curr <= prev && curr < next) || (curr < prev && curr <= next) {
 			isCritical[i] = true
 		}
@@ -436,19 +485,19 @@ func decimatePoints(points []chartPoint, maxPoints int) []chartPoint {
 		}
 	}
 
-	// If critical points alone exceed maxPoints, prioritize largest drops and extrema.
+	// If critical points alone exceed maxPoints, prioritize the biggest moves.
 	if criticalCount > maxPoints {
 		type scoredIndex struct {
 			idx   int
-			score int
+			score int64
 		}
 		var scored []scoredIndex
 		for i := 1; i < n-1; i++ {
 			if isCritical[i] {
-				prevDiff := absInt(points[i].Percent - points[i-1].Percent)
-				nextDiff := 0
+				prevDiff := absInt64(values[i] - values[i-1])
+				nextDiff := int64(0)
 				if i+1 < n {
-					nextDiff = absInt(points[i].Percent - points[i+1].Percent)
+					nextDiff = absInt64(values[i] - values[i+1])
 				}
 				scored = append(scored, scoredIndex{idx: i, score: prevDiff + nextDiff})
 			}
@@ -457,7 +506,6 @@ func decimatePoints(points []chartPoint, maxPoints int) []chartPoint {
 			return scored[i].score > scored[j].score
 		})
 
-		keep := make([]bool, n)
 		keep[0] = true
 		keep[n-1] = true
 		budget := maxPoints - 2
@@ -467,17 +515,10 @@ func decimatePoints(points []chartPoint, maxPoints int) []chartPoint {
 		for i := 0; i < budget; i++ {
 			keep[scored[i].idx] = true
 		}
-
-		var result []chartPoint
-		for i := 0; i < n; i++ {
-			if keep[i] {
-				result = append(result, points[i])
-			}
-		}
-		return result
+		return keep
 	}
 
-	// Critical points fit in budget: distribute remaining budget across non-critical points.
+	// Critical points fit in budget: spread the rest across non-critical points.
 	remainingBudget := maxPoints - criticalCount
 	nonCriticalIndices := make([]int, 0, n-criticalCount)
 	for i := 0; i < n; i++ {
@@ -485,32 +526,21 @@ func decimatePoints(points []chartPoint, maxPoints int) []chartPoint {
 			nonCriticalIndices = append(nonCriticalIndices, i)
 		}
 	}
-
-	keep := make([]bool, n)
 	for i := 0; i < n; i++ {
 		if isCritical[i] {
 			keep[i] = true
 		}
 	}
-
 	if remainingBudget > 0 && len(nonCriticalIndices) > 0 {
 		step := float64(len(nonCriticalIndices)) / float64(remainingBudget)
 		for j := 0; j < remainingBudget; j++ {
-			idx := nonCriticalIndices[int(float64(j)*step)]
-			keep[idx] = true
+			keep[nonCriticalIndices[int(float64(j)*step)]] = true
 		}
 	}
-
-	var result []chartPoint
-	for i := 0; i < n; i++ {
-		if keep[i] {
-			result = append(result, points[i])
-		}
-	}
-	return result
+	return keep
 }
 
-func absInt(x int) int {
+func absInt64(x int64) int64 {
 	if x < 0 {
 		return -x
 	}

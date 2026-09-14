@@ -175,7 +175,7 @@ func renderForecastChartImpl(marks []domain.ProgressMark, width, height int, det
 		seriesList = append(seriesList, forecastSeries{
 			Name:        name,
 			IsComposite: false,
-			Points:      byAssessor[name],
+			Points:      decimateForecastPoints(byAssessor[name], MaxChartPoints),
 			DashArray:   assessorDash(i),
 			StrokeWidth: 1.2,
 		})
@@ -186,7 +186,7 @@ func renderForecastChartImpl(marks []domain.ProgressMark, width, height int, det
 		seriesList = append(seriesList, forecastSeries{
 			Name:        "consensus",
 			IsComposite: true,
-			Points:      consensus,
+			Points:      decimateForecastPoints(consensus, MaxChartPoints),
 			DashArray:   "none",
 			StrokeWidth: 2.5,
 		})
@@ -490,4 +490,36 @@ func pluralS(n int) string {
 		return ""
 	}
 	return "s"
+}
+
+// decimateForecastPoints downsamples a dense forecast track for rendering,
+// protecting the moves a reader opens this chart to see.
+//
+// It delegates the rule to decimateKeepMask (chart.go) — the SAME rule the
+// percent chart uses, with the same MaxChartPoints budget, so the two charts
+// cannot drift apart in either the limit or the definition of "critical".
+//
+// The one thing that differs is which direction is bad news, and that is the
+// worseIsHigher argument. On the percent chart bad news is a FALL: readiness
+// revised down, 91% -> 72%. On this chart the value is a promised DATE, so bad
+// news is the value going UP: the promise sliding from "in two weeks" to "in
+// three months". Passing false here would protect the wrong extrema — it would
+// faithfully preserve every time the team pulled the date IN and quietly throw
+// away every slip, which is the exact opposite of what the chart is for.
+func decimateForecastPoints(points []forecastPoint, maxPoints int) []forecastPoint {
+	if len(points) <= maxPoints || maxPoints < 2 {
+		return points
+	}
+	values := make([]int64, len(points))
+	for i, p := range points {
+		values[i] = p.ETA.UnixNano()
+	}
+	keep := decimateKeepMask(values, maxPoints, true)
+	var result []forecastPoint
+	for i := range points {
+		if keep[i] {
+			result = append(result, points[i])
+		}
+	}
+	return result
 }
