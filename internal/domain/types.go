@@ -5,6 +5,7 @@ package domain
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -387,6 +388,17 @@ type ChatMessage struct {
 	// IdempotencyKey deduplicates retries of one send, per authorized sender,
 	// for the message's whole lifetime.
 	IdempotencyKey string
+	// Seq is the message's position in the feed: the rowid chat_messages
+	// assigned at INSERT, filled by the store and never rewritten. It is the
+	// feed's ordering authority. CreatedAt cannot serve: it has millisecond
+	// precision and arrivals routinely share one millisecond (200 sequential
+	// posts measured at 36 distinct milliseconds), so ordering ties inside a
+	// bucket would fall to the random UUID id — and a message could then sort
+	// BEFORE an already-issued cursor and be lost to every later page. Seq is
+	// monotonic for as long as the feed exists (chat rows are never pruned;
+	// the anchor check in the feed read catches any freed-and-reused position
+	// loudly instead of silently skipping it).
+	Seq int64
 }
 
 // CommandAcceptance is the durable link "command message -> created tasks ->
@@ -446,6 +458,49 @@ func ParseChatCursor(s string) (*ChatCursor, error) {
 		return nil, Invalid("cursor", fmt.Sprintf("invalid cursor timestamp %q", tsStr), "Cursor format is <timestamp>/<id>.")
 	}
 	return &ChatCursor{CreatedAt: t.UTC(), ID: id}, nil
+}
+
+// FeedCursor identifies a position in a project's forward feed. It carries
+// the message's Seq — the monotonic insertion key the feed is ordered and
+// paged by — plus the message id as an integrity check: if the row at that
+// position is not the named message (possible only if rows were deleted
+// underneath a held cursor, which the product never does), the reader must
+// refuse loudly instead of silently paging past history.
+type FeedCursor struct {
+	Seq int64
+	ID  string
+}
+
+// String encodes the cursor as "<seq>/<id>". The cursor is opaque to
+// consumers by contract — the encoding exists only so the position survives
+// as a plain string across restarts, and it may change between releases for
+// exactly that reason.
+func (c FeedCursor) String() string {
+	if c.Seq == 0 && c.ID == "" {
+		return ""
+	}
+	return strconv.FormatInt(c.Seq, 10) + "/" + c.ID
+}
+
+// ParseFeedCursor parses "<seq>/<id>" as issued by FeedCursor.String. A
+// cursor the server cannot parse is a loud validation error, never an empty
+// page: guessing at a malformed position would silently skip or repeat
+// history.
+func ParseFeedCursor(s string) (*FeedCursor, error) {
+	if s == "" {
+		return nil, nil
+	}
+	seqStr, id, ok := strings.Cut(s, "/")
+	if !ok || id == "" {
+		return nil, Invalid("cursor", fmt.Sprintf("malformed feed cursor %q", s),
+			"The cursor is issued by the server; pass back a next_cursor you were given, or omit after to read from the beginning.")
+	}
+	seq, err := strconv.ParseInt(seqStr, 10, 64)
+	if err != nil || seq <= 0 {
+		return nil, Invalid("cursor", fmt.Sprintf("malformed feed cursor %q", s),
+			"The cursor is issued by the server; pass back a next_cursor you were given, or omit after to read from the beginning.")
+	}
+	return &FeedCursor{Seq: seq, ID: id}, nil
 }
 
 // EventType enumerates everything that can appear in the activity feed.

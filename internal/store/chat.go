@@ -44,7 +44,7 @@ func (r *chatRepo) Add(tx Tx, m *domain.ChatMessage) error {
 		m.CreatedAt = now
 	}
 	tw := tx.(*txWrap)
-	_, err := tw.tx.ExecContext(tw.ctx(), `
+	res, err := tw.tx.ExecContext(tw.ctx(), `
 		INSERT INTO chat_messages(
 			id, project_id, author, body, created_at,
 			kind, author_token_id, recipient, resolved_executor, reply_to_id, idempotency_key)
@@ -62,6 +62,15 @@ func (r *chatRepo) Add(tx Tx, m *domain.ChatMessage) error {
 		}
 		return fmt.Errorf("store: insert chat message: %w", err)
 	}
+	// Seq is the rowid assigned by this very INSERT — the feed's monotonic
+	// ordering key (see ChatMessage.Seq). Read back here so the in-memory
+	// message and the row agree from birth; every later read re-derives it
+	// from the row.
+	seq, err := res.LastInsertId()
+	if err != nil {
+		return fmt.Errorf("store: insert chat message: last insert id: %w", err)
+	}
+	m.Seq = seq
 	return nil
 }
 
@@ -77,6 +86,24 @@ func (r *chatRepo) Get(tx Tx, id string) (*domain.ChatMessage, error) {
 	m, err := scanChatMessage(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, domain.NotFound("message", id)
+	}
+	return m, err
+}
+
+// GetBySeq resolves the message sitting at one feed position. Chat rows are
+// never pruned, so a missing position means the cursor points outside this
+// history (another database, or rows deleted underneath it); the caller
+// pairs this with the id check to refuse such cursors loudly.
+func (r *chatRepo) GetBySeq(tx Tx, seq int64) (*domain.ChatMessage, error) {
+	if seq <= 0 {
+		return nil, domain.Invalid("seq", "feed position must be a positive number",
+			"Pass back a next_cursor the server issued, verbatim.")
+	}
+	tw := tx.(*txWrap)
+	row := tw.tx.QueryRowContext(tw.ctx(), chatSelectSQL+` WHERE rowid = ?`, seq)
+	m, err := scanChatMessage(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, domain.NotFound("message", fmt.Sprintf("position %d", seq))
 	}
 	return m, err
 }
@@ -101,19 +128,25 @@ func (r *chatRepo) GetBySenderKey(tx Tx, tokenID, key string) (*domain.ChatMessa
 }
 
 // chatSelectSQL is the shared projection for every chat read: the five
-// original columns plus the communication-protocol columns (KANB-45..47).
+// original columns plus the communication-protocol columns (KANB-45..47),
+// and the rowid as seq — the feed's ordering key (ChatMessage.Seq).
 const chatSelectSQL = `SELECT id, project_id, author, body, created_at,
-	kind, author_token_id, recipient, resolved_executor, reply_to_id, idempotency_key
+	kind, author_token_id, recipient, resolved_executor, reply_to_id, idempotency_key,
+	rowid AS seq
 	FROM chat_messages`
 
 // List returns a page of chat messages. The direction comes from
 // f.Ascending: false (default) reads newest first with f.Before paging
-// strictly backwards in time (the panel's shape); true reads oldest first
-// with f.After paging strictly forward — the feed's shape, which starts at
-// the beginning of history even before any cursor exists, so a consumer
-// never silently misses a command written before it started. Ties on
-// created_at are broken by id in the read's own direction, so pages never
-// skip or duplicate rows at boundaries.
+// strictly backwards in time (the panel's shape); true reads INSERTION
+// order — the feed's shape, which starts at the beginning of history even
+// before any cursor exists, so a consumer never silently misses a command
+// written before it started. The feed pages by rowid, a monotonic insertion
+// key: created_at has millisecond precision and arrivals share one
+// millisecond, so timestamp+id ordering could place a newer message before
+// an issued cursor and lose it to every later page. Backward pagination is
+// not exposed to that: newcomers land at the TOP of a newest-first read,
+// away from where the reader is walking, so it keeps its timestamp+id
+// ordering.
 func (r *chatRepo) List(tx Tx, f ChatFilter) ([]domain.ChatMessage, error) {
 	limit := f.Limit
 	if limit <= 0 {
@@ -134,17 +167,8 @@ func (r *chatRepo) List(tx Tx, f ChatFilter) ([]domain.ChatMessage, error) {
 	}
 
 	if cur := f.After; cur != nil {
-		if !cur.CreatedAt.IsZero() && cur.ID != "" {
-			where = append(where, "(created_at > ? OR (created_at = ? AND id > ?))")
-			formatted := formatTime(cur.CreatedAt)
-			args = append(args, formatted, formatted, cur.ID)
-		} else if !cur.CreatedAt.IsZero() {
-			where = append(where, "created_at > ?")
-			args = append(args, formatTime(cur.CreatedAt))
-		} else if cur.ID != "" {
-			where = append(where, "id > ?")
-			args = append(args, cur.ID)
-		}
+		where = append(where, "rowid > ?")
+		args = append(args, cur.Seq)
 	}
 	if cur := f.Before; cur != nil {
 		if !cur.CreatedAt.IsZero() && cur.ID != "" {
@@ -160,16 +184,15 @@ func (r *chatRepo) List(tx Tx, f ChatFilter) ([]domain.ChatMessage, error) {
 		}
 	}
 
-	order := " DESC"
-	if f.Ascending {
-		order = " ASC"
-	}
-
 	q := chatSelectSQL
 	if len(where) > 0 {
 		q += " WHERE " + strings.Join(where, " AND ")
 	}
-	q += " ORDER BY created_at" + order + ", id" + order + " LIMIT ?"
+	if f.Ascending {
+		q += " ORDER BY rowid ASC LIMIT ?"
+	} else {
+		q += " ORDER BY created_at DESC, id DESC LIMIT ?"
+	}
 	args = append(args, limit)
 
 	rows, err := tw.tx.QueryContext(tw.ctx(), q, args...)
@@ -208,7 +231,7 @@ func scanChatMessage(row scanner) (*domain.ChatMessage, error) {
 		idemKey  sql.NullString
 	)
 	if err := row.Scan(&m.ID, &m.ProjectID, &m.Author, &m.Body, &ts,
-		&kind, &authorTk, &recip, &executor, &replyTo, &idemKey); err != nil {
+		&kind, &authorTk, &recip, &executor, &replyTo, &idemKey, &m.Seq); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, err
 		}

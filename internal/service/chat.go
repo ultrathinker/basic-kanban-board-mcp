@@ -331,13 +331,16 @@ func (s *svc) ChatList(ctx context.Context, a Actor, in ChatListInput) (*ChatLis
 // very commands written before it launched, which is the failure this read
 // exists to prevent.
 //
-// The cursor is an opaque position, not a timestamp: several messages can
-// share one created_at, so the cursor carries (created_at, id) and pages break
-// ties deterministically without gaps or duplicates. Because chat history is
-// never pruned, a cursor cannot outlive the history it points into — there is
-// deliberately no expiry machinery here. A cursor that does not belong to
-// this project (or does not parse) is rejected with a remediation instead of
-// silently returning an empty page.
+// The cursor is an opaque position, not a timestamp: the feed is ordered and
+// paged by the insertion key (rowid), because created_at has millisecond
+// precision and many messages land in the same millisecond — a
+// timestamp-based cursor would depend on the random UUID id for tie-breaking
+// and could permanently hide a message that arrived after the cursor was
+// issued. Because chat history is never pruned, a cursor cannot outlive the
+// history it points into — there is deliberately no expiry machinery here. A
+// cursor that does not belong to this project, names a position that no
+// longer holds its message, or does not parse, is rejected with a remediation
+// instead of silently returning an empty page.
 func (s *svc) ChatFeed(ctx context.Context, a Actor, in ChatFeedInput) (*ChatFeedResult, error) {
 	if err := requireRead(a); err != nil {
 		return nil, err
@@ -352,9 +355,9 @@ func (s *svc) ChatFeed(ctx context.Context, a Actor, in ChatFeedInput) (*ChatFee
 		return nil, err
 	}
 
-	var cursor *domain.ChatCursor
+	var cursor *domain.FeedCursor
 	if in.After != "" {
-		parsed, err := domain.ParseChatCursor(in.After)
+		parsed, err := domain.ParseFeedCursor(in.After)
 		if err != nil {
 			return nil, err
 		}
@@ -383,11 +386,21 @@ func (s *svc) ChatFeed(ctx context.Context, a Actor, in ChatFeedInput) (*ChatFee
 		// is never pruned, so a missing one can only be a cursor from
 		// somewhere else.
 		if cursor != nil {
-			anchor, err := s.store.Chat().Get(tx, cursor.ID)
+			anchor, err := s.store.Chat().GetBySeq(tx, cursor.Seq)
 			if err != nil {
 				return domain.Invalid("after",
 					fmt.Sprintf("cursor message %s does not exist in project %s", cursor.ID, p.Key),
 					"Use the next_cursor returned by a previous page of this project's feed, or omit after to read from the beginning.")
+			}
+			// The position exists but holds a different message: rows were
+			// deleted and the position reused underneath this cursor. Chat is
+			// never pruned in normal operation, so this is a stale or forged
+			// position — refuse it instead of silently paging from the wrong
+			// place.
+			if anchor.ID != cursor.ID {
+				return domain.Invalid("after",
+					fmt.Sprintf("cursor is stale: position %d holds message %s, not %s", cursor.Seq, anchor.ID, cursor.ID),
+					"Omit after to read this project's feed from the beginning.")
 			}
 			if anchor.ProjectID != p.ID {
 				return domain.Invalid("after",
@@ -411,7 +424,7 @@ func (s *svc) ChatFeed(ctx context.Context, a Actor, in ChatFeedInput) (*ChatFee
 		}
 		if len(msgs) > 0 {
 			last := msgs[len(msgs)-1]
-			result.NextCursor = (&domain.ChatCursor{CreatedAt: last.CreatedAt, ID: last.ID}).String()
+			result.NextCursor = (&domain.FeedCursor{Seq: last.Seq, ID: last.ID}).String()
 		} else if in.After != "" {
 			// Empty page past a position: echo the requested cursor back.
 			// The documented polling loop is `cursor = next_cursor`; leaving

@@ -19,7 +19,7 @@ import (
 // display names for humans reading the JSON.
 type feedMessageOut struct {
 	ID        string `json:"id"`
-	CreatedAt string `json:"created_at" jsonschema:"server time (RFC3339) — the ordering authority of the feed"`
+	CreatedAt string `json:"created_at" jsonschema:"server time (RFC3339), display only — the feed's order and cursors follow arrival, not the timestamp"`
 	// Author is the display name the sender signed with; AuthorTokenID is the
 	// AUTHORIZED source: the tokens.id of the token that posted, which the
 	// client never chooses. The two can differ and the id is the truth.

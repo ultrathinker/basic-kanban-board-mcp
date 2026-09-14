@@ -50,36 +50,36 @@ func feedBodies(msgs []ChatFeedMessage) []string {
 }
 
 // TestChatFeed_StartsAtBeginning: with no `after`, the first page is the
-// OLDEST messages in chronological order — not the newest ones, not "from
-// now". A consumer that launched after a command was written must still see
-// that command on its first read (KANB-45 acceptance 1).
+// BEGINNING of history in insertion order — not the newest messages, not
+// "from now". A consumer that launched after a command was written must
+// still see that command on its first read (KANB-45 acceptance 1).
 //
-// Timestamps are distinct and explicit so the assertion is about CHRONOLOGY,
-// not about the (created_at, id) tie-break, which the dedicated tie test
-// below covers. One message goes through the service's own ChatAdd path to
-// prove real posts are readable the same way.
+// Seeded messages carry explicit distinct timestamps, but the asserted order
+// is the INSERTION order: the feed is ordered by the monotonic insertion
+// key, not by created_at (arrivals share one millisecond, so timestamps
+// cannot order them). Seeding happens in arrival order and one message goes
+// through the service's own ChatAdd path to prove real posts are readable
+// the same way.
 func TestChatFeed_StartsAtBeginning(t *testing.T) {
 	env := openTestEnv(t)
 	ctx := context.Background()
 	base := time.Date(2026, 9, 14, 9, 0, 0, 0, time.UTC)
 	seedFeedMessageAt(t, env, "m-old-1", base, "written before the consumer started")
 	seedFeedMessageAt(t, env, "m-old-2", base.Add(time.Second), "second")
-	posted := postFeedMessage(t, env, env.actor, "posted through the service")
 	seedFeedMessageAt(t, env, "m-old-3", base.Add(2*time.Second), "third")
+	posted := postFeedMessage(t, env, env.actor, "posted through the service")
 
 	res, err := env.svc.ChatFeed(ctx, env.actor, ChatFeedInput{ProjectKey: env.proj.Key})
 	if err != nil {
 		t.Fatalf("ChatFeed: %v", err)
 	}
 	got := feedBodies(res.Messages)
-	// The service-posted message carries the real clock, so it is the NEWEST
-	// of the four regardless of insertion order.
 	want := []string{"written before the consumer started", "second", "third", "posted through the service"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
-		t.Fatalf("feed = %v, want oldest-first %v", got, want)
+		t.Fatalf("feed = %v, want insertion order %v", got, want)
 	}
 	if res.Messages[0].Message.ID != "m-old-1" {
-		t.Fatalf("first message id = %s, want the oldest message m-old-1", res.Messages[0].Message.ID)
+		t.Fatalf("first message id = %s, want the first-inserted message m-old-1", res.Messages[0].Message.ID)
 	}
 	if posted.ID == "" || posted.Kind != domain.MessageUpdate {
 		t.Fatalf("service-posted message = %+v, want a real id and the default update kind", posted)
@@ -87,6 +87,8 @@ func TestChatFeed_StartsAtBeginning(t *testing.T) {
 	if res.Messages[len(res.Messages)-1].Message.ID != posted.ID {
 		t.Fatal("the message posted through the service is not the newest feed entry")
 	}
+	// created_at is display-only: feed order is the insertion order, and no
+	// monotonicity of the timestamps themselves is implied or asserted.
 	if res.HasMore {
 		t.Fatal("full feed reported has_more, want false — everything fit in one page")
 	}
@@ -139,6 +141,66 @@ func TestChatFeed_IdenticalTimestampsNoLossNoDuplicates(t *testing.T) {
 		if dups[id] > 1 {
 			t.Fatalf("message %s returned twice: %v", id, seen)
 		}
+	}
+}
+
+// TestChatFeed_InsertionOrderSurvivesPageBoundary is the deterministic
+// regression for the feed's ordering key. All nine messages share one
+// created_at; their ids are the REVERSE of their insertion order, and the
+// newcomer m-100 sorts below every earlier id. Under a (created_at, id)
+// cursor the page boundary would fall inside the tie and every message whose
+// id sorts below the boundary's id — six of the seven not yet delivered —
+// would be lost to all later pages. Under the insertion-key cursor each of
+// them arrives exactly once, and the message inserted last comes last.
+func TestChatFeed_InsertionOrderSurvivesPageBoundary(t *testing.T) {
+	env := openTestEnv(t)
+	ctx := context.Background()
+	ts := time.Date(2026, 9, 14, 10, 0, 0, 0, time.UTC)
+	// Insertion order: m-9, m-8, ..., m-2 (ids in reverse), then the arrival.
+	insertionIDs := []string{"m-9", "m-8", "m-7", "m-6", "m-5", "m-4", "m-3", "m-2"}
+	for _, id := range insertionIDs {
+		seedFeedMessageAt(t, env, id, ts, "same-instant "+id)
+	}
+
+	page1, err := env.svc.ChatFeed(ctx, env.actor, ChatFeedInput{ProjectKey: env.proj.Key, Limit: 3})
+	if err != nil {
+		t.Fatalf("page 1: %v", err)
+	}
+	if got := feedBodies(page1.Messages); len(got) != 3 {
+		t.Fatalf("page 1 held %d messages, want 3", len(got))
+	}
+
+	// A message arrives in the SAME millisecond as the whole seeded tie.
+	seedFeedMessageAt(t, env, "m-100", ts, "same-instant m-100")
+
+	var gotIDs []string
+	for _, m := range page1.Messages {
+		gotIDs = append(gotIDs, m.Message.ID)
+	}
+	after := page1.NextCursor
+	for pages := 0; ; pages++ {
+		res, err := env.svc.ChatFeed(ctx, env.actor, ChatFeedInput{ProjectKey: env.proj.Key, After: after, Limit: 3})
+		if err != nil {
+			t.Fatalf("page %d: %v", pages+2, err)
+		}
+		for _, m := range res.Messages {
+			gotIDs = append(gotIDs, m.Message.ID)
+		}
+		if !res.HasMore {
+			break
+		}
+		after = res.NextCursor
+		if pages > 9 {
+			t.Fatal("pagination does not terminate")
+		}
+	}
+
+	want := append(append([]string{}, insertionIDs...), "m-100")
+	if strings.Join(gotIDs, "|") != strings.Join(want, "|") {
+		t.Fatalf("feed order = %v, want exact insertion order %v — a same-millisecond arrival must never be lost or reordered", gotIDs, want)
+	}
+	if gotIDs[len(gotIDs)-1] != "m-100" {
+		t.Fatalf("last message = %s, want the last-inserted m-100", gotIDs[len(gotIDs)-1])
 	}
 }
 
@@ -215,29 +277,29 @@ func TestChatFeed_RereadingSamePageSafe(t *testing.T) {
 }
 
 // TestChatFeed_ForeignCursorRejected: a cursor from another project (or one
-// naming no message at all, or an unparseable string) is a loud validation
-// error, never a silent empty page (KANB-45 acceptance 5).
+// naming a position with no message, a position whose message id no longer
+// matches, or an unparseable string) is a loud validation error, never a
+// silent empty page (KANB-45 acceptance 5).
 func TestChatFeed_ForeignCursorRejected(t *testing.T) {
 	env := openTestEnv(t)
 	ctx := context.Background()
 
-	// A second project with its own feed.
+	// A second project with its own feed; the seeded message's Seq comes
+	// back filled by the store's Add.
+	foreign := &domain.ChatMessage{
+		ID: "foreign-msg", ProjectID: "proj-2-id", Author: "someone", Body: "other project",
+		CreatedAt: time.Date(2026, 9, 14, 7, 0, 0, 0, time.UTC),
+	}
 	p2 := &domain.Project{ID: "proj-2-id", Key: "OTHER", Name: "Other", EstimateUnit: "h", EnforceDependencies: true, ClaimTTLSeconds: 3600}
 	if err := env.Write(ctx, func(tx store.Tx) error {
 		if err := env.Projects().Create(tx, p2); err != nil {
 			return err
 		}
-		return env.Chat().Add(tx, &domain.ChatMessage{
-			ID: "foreign-msg", ProjectID: p2.ID, Author: "someone", Body: "other project",
-			CreatedAt: time.Date(2026, 9, 14, 7, 0, 0, 0, time.UTC),
-		})
+		return env.Chat().Add(tx, foreign)
 	}); err != nil {
 		t.Fatalf("seed second project: %v", err)
 	}
-	foreignCursor := (&domain.ChatCursor{
-		CreatedAt: time.Date(2026, 9, 14, 7, 0, 0, 0, time.UTC),
-		ID:        "foreign-msg",
-	}).String()
+	foreignCursor := (&domain.FeedCursor{Seq: foreign.Seq, ID: "foreign-msg"}).String()
 
 	cases := []struct {
 		name   string
@@ -246,8 +308,10 @@ func TestChatFeed_ForeignCursorRejected(t *testing.T) {
 		substr string
 	}{
 		{"cursor of another project", foreignCursor, "after", "different project"},
-		{"cursor naming a missing message", "2026-09-14T07:00:00Z/no-such-message", "after", "does not exist"},
+		{"cursor naming an empty position", (&domain.FeedCursor{Seq: foreign.Seq + 1000, ID: "no-such-message"}).String(), "after", "does not exist"},
+		{"cursor whose position holds another message", (&domain.FeedCursor{Seq: foreign.Seq, ID: "impostor"}).String(), "after", "stale"},
 		{"malformed cursor", "not-a-cursor", "cursor", "malformed"},
+		{"timestamp-shaped legacy cursor", "2026-09-14T07:00:00Z/foreign-msg", "cursor", "malformed"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

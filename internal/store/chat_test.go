@@ -246,6 +246,81 @@ func TestChat_CursorPaginationTieBreak(t *testing.T) {
 	}
 }
 
+// TestChat_FeedOrderFollowsInsertion is the deterministic regression for the
+// forward feed's ordering key: arrivals that share one millisecond must page
+// in INSERTION order, never in id order. The ids here are chosen so the
+// later arrival sorts BEFORE the earlier one ("a-new" < "z-old"): under a
+// (created_at, id) cursor the message would sort before the cursor and be
+// lost to every later page; under the rowid ordering it must arrive, last.
+func TestChat_FeedOrderFollowsInsertion(t *testing.T) {
+	t.Parallel()
+	ts := openTestStore(t)
+	p, _ := seedProject(t, ts)
+
+	same := time.Date(2026, 9, 12, 10, 0, 0, 0, time.UTC)
+	first := &domain.ChatMessage{ID: "z-old", ProjectID: p.ID, Author: "a", Body: "first", CreatedAt: same}
+	second := &domain.ChatMessage{ID: "a-new", ProjectID: p.ID, Author: "a", Body: "second", CreatedAt: same}
+	err := ts.Write(context.Background(), func(tx Tx) error {
+		if err := ts.Chat().Add(tx, first); err != nil {
+			return err
+		}
+		return ts.Chat().Add(tx, second)
+	})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if first.Seq == 0 || second.Seq == 0 {
+		t.Fatalf("Add left Seq unfilled: %d, %d — the insertion key must exist from birth", first.Seq, second.Seq)
+	}
+	if second.Seq <= first.Seq {
+		t.Fatalf("Seq not monotonic vs insertion: %d then %d", first.Seq, second.Seq)
+	}
+
+	// Page forward from the first message's position, one message per page.
+	cursor := &FeedCursor{Seq: first.Seq, ID: first.ID}
+	var got []string
+	for page := 0; page < 3; page++ {
+		var pageMsgs []domain.ChatMessage
+		err := ts.Read(context.Background(), func(tx Tx) error {
+			var err error
+			pageMsgs, err = ts.Chat().List(tx, ChatFilter{
+				ProjectID: &p.ID,
+				Ascending: true,
+				After:     cursor,
+				Limit:     1,
+			})
+			return err
+		})
+		if err != nil {
+			t.Fatalf("page %d: %v", page, err)
+		}
+		if len(pageMsgs) == 0 {
+			break
+		}
+		got = append(got, pageMsgs[0].ID)
+		last := pageMsgs[len(pageMsgs)-1]
+		cursor = &FeedCursor{Seq: last.Seq, ID: last.ID}
+	}
+	if len(got) != 1 || got[0] != "a-new" {
+		t.Fatalf("messages after the first position = %v, want exactly [a-new] — a same-millisecond arrival must never be lost, whatever its id", got)
+	}
+
+	// GetBySeq resolves a position to its message; the feed read pairs it
+	// with the id check to refuse stale positions loudly.
+	var bySeq *domain.ChatMessage
+	err = ts.Read(context.Background(), func(tx Tx) error {
+		var err error
+		bySeq, err = ts.Chat().GetBySeq(tx, first.Seq)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("GetBySeq: %v", err)
+	}
+	if bySeq.ID != "z-old" {
+		t.Fatalf("GetBySeq(%d) = %s, want z-old", first.Seq, bySeq.ID)
+	}
+}
+
 // TestChat_ReadWithoutProjectFilter verifies that reading without a project
 // filter returns messages across all projects.
 func TestChat_ReadWithoutProjectFilter(t *testing.T) {

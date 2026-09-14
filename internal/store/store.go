@@ -274,6 +274,9 @@ type ProgressRepo interface {
 // ChatCursor identifies a point in chat history for backward pagination.
 type ChatCursor = domain.ChatCursor
 
+// FeedCursor identifies a position in the forward feed (insertion order).
+type FeedCursor = domain.FeedCursor
+
 // ChatFilter specifies query parameters for reading chat messages.
 type ChatFilter struct {
 	// ProjectID restricts messages to one project. When nil or empty,
@@ -281,13 +284,13 @@ type ChatFilter struct {
 	ProjectID  *string
 	ProjectIDs []string
 	Limit      int
-	// Ascending selects the read direction: true = oldest first with After
-	// as the position (the feed's shape, which starts at the beginning of
-	// history even before any cursor exists); false = newest first with
+	// Ascending selects the read direction: true = insertion order with
+	// After as the position (the feed's shape, which starts at the beginning
+	// of history even before any cursor exists); false = newest first with
 	// Before as the position (the panel's shape).
 	Ascending bool
 	Before    *domain.ChatCursor
-	After     *domain.ChatCursor
+	After     *domain.FeedCursor
 }
 
 // ChatRepo persists project AI chat messages. Rows are append-only
@@ -297,13 +300,18 @@ type ChatRepo interface {
 	Add(tx Tx, m *domain.ChatMessage) error
 	// Get resolves one message by id.
 	Get(tx Tx, id string) (*domain.ChatMessage, error)
+	// GetBySeq resolves the message at one feed position, or NotFound. The
+	// feed cursor names a position plus the id expected there; the caller
+	// checks both, so a stale or foreign position is refused loudly instead
+	// of paging from silence.
+	GetBySeq(tx Tx, seq int64) (*domain.ChatMessage, error)
 	// GetBySenderKey resolves the message an (author token, idempotency key)
 	// pair already produced, or NotFound. The pair is unique among keyed
 	// messages for the message's whole lifetime.
 	GetBySenderKey(tx Tx, tokenID, key string) (*domain.ChatMessage, error)
-	// List returns a page of chat messages, newest first, with optional
-	// project filtering and tie-breaking cursor pagination. A filter with
-	// After set inverts the direction to oldest-first.
+	// List returns a page of chat messages with optional project filtering
+	// and cursor pagination: newest first (Before, the panel's shape), or in
+	// insertion order (After + Ascending, the feed's shape).
 	List(tx Tx, f ChatFilter) ([]domain.ChatMessage, error)
 }
 
