@@ -260,12 +260,13 @@ func TestAppCSS_CardFlightRespectsReducedMotion(t *testing.T) {
 	}
 }
 
-// TestAppCSS_StaticDialogGateStillPasses is a canary: the KANB-41 CSS
-// additions must not have re-introduced an unconditional `display`
-// rule on a dialog, which is the regression TestAppCSS_DialogDisplayIsAlwaysGatedOnOpen
-// exists to catch. Re-running that test directly would not show up as a
-// failure of this one, but this test stays here so a future reader
-// sees the contract in one place.
+// TestAppCSS_CardFlightHasNoClickableDescendants pins the flight
+// ghost's inertness: the KANB-41 ghost carries only the card key as
+// text and floats above the board while the real card underneath stays
+// clickable, so it must never advertise interactivity. Sibling test
+// TestAppCSS_CardFlightDoesNotInterceptPointerEvents already blocks the
+// clicks via pointer-events:none; this one blocks the affordance — no
+// `cursor: pointer` may slip into the .card-flight rule body.
 func TestAppCSS_CardFlightHasNoClickableDescendants(t *testing.T) {
 	sub, err := fs.Sub(staticFS, "static")
 	if err != nil {

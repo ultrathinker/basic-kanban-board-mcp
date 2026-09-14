@@ -333,3 +333,294 @@ func TestChart_Forecast_TooltipHasDateAndRemaining(t *testing.T) {
 		t.Error("no tooltip carried the 'in Xd/m/h' remaining-time suffix")
 	}
 }
+
+// 9. REVIEW C #5: a promise whose date had already passed when it was made
+// must read as OVERDUE, not as imminent. humanizeDuration has no sign, so
+// the unguarded remainder fell into its "<1m" branch and a month-late
+// promise rendered "(in <1m)" — a past date described as arriving in under
+// a minute. The service deliberately supports past ETAs (its own forecast
+// tests feed a 48h-past eta and require it to reach the view), so this is a
+// real path, not a degenerate input.
+//
+// The future case is asserted TOO, on purpose: a "fix" that flips the
+// comparison would move the lie to the other side (every future promise
+// suddenly "overdue"), and a past-only test would stay green while the
+// tooltip got worse for the common case.
+func TestChart_Forecast_TooltipCallsAPastPromiseOverdue(t *testing.T) {
+	made := time.Date(2026, 9, 12, 12, 0, 0, 0, time.Local)
+
+	past := tooltipText(forecastPoint{CreatedAt: made, ETA: made.Add(-30 * 24 * time.Hour)})
+	if !strings.Contains(past, "2026-08-13") || !strings.Contains(past, "overdue by 30d") {
+		t.Errorf("tooltip for a promise 30 days past = %q, want the date plus \"overdue by 30d\"", past)
+	}
+	if strings.Contains(past, "(in ") {
+		t.Errorf("tooltip for a past promise still claims remaining time: %q", past)
+	}
+
+	future := tooltipText(forecastPoint{CreatedAt: made, ETA: made.Add(90 * 24 * time.Hour)})
+	if !strings.Contains(future, "2026-12-11") || !strings.Contains(future, "(in 90d)") {
+		t.Errorf("tooltip for a promise 90 days ahead = %q, want the date plus \"(in 90d)\"", future)
+	}
+
+	// End to end: the overdue phrasing must survive into the rendered SVG,
+	// not only live in the helper — a renderer that swapped tooltipText for
+	// its own inline formatting would otherwise pass unnoticed.
+	marks := []domain.ProgressMark{
+		{ID: "m1", Assessor: "alpha", Percent: 30, CreatedAt: made, ETA: forecastPt(made.Add(-30 * 24 * time.Hour))},
+	}
+	svg := string(RenderForecastChart(marks, 600, 200))
+	if !strings.Contains(svg, "overdue by 30d") {
+		t.Errorf("rendered forecast chart has no overdue tooltip for the past promise:\n%s", svg)
+	}
+	if strings.Contains(svg, "(in <1m)") {
+		t.Errorf("rendered forecast chart describes a past promise as imminent:\n%s", svg)
+	}
+}
+
+// 10. REVIEW C #6: no text on a forecast chart may start left of the SVG
+// viewport. Both surfaces anchor a full "2006-01-02" label left of the plot
+// area — the inline panel's earliest-ETA reference and the modal's date
+// axis — and the shared ChartPadLeft (36px) gave a 10-character date less
+// than half the room it needs (~60px), so the viewport clipped the left
+// half of every axis date.
+//
+// SVG has no server-side text metrics, so the check estimates each label's
+// width at 0.5em per glyph — deliberately UNDER the real width of the
+// alphabet these labels use (digits, '-', ':', ' ' measure ~0.53em in the
+// system UI fonts, so 0.5 can only understate). An understated width makes
+// the check lenient: it may pass a label that is a pixel or two over the
+// edge, but it can never fail one that fits, and the two-thirds-of-the-
+// label clip the old pad produced is far past any estimation error.
+func TestChart_Forecast_DateLabelsAreNotClippedByTheLeftEdge(t *testing.T) {
+	t0 := time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local)
+	// The ETA span crosses the 31-day switch in formatForecastAxisDate, so
+	// the modal's axis prints FULL dates — the widest, most easily clipped
+	// case — and always five of them.
+	marks := []domain.ProgressMark{
+		{ID: "m1", Assessor: "alpha", Percent: 30, CreatedAt: t0, ETA: forecastPt(t0.Add(5 * 24 * time.Hour))},
+		{ID: "m2", Assessor: "alpha", Percent: 50, CreatedAt: t0.Add(time.Hour), ETA: forecastPt(t0.Add(95 * 24 * time.Hour))},
+	}
+
+	textRe := regexp.MustCompile(`<text x="(-?[\d.]+)" y="[-\d.]+" text-anchor="(start|middle|end)" font-size="(\d+)"[^>]*>([^<]+)</text>`)
+	check := func(svg, what string) {
+		t.Helper()
+		matches := textRe.FindAllStringSubmatch(svg, -1)
+		if len(matches) == 0 {
+			t.Fatalf("%s: no labelled text elements found to check", what)
+		}
+		dateLabels := 0
+		for _, m := range matches {
+			x, _ := strconv.ParseFloat(m[1], 64)
+			fs, _ := strconv.ParseFloat(m[3], 64)
+			label, anchor := m[4], m[2]
+			left := x
+			switch anchor {
+			case "end":
+				left = x - 0.5*fs*float64(len(label))
+			case "middle":
+				left = x - 0.5*fs*float64(len(label))/2
+			}
+			if left < 0 {
+				t.Errorf("%s: label %q at x=%.1f (font %.0f, anchor %s) starts at x=%.1f — left of the SVG edge, the reader sees a clipped tail",
+					what, label, x, fs, anchor, left)
+			}
+			if strings.HasPrefix(label, "2026-") {
+				dateLabels++
+			}
+		}
+		// The guard must actually be looking at full dates, not merely at
+		// whatever labels happen to be present: a fixture change that
+		// shrank the ETA span would otherwise turn this into a test of
+		// short "Mon DD" labels and quietly stop covering the defect.
+		if what == "modal" && dateLabels < 5 {
+			t.Fatalf("modal: expected the five full-date axis labels, saw %d — the fixture no longer covers the 10-character case", dateLabels)
+		}
+	}
+
+	check(string(RenderForecastChart(marks, DefaultChartWidth, DefaultChartHeight)), "inline panel")
+	check(string(RenderForecastChartDetailed(marks, DetailChartWidth, DetailChartHeight)), "modal")
+}
+
+// 11. REVIEW C #7: the enlarged forecast chart's legend must name the number
+// of points the picture actually draws. The legend used to quote the raw
+// series length while the renderer decimated the polyline to MaxChartPoints,
+// so a 300-point history shipped "300 pts" beside a 60-point line — and the
+// line's own hover tooltip printed the drawn count, making the legend and
+// the tooltip on one picture contradict each other. The rule the legend's
+// own comment states ("They MUST agree") was true everywhere except the one
+// place a reader could check it.
+func TestChart_Forecast_DetailLegendPointsMatchTheDrawnPolyline(t *testing.T) {
+	t0 := time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local)
+	const n = 300
+	var marks []domain.ProgressMark
+	for i := 0; i < n; i++ {
+		marks = append(marks, forecastMark(
+			"m"+strconv.Itoa(i), "busy-bot", 10+(i*80/n),
+			t0.Add(time.Duration(i)*time.Minute),
+			t0.Add(time.Duration(30+i%20)*24*time.Hour),
+		))
+	}
+
+	detail := NewForecastChartDetail(marks)
+	if detail == nil {
+		t.Fatal("NewForecastChartDetail returned nil for a 300-forecast history")
+	}
+
+	drawn := func(seriesAttr string) int {
+		t.Helper()
+		coords := parsePolylinePoints(t, extractPolylinePoints(t, string(detail.SVG), seriesAttr))
+		return len(coords)
+	}
+	assessorDrawn := drawn(`data-assessor="busy-bot"`)
+	consensusDrawn := drawn(`data-series="consensus"`)
+
+	// The fixture must sit inside the regime the defect lives in — past the
+	// decimation budget — so the legend/picture equality below is a check
+	// on real disagreement, not an accident of both being equal because
+	// nothing was thinned.
+	if assessorDrawn >= n || consensusDrawn >= n {
+		t.Fatalf("fixture did not decimate: assessor %d, consensus %d of %d raw points", assessorDrawn, consensusDrawn, n)
+	}
+
+	legend := map[string]int{}
+	for _, e := range detail.Legend {
+		legend[e.Label] = e.Points
+	}
+	if got, want := legend["busy-bot"], assessorDrawn; got != want {
+		t.Errorf("legend claims %d points for the assessor but the polyline draws %d — the legend and the picture contradict each other", got, want)
+	}
+	if got, want := legend["consensus"], consensusDrawn; got != want {
+		t.Errorf("legend claims %d points for the consensus but the polyline draws %d", got, want)
+	}
+}
+
+// 12. REVIEW C #11: the modal's date axis must not print the same label
+// twice. pickForecastDateTicks always picks five evenly-spaced ticks, and
+// on an ETA span of a couple of days several of those land on the SAME
+// calendar day — which day-precision labels ("Sep 13") cannot tell apart.
+// The reader got five gridlines signed by two dates, three identical, and
+// could not tell which line was which. A tick whose label repeats the
+// previous one is now dropped whole; this pins that no printed label
+// survives twice on the axis.
+func TestChart_Forecast_ModalDateAxisDoesNotRepeatALabel(t *testing.T) {
+	// ETA span exactly one day, fixed at noon so no DST shift can move a
+	// date under the fixture: the five ticks land two days wide, the very
+	// shape the review measured as "Sep 13" three times.
+	t0 := time.Date(2026, 9, 13, 12, 0, 0, 0, time.Local)
+	marks := []domain.ProgressMark{
+		{ID: "m1", Assessor: "alpha", Percent: 30, CreatedAt: t0, ETA: forecastPt(t0)},
+		{ID: "m2", Assessor: "alpha", Percent: 50, CreatedAt: t0.Add(time.Hour), ETA: forecastPt(t0.Add(24 * time.Hour))},
+	}
+
+	svg := string(RenderForecastChartDetailed(marks, DetailChartWidth, DetailChartHeight))
+
+	textRe := regexp.MustCompile(`<text[^>]*>([^<]+)</text>`)
+	counts := map[string]int{}
+	for _, m := range textRe.FindAllStringSubmatch(svg, -1) {
+		counts[m[1]]++
+	}
+	for label, n := range counts {
+		if n > 1 {
+			t.Errorf("modal date axis printed label %q %d times — repeated labels leave the gridlines indistinguishable:\n%s", label, n, svg)
+		}
+	}
+	// Both end dates must still be named exactly once: the dedupe thins
+	// the MIDDLE of the axis, it must not swallow the bounds a reader
+	// measures the span by.
+	if counts["Sep 13"] != 1 || counts["Sep 14"] != 1 {
+		t.Errorf("date axis labels = %v, want Sep 13 and Sep 14 exactly once each", counts)
+	}
+}
+
+// 13. REVIEW C #13: two marks one assessor landed in the same instant must
+// not draw as two coincident polyline points. The percent chart collapses
+// same-timestamp points before decimating (deduplicateSameTimestamp); the
+// forecast chart never did, so the duplicated mark came out as a zero-length
+// polyline segment — invisible, but a degenerate output of the decimation
+// pipeline all the same.
+func TestChart_Forecast_SameInstantMarksCollapseToTheLastOne(t *testing.T) {
+	t0 := time.Date(2026, 9, 12, 12, 0, 0, 0, time.Local)
+	etaShort := t0.Add(30 * 24 * time.Hour)
+	etaLong := t0.Add(90 * 24 * time.Hour)
+
+	got := deduplicateForecastPoints([]forecastPoint{
+		{CreatedAt: t0, ETA: etaShort},
+		{CreatedAt: t0, ETA: etaLong}, // same instant, promise revised — keep the LAST
+		{CreatedAt: t0.Add(time.Hour), ETA: etaShort},
+	})
+	if len(got) != 2 {
+		t.Fatalf("same-instant collapse left %d points, want 2 (one per distinct instant)", len(got))
+	}
+	if !got[0].CreatedAt.Equal(t0) || !got[0].ETA.Equal(etaLong) {
+		t.Errorf("collapse kept (%s, %s) at the shared instant, want the LAST mark's promise %s",
+			got[0].CreatedAt, got[0].ETA, etaLong)
+	}
+	if !got[1].CreatedAt.Equal(t0.Add(time.Hour)) || !got[1].ETA.Equal(etaShort) {
+		t.Errorf("collapse disturbed a distinct instant: got (%s, %s)", got[1].CreatedAt, got[1].ETA)
+	}
+
+	// Three marks in one instant collapse to exactly the last one.
+	one := deduplicateForecastPoints([]forecastPoint{
+		{CreatedAt: t0, ETA: etaShort},
+		{CreatedAt: t0, ETA: etaLong},
+		{CreatedAt: t0, ETA: etaShort},
+	})
+	if len(one) != 1 || !one[0].ETA.Equal(etaShort) {
+		t.Errorf("three same-instant marks collapsed to %d points, want 1 carrying the last promise", len(one))
+	}
+
+	// A single point, and points at distinct instants, pass through whole.
+	solo := deduplicateForecastPoints([]forecastPoint{{CreatedAt: t0, ETA: etaShort}})
+	if len(solo) != 1 || !solo[0].ETA.Equal(etaShort) {
+		t.Errorf("single point did not pass through: %+v", solo)
+	}
+}
+
+// The rendered half of item 13: the same fixture at the SVG level. Two marks,
+// same assessor, same instant, same promise — the drawn track is ONE point
+// (the single-point circle branch), not a polyline whose second vertex
+// coincides with its first. The modal's legend must count the same 1.
+func TestChart_Forecast_TwoMarksInTheSameInstantDrawOnePoint(t *testing.T) {
+	t0 := time.Date(2026, 9, 12, 12, 0, 0, 0, time.Local)
+	marks := []domain.ProgressMark{
+		forecastMark("m1", "busy-bot", 40, t0, t0.Add(30*24*time.Hour)),
+		forecastMark("m2", "busy-bot", 60, t0, t0.Add(30*24*time.Hour)),
+	}
+
+	svg := string(RenderForecastChart(marks, DefaultChartWidth, DefaultChartHeight))
+
+	// The exact corruption the review measured: a polyline whose points list
+	// carries the same coordinate pair twice in a row. Scan every polyline,
+	// not just the expected one, so a partial fix in one render path cannot
+	// slip past.
+	polyRe := regexp.MustCompile(`<polyline[^>]*points="([^"]+)"`)
+	for _, pm := range polyRe.FindAllStringSubmatch(svg, -1) {
+		coords := parsePolylinePoints(t, pm[1])
+		for i := 1; i < len(coords); i++ {
+			if coords[i] == coords[i-1] {
+				t.Fatalf("polyline carries a zero-length segment: %v repeated at %d\n%s", coords[i], i, svg)
+			}
+		}
+	}
+
+	// With the collapse in place the track is one point, so it renders as
+	// the single-point marker, not a polyline for this assessor.
+	if strings.Contains(svg, `<polyline`) {
+		t.Errorf("two same-instant marks drew a polyline; the track should be a single point:\n%s", svg)
+	}
+	if !strings.Contains(svg, `r="3" fill="currentColor" data-assessor="busy-bot"`) {
+		t.Errorf("the collapsed track did not render as the single-point circle marker:\n%s", svg)
+	}
+
+	// The modal's legend must agree with what is drawn: two coincident marks
+	// are ONE drawn point, and the legend may not resurrect the raw count.
+	detail := NewForecastChartDetail(marks)
+	if detail == nil {
+		t.Fatal("NewForecastChartDetail returned nil for a two-mark forecast history")
+	}
+	for _, e := range detail.Legend {
+		if e.Label == "busy-bot" && e.Points != 1 {
+			t.Errorf("legend claims %d points for two same-instant marks; the chart draws 1 point", e.Points)
+		}
+	}
+}

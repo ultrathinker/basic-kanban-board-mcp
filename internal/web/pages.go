@@ -97,11 +97,23 @@ func chatAcceptanceDoneKeys(ctx context.Context, svc service.Service, a service.
 // journal's entire span, not just the panel's freshest page, and ChatFeed is
 // the one read that starts at the beginning of history. One hundred pages of
 // one hundred messages is far past any feed this board has carried; at the
-// cap the oldest marks silently drop out rather than the chart hanging.
+// cap the walk stops AND says so — scopeChangeTruncatedNote names the limit
+// in the items panels, because old marks dropping out must never be
+// indistinguishable from "nothing was declared back then".
 const (
 	scopeChangeFeedPage     = 100
 	scopeChangeFeedMaxPages = 100
 )
+
+// scopeChangeTruncatedNote is the sentence the items panels print when the
+// scope_change walk hit its page cap: the limit is named where the reader
+// sees the marks, the same honesty the CLI/web export gives its document
+// with the truncated field and its own warning (viewmap.go).
+func scopeChangeTruncatedNote() string {
+	return fmt.Sprintf(
+		"scope-change marks cover only the newest %d feed messages (the walk caps at %d pages of %d); older declarations are not drawn",
+		scopeChangeFeedPage*scopeChangeFeedMaxPages, scopeChangeFeedMaxPages, scopeChangeFeedPage)
+}
 
 // scopeChangeNotes walks the project's whole feed and collects the
 // scope_change declarations for the items chart's axis (KANB-38). Each note
@@ -110,7 +122,13 @@ const (
 // feed, whose entries render with the matching id anchor. Best-effort like
 // every other chat read feeding a page (see knownChatTaskKeys): a failed
 // read costs the marks, not the chart.
-func scopeChangeNotes(ctx context.Context, svc service.Service, a service.Actor, projectKey string) []view.ScopeChangeNote {
+//
+// The second return reports the walk hitting its page cap
+// (scopeChangeFeedMaxPages): the oldest declarations lie beyond it and will
+// not be drawn, and the caller is expected to name that limit where the
+// reader sees the marks (scopeChangeTruncatedNote) instead of leaving the
+// omissions to read as an empty axis.
+func scopeChangeNotes(ctx context.Context, svc service.Service, a service.Actor, projectKey string) ([]view.ScopeChangeNote, bool) {
 	after := ""
 	var notes []view.ScopeChangeNote
 	for page := 0; page < scopeChangeFeedMaxPages; page++ {
@@ -120,7 +138,7 @@ func scopeChangeNotes(ctx context.Context, svc service.Service, a service.Actor,
 			Limit:      scopeChangeFeedPage,
 		})
 		if err != nil {
-			return notes
+			return notes, false
 		}
 		for _, m := range res.Messages {
 			if m.Message.Kind != domain.MessageScopeChange {
@@ -134,11 +152,11 @@ func scopeChangeNotes(ctx context.Context, svc service.Service, a service.Actor,
 			})
 		}
 		if !res.HasMore {
-			return notes
+			return notes, false
 		}
 		after = res.NextCursor
 	}
-	return notes
+	return notes, true
 }
 
 // chatEntryMetaView maps the service's resolved display data onto the view's
@@ -535,10 +553,16 @@ func (w *Web) handleProgressChart(rw http.ResponseWriter, r *http.Request) {
 	// KANB-38: the scope_change declarations ride the items chart's time
 	// axis. They come from the feed, not the journal, so this is one extra
 	// read on the project scope only — the per-task charts have no items
-	// panel and ask for no replay either.
+	// panel and ask for no replay either. scopeTruncated is the walk saying
+	// it hit its page cap: the oldest declarations are beyond it, and the
+	// items panels below must name that limit where the reader sees the
+	// marks instead of leaving them to read as an empty axis.
 	var scopeMarks []view.ChartAxisMark
+	scopeTruncated := false
 	if taskKey == "" {
-		scopeMarks = view.ScopeChangeMarks(scopeChangeNotes(r.Context(), w.d.Service, actorFor(tok), key))
+		notes, truncated := scopeChangeNotes(r.Context(), w.d.Service, actorFor(tok), key)
+		scopeMarks = view.ScopeChangeMarks(notes)
+		scopeTruncated = truncated
 	}
 	switch detail {
 	case "":
@@ -554,13 +578,21 @@ func (w *Web) handleProgressChart(rw http.ResponseWriter, r *http.Request) {
 		w.renderChartDetail(rw, r, view.NewForecastChartDetail(result.Marks))
 		return
 	case "items":
-		w.renderChartDetail(rw, r, view.NewItemsChartDetail(result.Replay, scopeMarks...))
+		chart := view.NewItemsChartDetail(result.Replay, scopeMarks...)
+		if chart != nil && scopeTruncated {
+			chart.Note = scopeChangeTruncatedNote()
+		}
+		w.renderChartDetail(rw, r, chart)
 		return
 	default:
 		apiError(rw, domain.Invalid("detail",
 			fmt.Sprintf("unknown chart %q", detail),
 			`Ask for "progress", "forecast" or "items", or omit detail for the inline panels.`))
 		return
+	}
+	items := view.NewItemsChartView(result.Replay, view.DefaultChartWidth, view.DefaultChartHeight, scopeMarks...)
+	if items != nil && scopeTruncated {
+		items.Note = scopeChangeTruncatedNote()
 	}
 	frag := &view.ProgressChartFragment{
 		Progress: view.NewProgressChartView(result.Marks, view.DefaultChartWidth, view.DefaultChartHeight),
@@ -570,7 +602,7 @@ func (w *Web) handleProgressChart(rw http.ResponseWriter, r *http.Request) {
 		// "render nothing" rule the percent chart already follows for
 		// missing data.
 		Forecast: view.NewForecastChartView(result.Marks, view.DefaultChartWidth, view.DefaultChartHeight),
-		Items:    view.NewItemsChartView(result.Replay, view.DefaultChartWidth, view.DefaultChartHeight, scopeMarks...),
+		Items:    items,
 		// KANB-53: the historical readiness curve, from the same replay, so
 		// its caption (service's own sentence about point-in-time estimates)
 		// always has the curve beside it. Nil for a task scope (no replay is

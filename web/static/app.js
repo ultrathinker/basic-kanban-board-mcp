@@ -332,9 +332,10 @@
           }
           // KANB-41: capture each card's screen position + column BEFORE
           // the swap, so the post-swap diff (below) can fly a ghost from
-          // the real source to the real target. Skipping the very first
-          // refresh (no "before" state ever existed) is handled by the
-          // flag flipped in initFlights().
+          // the real source to the real target. The very first refresh
+          // (no "before" state ever existed) is skipped inside
+          // captureBoardSnapshot itself: its first call just seeds an
+          // empty snapshot and returns.
           if (current.id === 'board') captureBoardSnapshot(current);
           var firstRow = current.querySelector('.row');
           var previousFirstRowText = firstRow ? firstRow.textContent.trim() : null;
@@ -575,8 +576,9 @@
 
   // cardsSnapshot is the pre-refresh state of every visible card: key ->
   // {column, rect}. Set by captureBoardSnapshot on every board refresh;
-  // consumed by detectAndFlyCards. Cleared by initFlights' first-call
-  // gate so the very first refresh has nothing to compare against.
+  // consumed by detectAndFlyCards. It starts null; the first call to
+  // captureBoardSnapshot seeds an empty snapshot instead of real data,
+  // so the very first refresh has nothing to compare against.
   var cardsSnapshot = null;
   var flightsActive = 0;
   var selfMovedKeys = {};

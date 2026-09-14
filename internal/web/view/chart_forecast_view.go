@@ -175,7 +175,7 @@ func renderForecastChartImpl(marks []domain.ProgressMark, width, height int, det
 		seriesList = append(seriesList, forecastSeries{
 			Name:        name,
 			IsComposite: false,
-			Points:      decimateForecastPoints(byAssessor[name], MaxChartPoints),
+			Points:      prepareForecastTrack(byAssessor[name]),
 			DashArray:   assessorDash(i),
 			StrokeWidth: 1.2,
 		})
@@ -255,10 +255,20 @@ type forecastBounds struct {
 	etaSpan        time.Duration
 }
 
+// forecastChartPadLeft is the forecast chart's own left padding, wider than
+// the shared ChartPadLeft. Both forecast surfaces anchor a full
+// "2006-01-02" date label just left of the plot area — the inline panel's
+// earliest-ETA reference and the modal's whole date axis — and a
+// 10-character date at the axis font size is ~60px wide, about twice what
+// ChartPadLeft (36, sized for the percent chart's "100%") leaves beside the
+// plot. With the shared pad the label began at a negative SVG x and the
+// viewport clipped it: a date axis a reader could not read.
+const forecastChartPadLeft = 72.0
+
 func forecastBoundsOf(w, h int, tStart, tEnd time.Time, etaMin, etaMax time.Time) forecastBounds {
 	width := float64(w)
 	height := float64(h)
-	xMin := ChartPadLeft
+	xMin := forecastChartPadLeft
 	xMax := width - ChartPadRight
 	yMin := ChartPadTop
 	yMax := height - ChartPadBottom
@@ -430,8 +440,17 @@ func renderFullForecastChart(b forecastBounds, seriesList []forecastSeries, etaM
 // because "remaining time" alone shrinks every day even when nothing
 // changed (the same reason the Y axis is absolute dates, not "days
 // remaining from now").
+//
+// A promise whose date had already passed when it was made is OVERDUE, not
+// imminent. humanizeDuration has no sign, so the raw negative remainder
+// falls into its "<1m" branch and a month-late promise would read
+// "(in <1m)" — the exact lie the board's forecast badge already avoids by
+// carrying an "overdue" mark for the same situation (view.ForecastView).
 func tooltipText(pt forecastPoint) string {
 	rem := pt.ETA.Sub(pt.CreatedAt)
+	if rem < 0 {
+		return pt.ETA.Format("2006-01-02") + " (overdue by " + humanizeDuration(-rem) + ")"
+	}
 	return pt.ETA.Format("2006-01-02") + " (in " + humanizeDuration(rem) + ")"
 }
 
@@ -490,6 +509,59 @@ func pluralS(n int) string {
 		return ""
 	}
 	return "s"
+}
+
+// deduplicateForecastPoints collapses consecutive points sharing the same
+// CreatedAt, keeping the final (latest) point at that instant — the forecast
+// mirror of chart.go's deduplicateSameTimestamp, which the percent chart runs
+// on every series before decimating and this chart did not (KANB-55 item 13).
+//
+// Without it, two marks one assessor landed in the same instant draw as two
+// coincident polyline vertices — a zero-length segment on the rendered line.
+// With it, a promise (re)stated within the same instant draws the standing
+// one, the same answer the percent chart gives for two percents at one
+// timestamp. The input must be chronologically sorted so equal instants are
+// consecutive, which renderForecastChartImpl guarantees before grouping.
+func deduplicateForecastPoints(points []forecastPoint) []forecastPoint {
+	if len(points) <= 1 {
+		return points
+	}
+	out := make([]forecastPoint, 0, len(points))
+	for _, pt := range points {
+		if len(out) > 0 && out[len(out)-1].CreatedAt.Equal(pt.CreatedAt) {
+			out[len(out)-1] = pt
+		} else {
+			out = append(out, pt)
+		}
+	}
+	return out
+}
+
+// prepareForecastTrack is the one pipeline an assessor's marks go through
+// before anything downstream counts or draws them: collapse same-instant
+// marks, then decimate to the render budget. The renderer and the legend's
+// drawnForecastTrackLen MUST share this exact pipeline — the moment one of
+// them skips a stage, the legend and the polyline disagree again (KANB-55
+// item 7 fixed exactly that split once).
+func prepareForecastTrack(points []forecastPoint) []forecastPoint {
+	return decimateForecastPoints(deduplicateForecastPoints(points), MaxChartPoints)
+}
+
+// drawnForecastTrackLen reports how many points the forecast chart draws
+// for one assessor's track: the same marks-to-points conversion the renderer
+// does, followed by the same prepareForecastTrack pass (same-instant
+// collapse + decimation). The legend reads this number instead of len(marks)
+// so an entry cannot claim the raw count over a polyline the pipeline
+// shortened — the assessor-track half of the MUST-agree rule
+// countConsensusPoints's comment states.
+func drawnForecastTrackLen(marks []domain.ProgressMark) int {
+	pts := make([]forecastPoint, 0, len(marks))
+	for _, m := range marks {
+		if m.ETA != nil {
+			pts = append(pts, forecastPoint{CreatedAt: m.CreatedAt, ETA: *m.ETA})
+		}
+	}
+	return len(prepareForecastTrack(pts))
 }
 
 // decimateForecastPoints downsamples a dense forecast track for rendering,

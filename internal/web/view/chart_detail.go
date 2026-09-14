@@ -77,8 +77,22 @@ func writePercentAxis(buf *bytes.Buffer, b chartBounds) {
 // and NOT "days remaining from now". Plotting absolute dates is the only
 // mapping that renders a genuinely held promise as flat — "days remaining"
 // would shrink every day even when nothing changed.
+//
+// On a short span several of the evenly-picked ticks land on the SAME
+// calendar day, and formatForecastAxisDate deliberately prints day
+// precision there — five gridlines could come back carrying two labels,
+// three of them the same string. A tick whose label repeats the previous
+// one is dropped whole, line and text together: every line left on the axis
+// is individually labelled, and no date prints twice in a row. Labels are
+// monotone along the tick list, so equal labels are always consecutive.
 func writeDateAxis(buf *bytes.Buffer, yMin, yMax float64, etaMin, etaMax time.Time, xMin, xMax float64) {
+	prev := ""
 	for _, t := range pickForecastDateTicks(etaMin, etaMax) {
+		label := formatForecastAxisDate(t, etaMin, etaMax)
+		if label == prev {
+			continue
+		}
+		prev = label
 		y := yForForecastTime(t, etaMin, etaMax, yMin, yMax)
 		opacity := "0.18"
 		if t.Equal(etaMin) || t.Equal(etaMax) {
@@ -87,7 +101,7 @@ func writeDateAxis(buf *bytes.Buffer, yMin, yMax float64, etaMin, etaMax time.Ti
 		fmt.Fprintf(buf, `<line x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f" stroke="currentColor" stroke-width="1" stroke-opacity="%s"/>`,
 			xMin, y, xMax, y, opacity)
 		fmt.Fprintf(buf, `<text x="%.1f" y="%.1f" text-anchor="end" font-size="11" fill="currentColor" fill-opacity="0.6">%s</text>`,
-			xMin-6.0, y+4.0, html.EscapeString(formatForecastAxisDate(t, etaMin, etaMax)))
+			xMin-6.0, y+4.0, html.EscapeString(label))
 	}
 }
 
@@ -117,8 +131,9 @@ func yForForecastTime(t, etaMin, etaMax time.Time, yMin, yMax float64) float64 {
 // Y axis: at most forecastDateAxisMaxSteps, picked to include etaMin and
 // etaMax and fill the gap with evenly-spaced points. Picking the labelled
 // dates this way (rather than every day in range) is what keeps the axis
-// legible for a 60-day span AND a 6-month span alike: the same chart
-// rendering with different label counts, never a label collision.
+// legible for a 60-day span AND a 6-month span alike. On spans shorter than
+// a few days the picks can share a calendar day, which day-precision labels
+// cannot tell apart — writeDateAxis drops those repeats.
 func pickForecastDateTicks(etaMin, etaMax time.Time) []time.Time {
 	if !etaMax.After(etaMin) {
 		return []time.Time{etaMin}
@@ -170,8 +185,10 @@ type ChartLegendEntry struct {
 	Width float64
 	// Note is the range in words, e.g. "91% -> 72%" or "4 -> 151".
 	Note string
-	// Points is how many data points the line was drawn from, so a reader
-	// can tell one confident-looking line from another drawn from two marks.
+	// Points is the count printed beside the chart: for a curve line, what
+	// the DRAWN polyline carries (the post-decimation count), never the raw
+	// history — a legend quoting more points than the picture shows
+	// contradicts its own chart.
 	Points int
 }
 
@@ -183,6 +200,10 @@ type ChartDetailView struct {
 	Axis     string // what the vertical axis measures, in words
 	Span     string // the time range covered, in words
 	Subtitle string // the headline reading, e.g. "72% now, from 91%"
+	// Note, when set, is an honesty sentence printed beside the chart —
+	// the modal's slot for a named limit (see ItemsChartView.Note for the
+	// full story). Empty for every chart whose data carries no limit.
+	Note string
 }
 
 // NewProgressChartDetail builds the enlarged assessment chart: the same
@@ -309,11 +330,15 @@ func NewForecastChartDetail(history []domain.ProgressMark) *ChartDetailView {
 	for i, name := range names {
 		track := byAssessor[name]
 		legend = append(legend, ChartLegendEntry{
-			Label:  name,
-			Dash:   assessorDash(i),
-			Width:  1.2,
-			Note:   forecastRangeNote(track),
-			Points: len(track),
+			Label: name,
+			Dash:  assessorDash(i),
+			Width: 1.2,
+			Note:  forecastRangeNote(track),
+			// The DRAWN count, not len(track): the renderer decimates the
+			// track before the polyline, and a legend claiming the raw count
+			// over a shortened line contradicts its own picture (see
+			// countConsensusPoints for the MUST-agree rule).
+			Points: drawnForecastTrackLen(track),
 		})
 	}
 	// Consensus is computed in chart_forecast.go and rendered last; legend
@@ -502,12 +527,14 @@ func forecastConsensusNote(marks []domain.ProgressMark) string {
 	return first + " -> " + last
 }
 
-// countConsensusPoints mirrors chart_forecast.go's own buildConsensusSeries
-// length so the legend and the chart agree on how many points the consensus
-// line actually carries. They MUST agree: an entry that claims "5 pts" while
-// the polyline has 3 is a worse lie than the chart alone.
+// countConsensusPoints reports how many points the consensus polyline
+// actually DRAWS: buildConsensusSeries's series after the same
+// decimateForecastPoints pass the renderer applies. The legend and the
+// chart MUST agree — an entry that claims "300 pts" while the polyline
+// carries 60 is a worse lie than the chart alone, and it is exactly what
+// the raw series length produced once histories grew past MaxChartPoints.
 func countConsensusPoints(marks []domain.ProgressMark) int {
-	return len(buildConsensusSeries(marks))
+	return len(decimateForecastPoints(buildConsensusSeries(marks), MaxChartPoints))
 }
 
 // spanNote renders the charted period the way the axis labels do, so the
