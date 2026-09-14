@@ -252,7 +252,11 @@ func registerBoardGet(s *gomcp.Server, svc service.Service) {
 				HasMore:    res.HasMore,
 			}
 			mout := boardGetOutput{OK: true, Op: opBoardGet, Messages: md, Meta: &toolMeta{Count: len(md.Messages)}}
-			return &gomcp.CallToolResult{Content: []gomcp.Content{&gomcp.TextContent{Text: renderMessagesFeed(md)}}}, mout, nil
+			text := renderMessagesFeed(md)
+			if in.Format == "json" {
+				text = jsonText(mout)
+			}
+			return &gomcp.CallToolResult{Content: []gomcp.Content{&gomcp.TextContent{Text: text}}}, mout, nil
 		}
 
 		board, err := svc.BoardGet(ctx, actor, service.BoardGetInput{
