@@ -440,3 +440,56 @@ func TestChart_Forecast_DateLabelsAreNotClippedByTheLeftEdge(t *testing.T) {
 	check(string(RenderForecastChart(marks, DefaultChartWidth, DefaultChartHeight)), "inline panel")
 	check(string(RenderForecastChartDetailed(marks, DetailChartWidth, DetailChartHeight)), "modal")
 }
+
+// 11. REVIEW C #7: the enlarged forecast chart's legend must name the number
+// of points the picture actually draws. The legend used to quote the raw
+// series length while the renderer decimated the polyline to MaxChartPoints,
+// so a 300-point history shipped "300 pts" beside a 60-point line — and the
+// line's own hover tooltip printed the drawn count, making the legend and
+// the tooltip on one picture contradict each other. The rule the legend's
+// own comment states ("They MUST agree") was true everywhere except the one
+// place a reader could check it.
+func TestChart_Forecast_DetailLegendPointsMatchTheDrawnPolyline(t *testing.T) {
+	t0 := time.Date(2026, 9, 12, 10, 0, 0, 0, time.Local)
+	const n = 300
+	var marks []domain.ProgressMark
+	for i := 0; i < n; i++ {
+		marks = append(marks, forecastMark(
+			"m"+strconv.Itoa(i), "busy-bot", 10+(i*80/n),
+			t0.Add(time.Duration(i)*time.Minute),
+			t0.Add(time.Duration(30+i%20)*24*time.Hour),
+		))
+	}
+
+	detail := NewForecastChartDetail(marks)
+	if detail == nil {
+		t.Fatal("NewForecastChartDetail returned nil for a 300-forecast history")
+	}
+
+	drawn := func(seriesAttr string) int {
+		t.Helper()
+		coords := parsePolylinePoints(t, extractPolylinePoints(t, string(detail.SVG), seriesAttr))
+		return len(coords)
+	}
+	assessorDrawn := drawn(`data-assessor="busy-bot"`)
+	consensusDrawn := drawn(`data-series="consensus"`)
+
+	// The fixture must sit inside the regime the defect lives in — past the
+	// decimation budget — so the legend/picture equality below is a check
+	// on real disagreement, not an accident of both being equal because
+	// nothing was thinned.
+	if assessorDrawn >= n || consensusDrawn >= n {
+		t.Fatalf("fixture did not decimate: assessor %d, consensus %d of %d raw points", assessorDrawn, consensusDrawn, n)
+	}
+
+	legend := map[string]int{}
+	for _, e := range detail.Legend {
+		legend[e.Label] = e.Points
+	}
+	if got, want := legend["busy-bot"], assessorDrawn; got != want {
+		t.Errorf("legend claims %d points for the assessor but the polyline draws %d — the legend and the picture contradict each other", got, want)
+	}
+	if got, want := legend["consensus"], consensusDrawn; got != want {
+		t.Errorf("legend claims %d points for the consensus but the polyline draws %d", got, want)
+	}
+}

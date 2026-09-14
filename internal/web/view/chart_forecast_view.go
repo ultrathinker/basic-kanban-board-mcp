@@ -511,6 +511,22 @@ func pluralS(n int) string {
 	return "s"
 }
 
+// drawnForecastTrackLen reports how many points the forecast chart draws
+// for one assessor's track: the same marks-to-points conversion the renderer
+// does, followed by the same decimateForecastPoints pass. The legend reads
+// this number instead of len(marks) so an entry cannot claim the raw count
+// over a polyline the decimator shortened — the assessor-track half of the
+// MUST-agree rule countConsensusPoints's comment states.
+func drawnForecastTrackLen(marks []domain.ProgressMark) int {
+	pts := make([]forecastPoint, 0, len(marks))
+	for _, m := range marks {
+		if m.ETA != nil {
+			pts = append(pts, forecastPoint{CreatedAt: m.CreatedAt, ETA: *m.ETA})
+		}
+	}
+	return len(decimateForecastPoints(pts, MaxChartPoints))
+}
+
 // decimateForecastPoints downsamples a dense forecast track for rendering,
 // protecting the moves a reader opens this chart to see.
 //

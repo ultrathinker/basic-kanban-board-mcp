@@ -170,8 +170,10 @@ type ChartLegendEntry struct {
 	Width float64
 	// Note is the range in words, e.g. "91% -> 72%" or "4 -> 151".
 	Note string
-	// Points is how many data points the line was drawn from, so a reader
-	// can tell one confident-looking line from another drawn from two marks.
+	// Points is the count printed beside the chart: for a curve line, what
+	// the DRAWN polyline carries (the post-decimation count), never the raw
+	// history — a legend quoting more points than the picture shows
+	// contradicts its own chart.
 	Points int
 }
 
@@ -309,11 +311,15 @@ func NewForecastChartDetail(history []domain.ProgressMark) *ChartDetailView {
 	for i, name := range names {
 		track := byAssessor[name]
 		legend = append(legend, ChartLegendEntry{
-			Label:  name,
-			Dash:   assessorDash(i),
-			Width:  1.2,
-			Note:   forecastRangeNote(track),
-			Points: len(track),
+			Label: name,
+			Dash:  assessorDash(i),
+			Width: 1.2,
+			Note:  forecastRangeNote(track),
+			// The DRAWN count, not len(track): the renderer decimates the
+			// track before the polyline, and a legend claiming the raw count
+			// over a shortened line contradicts its own picture (see
+			// countConsensusPoints for the MUST-agree rule).
+			Points: drawnForecastTrackLen(track),
 		})
 	}
 	// Consensus is computed in chart_forecast.go and rendered last; legend
@@ -502,12 +508,14 @@ func forecastConsensusNote(marks []domain.ProgressMark) string {
 	return first + " -> " + last
 }
 
-// countConsensusPoints mirrors chart_forecast.go's own buildConsensusSeries
-// length so the legend and the chart agree on how many points the consensus
-// line actually carries. They MUST agree: an entry that claims "5 pts" while
-// the polyline has 3 is a worse lie than the chart alone.
+// countConsensusPoints reports how many points the consensus polyline
+// actually DRAWS: buildConsensusSeries's series after the same
+// decimateForecastPoints pass the renderer applies. The legend and the
+// chart MUST agree — an entry that claims "300 pts" while the polyline
+// carries 60 is a worse lie than the chart alone, and it is exactly what
+// the raw series length produced once histories grew past MaxChartPoints.
 func countConsensusPoints(marks []domain.ProgressMark) int {
-	return len(buildConsensusSeries(marks))
+	return len(decimateForecastPoints(buildConsensusSeries(marks), MaxChartPoints))
 }
 
 // spanNote renders the charted period the way the axis labels do, so the
