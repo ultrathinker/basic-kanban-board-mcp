@@ -111,7 +111,7 @@ cmd/kanban/            CLI entry point and subcommands
 internal/domain/       FROZEN. entities, enums, limits, errors, pure rules
 internal/store/        store.go is FROZEN (interfaces); the SQLite implementation is code
 internal/service/      service.go is FROZEN (interfaces); the use-cases are code
-internal/mcp/          the nine tools, schemas, instructions, compact renderer
+internal/mcp/          the MCP tool surface, schemas, instructions, compact renderer
 internal/web/          handlers, templates, SSE, sessions
 internal/events/       in-process bus
 internal/auth/         tokens, sessions, middleware, trusted proxies, rate limit
