@@ -74,7 +74,7 @@ func projectUpsertTool() *gomcp.Tool {
 	setMaxItems(cols, domain.MaxColumnsPerPrj)
 	item := cols.Items
 	setMaxLen(prop(item, "name"), domain.MaxColumnNameLen)
-	setEnum(prop(item, "kind"), string(domain.KindBacklog), string(domain.KindActive), string(domain.KindDone))
+	setEnum(prop(item, "kind"), columnKindNames()...)
 	rmCols := prop(s, "remove_columns")
 	setMaxItems(rmCols, domain.MaxColumnsPerPrj)
 	setMaxLen(prop(rmCols.Items, "name"), domain.MaxColumnNameLen)
@@ -84,6 +84,21 @@ func projectUpsertTool() *gomcp.Tool {
 		Description: projectUpsertDescription,
 		InputSchema: s,
 	}
+}
+
+// columnKindNames is the column kind enum published in schemas, built from
+// domain.AllKinds so the wire enum cannot drift from the internal one — the
+// same discipline messageKindNames applies for chat message kinds. A
+// hand-typed list here is exactly the disease this project already caught
+// once with its tool count ("nine tools" in prose, twelve for real): add a
+// kind to domain.AllKinds and forget this list, and the new kind is valid
+// everywhere except the one surface that would let a caller actually set it.
+func columnKindNames() []string {
+	names := make([]string, len(domain.AllKinds))
+	for i, k := range domain.AllKinds {
+		names[i] = string(k)
+	}
+	return names
 }
 
 // projectUpsertDescription spells out both calls in full. "upsert" invites

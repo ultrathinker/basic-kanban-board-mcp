@@ -29,10 +29,21 @@ const (
 	KindWaiting Kind = "waiting"
 )
 
+// AllKinds is every valid column kind, in the order the wire enum should
+// list them. This is the single source of truth Kind.Valid() reduces to and
+// the MCP schema's "kind" enum (internal/mcp/tool_project_upsert.go) is
+// built from — the project already lived through "the docs say nine tools,
+// there are twelve" once (KANB-... the tool-count drift), and a column kind
+// enum copied by hand into a schema is the exact same disease: add a kind
+// here and forget the other list, and the new kind is valid everywhere
+// except the one surface that would let a caller actually set it.
+var AllKinds = []Kind{KindBacklog, KindActive, KindDone, KindWaiting}
+
 func (k Kind) Valid() bool {
-	switch k {
-	case KindBacklog, KindActive, KindDone, KindWaiting:
-		return true
+	for _, v := range AllKinds {
+		if v == k {
+			return true
+		}
 	}
 	return false
 }

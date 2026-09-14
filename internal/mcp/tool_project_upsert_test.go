@@ -69,6 +69,97 @@ func TestProjectUpsert_DescriptionAndDescriptionAppend_BothForwarded(t *testing.
 	}
 }
 
+// TestProjectUpsert_ColumnKindSchemaEnum_MatchesDomainAllKinds is KANB-52's
+// drift canary. columns[].kind's published enum must be built from
+// domain.AllKinds, not a hand-typed list — the exact disease this project
+// already caught once with its tool count ("nine tools" in the docs,
+// twelve real ones). A hand-typed enum here is invisible to every domain-
+// level test: KindWaiting was added, CheckMove's exception was added and
+// tested, and the schema still refused "waiting" before the handler ever
+// ran, because nothing forced the wire enum to track the internal one.
+//
+// This test rebuilds its expectation directly from domain.AllKinds rather
+// than calling columnKindNames() (the production helper under test), so it
+// actually fails if a future edit reverts the wiring to a hand-typed list
+// and someone later adds a fifth kind to domain.AllKinds without touching
+// the schema.
+func TestProjectUpsert_ColumnKindSchemaEnum_MatchesDomainAllKinds(t *testing.T) {
+	t.Parallel()
+	cs, _ := roundtripServer(t, NewServer)
+	tool := toolByName(t, cs, "project_upsert")
+
+	// Walk the PUBLISHED schema (what tools/list actually sends), the same
+	// discipline every test in tool_docs_test.go follows — not the Go
+	// jsonschema.Schema value construction happens to produce internally.
+	kindNode := schemaNode(t, tool.InputSchema, "properties", "columns", "items", "properties", "kind")
+	rawEnum, ok := kindNode["enum"].([]any)
+	if !ok {
+		t.Fatalf("columns[].kind has no enum in the published schema: %v", kindNode)
+	}
+
+	want := make([]string, len(domain.AllKinds))
+	for i, k := range domain.AllKinds {
+		want[i] = string(k)
+	}
+	if len(rawEnum) != len(want) {
+		t.Fatalf("published enum = %v, want exactly %v (domain.AllKinds)", rawEnum, want)
+	}
+	for i, wantKind := range want {
+		got, _ := rawEnum[i].(string)
+		if got != wantKind {
+			t.Errorf("published enum[%d] = %v, want %q", i, rawEnum[i], wantKind)
+		}
+	}
+
+	found := false
+	for _, v := range rawEnum {
+		if v == string(domain.KindWaiting) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("published enum %v does not include %q — an MCP caller could never create a waiting column", rawEnum, domain.KindWaiting)
+	}
+}
+
+// TestProjectUpsert_ColumnKindWaiting_ReachesTheService is the end-to-end
+// proof that KANB-52's Waiting kind is reachable THROUGH THE MCP LAYER, not
+// only through a direct service call: the schema fix above is necessary but
+// not sufficient on its own if something else on the wire path still
+// mangled or rejected the value before it reached the service.
+func TestProjectUpsert_ColumnKindWaiting_ReachesTheService(t *testing.T) {
+	t.Parallel()
+	cs, svc := roundtripServer(t, NewServer)
+	svc.DefaultProjectUpsert = &service.ProjectUpsertResult{
+		Project: domain.Project{Key: "BMB", Name: "BeeMemoryBank", Version: 2},
+	}
+
+	_, sc := callTool(t, cs, "project_upsert", map[string]any{
+		"mode": "update", "key": "BMB", "if_version": 1,
+		"columns": []map[string]any{
+			{"name": "Backlog", "kind": "backlog"},
+			{"name": "Doing", "kind": "active"},
+			{"name": "Done", "kind": "done"},
+			{"name": "Waiting", "kind": "waiting"},
+		},
+	})
+	expectOK(t, sc, "project_upsert")
+
+	cols := svc.LastProjectUpsert.Columns
+	var waiting *service.ColumnSpec
+	for i := range cols {
+		if cols[i].Name == "Waiting" {
+			waiting = &cols[i]
+		}
+	}
+	if waiting == nil {
+		t.Fatalf("service never received a Waiting column: %+v", cols)
+	}
+	if waiting.Kind != domain.KindWaiting {
+		t.Fatalf("service Waiting column kind = %q, want %q", waiting.Kind, domain.KindWaiting)
+	}
+}
+
 // TestProjectUpsert_DescriptionAppend_PublishedInSchema proves
 // description_append is a real, typed property of the published input
 // schema (not just a Go-side field the SDK happens to decode): a wrong
