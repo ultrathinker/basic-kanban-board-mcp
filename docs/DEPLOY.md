@@ -319,3 +319,48 @@ kanban task purge --yes BMB-1 BMB-2 --data ./data
   ```bash
   kanban migrate --dry-run --data ./data
   ```
+
+---
+
+## 8. Optional CLI Delivery Adapter
+
+`kanban-adapter` is a separate binary beside the board server. It polls the
+existing MCP feed and delivers only messages addressed to one worker identity.
+It never starts `kanban serve`, opens the board database, or stores a board
+token in board metadata.
+
+Set the board token in the environment and run one poll from your own process
+supervisor:
+
+```powershell
+$env:KANBAN_ADAPTER_TOKEN = "<board bearer token>"
+kanban-adapter --once --url https://kanban.example.com --project KANB `
+  --identity <board-token-id> --worker worker-a --role implementer `
+  --runner claude --session <saved-claude-session-id> --workdir C:\work `
+  --state C:\kanban-adapter\state.json
+```
+
+The state file stores the board URL, project, worker registry, feed cursor,
+received queue, delivery status, CLI session ids, and checkpoints. It never
+stores `KANBAN_ADAPTER_TOKEN`. Every received page and its cursor are written
+before a CLI is contacted. Every delivery is written as `attempting` before the
+CLI call and becomes `confirmed` only after the CLI succeeds. An unconfirmed
+attempt is deliberately not retried: an operator must decide to reset it.
+
+### One consumer per identity
+
+On one machine, the adapter takes an OS-backed lock for the same board identity,
+CLI session, and work directory. A second copy refuses to start. This is a
+local guard only; it does **not** coordinate machines. A board claim identifies
+authorized participants, not two copies of the same participant. For distributed
+operation use an external process owner, or give each adapter a distinct board
+identity.
+
+### Confirmed CLI capability table
+
+This table reports observed support, not planned adapter features. It was
+checked against the installed Claude Code 2.1.270 `--help` output on 2026-09-14.
+
+| CLI | Launch | Resume | Input while active | Stop | Recovery after crash |
+|---|---|---|---|---|---|
+| Claude Code 2.1.270 | Available: `--print` and `--bg` documented | Implemented: `--print --resume` for a saved stopped session | Not confirmed; not claimed | CLI command exists; adapter does not invoke it | Not confirmed; durable checkpoint fallback is used |
