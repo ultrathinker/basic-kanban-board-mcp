@@ -416,7 +416,7 @@ progress_history({ "limit": <value> })
 
 ### 13. `board_guide`
 
-Read the operating guide for this kanban board: identity rules, the canonical read-modify-write loop, lease behaviour, the compact grammar version, and the error envelope. Without a `project`, returns the common guide plus the list of tools registered on this server (their count is computed, not a constant — adding a tool appears here automatically). With `project`, appends that project's settings (estimate unit, claim TTL, strict_done, enforce_dependencies, archive state) so an agent can read-modify-write against the project's own rules without guessing. This tool is read-only and exists on every server, including /mcp/readonly. Returns `data` with `guide`, `tool_count`, `tools[]`, and (optionally) `project`.
+Read the operating guide for this kanban board: identity rules, the canonical read-modify-write loop, lease behaviour, the compact grammar version, and the error envelope. Without a `project`, returns the common guide plus the list of tools registered on this server (their count is computed, not a constant — adding a tool appears here automatically). With `project`, appends that project's settings (estimate unit, claim TTL, strict_done, enforce_dependencies, archive state) so an agent can read-modify-write against the project's own rules without guessing, plus who is on it: the appointed coordinator and the participants derived from the tokens with access, each as a tokens.id and a display name and never a secret. Access means a token MAY take part, not that it is working right now. This tool is read-only and exists on every server, including /mcp/readonly. Returns `data` with `guide`, `tool_count`, `tools[]`, and (optionally) `project`.
 
 #### Parameters
 

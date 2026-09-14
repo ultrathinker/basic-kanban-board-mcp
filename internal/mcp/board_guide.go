@@ -60,6 +60,13 @@ type boardGuideProjectInfo struct {
 	StrictDone          bool   `json:"strict_done"`
 	ClaimTTLSeconds     int    `json:"claim_ttl_seconds"`
 	Archived            bool   `json:"archived"`
+	// Coordinator and Participants answer "who else is on this project?"
+	// (KANB-44). Both carry the stable tokens.id and the display name and
+	// nothing else: participantOut has no field a secret or a hash could
+	// travel in. Access is not presence -- a name here means the token may
+	// take part, never that it is working right now.
+	Coordinator  *participantOut  `json:"coordinator,omitempty" jsonschema:"the project's appointed coordinator: tokens.id and display name, never a secret"`
+	Participants []participantOut `json:"participants,omitempty" jsonschema:"tokens with access to this project: tokens.id and display name, never a secret; access means may take part, not is working now"`
 }
 
 type boardGuideData struct {
@@ -81,7 +88,7 @@ type boardGuideOutput struct {
 
 const boardGuideDescription = "Read the operating guide for this kanban board: identity rules, the canonical read-modify-write loop, lease behaviour, the compact grammar version, and the error envelope. " +
 	"Without a `project`, returns the common guide plus the list of tools registered on this server (their count is computed, not a constant — adding a tool appears here automatically). " +
-	"With `project`, appends that project's settings (estimate unit, claim TTL, strict_done, enforce_dependencies, archive state) so an agent can read-modify-write against the project's own rules without guessing. " +
+	"With `project`, appends that project's settings (estimate unit, claim TTL, strict_done, enforce_dependencies, archive state) so an agent can read-modify-write against the project's own rules without guessing, plus who is on it: the appointed coordinator and the participants derived from the tokens with access, each as a tokens.id and a display name and never a secret. Access means a token MAY take part, not that it is working right now. " +
 	"This tool is read-only and exists on every server, including /mcp/readonly. Returns `data` with `guide`, `tool_count`, `tools[]`, and (optionally) `project`."
 
 func boardGuideTool() *gomcp.Tool {
@@ -279,6 +286,8 @@ func loadBoardGuideProject(ctx context.Context, svc service.Service, actor servi
 				StrictDone:          bp.StrictDone,
 				ClaimTTLSeconds:     bp.ClaimTTLSeconds,
 				Archived:            bp.Archived,
+				Coordinator:         participantOutPtr(bp.Coordinator),
+				Participants:        participantOuts(bp.Participants),
 			}, nil
 		}
 	}
