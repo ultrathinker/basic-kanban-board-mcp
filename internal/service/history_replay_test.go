@@ -673,3 +673,65 @@ func TestHistoryPoints_PastPointsSurviveTodaysEstimateEdits(t *testing.T) {
 		t.Fatalf("the curve served to a caller rewrote the past point:\n  was %+v\n  now %+v", past, *served)
 	}
 }
+
+// A card can be created STRAIGHT INTO a done column — task_create takes a
+// column name and the create path does not restrict which kind it may be — so
+// the journal's very first entry about that card has to carry the real kind of
+// the column it was born in. It is the only place the journal ever learns the
+// bucket of a newborn card, and getting it wrong is not a blip: the replay
+// would count the card as open forever while the live board counts it as done.
+//
+// Every other fixture in this suite creates cards in Backlog, which is exactly
+// why this needs saying out loud.
+func TestReplay_CardCreatedStraightIntoADoneColumn(t *testing.T) {
+	env := openTestEnv(t)
+	ctx := context.Background()
+
+	res, err := env.svc.TaskCreate(ctx, env.actor, TaskCreateInput{Tasks: []NewTask{{
+		ProjectKey: env.proj.Key,
+		Title:      "born finished",
+		Type:       domain.TypeTask,
+		Column:     "Done",
+	}}})
+	if err != nil {
+		t.Fatalf("TaskCreate into Done: %v", err)
+	}
+	if len(res.Tasks) != 1 {
+		t.Fatalf("created %d tasks, want 1", len(res.Tasks))
+	}
+	created := res.Tasks[0]
+	if created.ColumnID != env.cols["Done"].ID {
+		t.Fatalf("the card landed in column %s, want Done (%s)", created.ColumnID, env.cols["Done"].ID)
+	}
+
+	// The live board counts it as finished from the moment it exists.
+	live := liveCounts(t, env)
+	if live.TotalTasks != 1 || live.DoneTasks != 1 || live.OpenTasks != 0 {
+		t.Fatalf("live board = %+v, want 1 task, done", live)
+	}
+
+	// The journal must have READ the column's kind, not assumed one.
+	entries := journalOf(t, env)
+	var birth *store.TaskHistoryEntry
+	for i := range entries {
+		if entries[i].Kind == store.HistoryCreated && entries[i].TaskID != nil && *entries[i].TaskID == created.ID {
+			birth = &entries[i]
+			break
+		}
+	}
+	if birth == nil {
+		t.Fatal("no creation entry in the journal")
+	}
+	if birth.ToKind == nil {
+		t.Fatal("the creation entry records no column kind at all")
+	}
+	if *birth.ToKind != domain.KindDone {
+		t.Fatalf("the creation entry records column kind %q, want %q — the journal guessed instead of reading it",
+			*birth.ToKind, domain.KindDone)
+	}
+
+	// And the two answers agree, which is the thing that would drift forever.
+	if d := diffCounts(live, replayJournal(entries, 0)); len(d) > 0 {
+		t.Fatalf("a card born in a done column makes the replay diverge: %v\nlive=%+v", d, live)
+	}
+}
