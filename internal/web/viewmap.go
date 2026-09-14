@@ -113,9 +113,14 @@ func buildWebExportDoc(ctx context.Context, svc service.Service, actor service.A
 
 		// ChatList pages backwards 100 at a time. The LastSeen / Cursor
 		// field of each result is the cursor for the older page; an empty
-		// Cursor terminates the loop. Cap of 100 matches ChatList's
-		// documented behavior (KANB-29: web Export gives a board the
-		// shape the CLI export would, modulo that documented 100-row cap).
+		// Cursor terminates the loop. 100 is the PAGE SIZE, not a cap: the
+		// loop keeps walking until the cursor runs out, so the document
+		// carries the whole feed. KANB-29 criterion 4 says "the same full
+		// document" as the CLI, and a board loses its OLDEST thinking first
+		// — the half nobody notices is gone — so stopping after one page
+		// would be exactly the silent loss this card exists to prevent.
+		// TestProjectExportRoute_CarriesTheWholeDocument seeds more than one
+		// page and fails if this loop ever stops early.
 		cursor := ""
 		for {
 			list, err := svc.ChatList(ctx, actor, service.ChatListInput{
