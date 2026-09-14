@@ -727,8 +727,8 @@ type ChatListResult struct {
 // is nil until the command has actually been accepted (KANB-47) — an
 // unaccepted command must not look accepted.
 type ChatListEntryMeta struct {
-	RecipientName string // display name of Recipient, "" for unset/"all"
-	ExecutorName  string // display name of ResolvedExecutor, "" when none
+	RecipientName string              // display name of Recipient, "" for unset/"all"
+	ExecutorName  string              // display name of ResolvedExecutor, "" when none
 	Parent        *domain.ChatMessage // the message this one replies to
 	Acceptance    *domain.CommandAcceptance
 }
