@@ -86,11 +86,18 @@ func seedBoardWithProgressAndChat(t *testing.T, dataDir string) (exportedProgres
 			CreatedAt: time.Date(2026, 6, 1, 9, 0, 0, 0, time.UTC),
 		},
 		{
+			// The only mark carrying a forecast. Owner decision 6: the
+			// forecast is an absolute date-time, versioned, and visible on
+			// the chart — so losing it on transfer is a data loss, not a
+			// cosmetic one. The other two marks deliberately carry none, so
+			// the same test also pins that an ABSENT forecast imports as
+			// absent rather than as a zero date.
 			ID:        "pm-2",
 			Project:   "RKND",
 			Task:      keys[0],
 			Assessor:  "alex",
 			Percent:   40,
+			ETA:       ptrTime(time.Date(2026, 8, 15, 18, 0, 0, 0, time.UTC)),
 			CreatedAt: time.Date(2026, 6, 1, 9, 30, 0, 0, time.UTC),
 		},
 		{
@@ -130,7 +137,7 @@ func seedBoardWithProgressAndChat(t *testing.T, dataDir string) (exportedProgres
 				}
 			}
 			mark := &domain.ProgressMark{
-				ID: m.ID, ProjectID: projID, TaskID: tid, Assessor: m.Assessor, Percent: m.Percent, CreatedAt: m.CreatedAt,
+				ID: m.ID, ProjectID: projID, TaskID: tid, Assessor: m.Assessor, Percent: m.Percent, ETA: m.ETA, CreatedAt: m.CreatedAt,
 			}
 			if err := st.Progress().Add(tx, mark); err != nil {
 				return err
@@ -278,6 +285,18 @@ func TestExportImport_RoundTripWithProgressAndChat(t *testing.T) {
 		if !got.CreatedAt.Equal(want.CreatedAt) {
 			t.Errorf("mark %s created_at = %s, want %s", want.ID, got.CreatedAt, want.CreatedAt)
 		}
+		// KANB-29 criterion 2 names the forecast alongside author, percent
+		// and time. Both directions matter: a forecast that vanishes is a
+		// loss, and a forecast conjured out of nil is a lie the chart would
+		// happily draw.
+		switch {
+		case want.ETA == nil && got.ETA != nil:
+			t.Errorf("mark %s eta = %s, want none — an absent forecast must import as absent, not as a date", want.ID, got.ETA)
+		case want.ETA != nil && got.ETA == nil:
+			t.Errorf("mark %s eta is missing, want %s", want.ID, want.ETA)
+		case want.ETA != nil && got.ETA != nil && !got.ETA.Equal(*want.ETA):
+			t.Errorf("mark %s eta = %s, want %s", want.ID, got.ETA, want.ETA)
+		}
 	}
 
 	// Same for chat: author / body / timestamp must survive.
@@ -355,3 +374,8 @@ func mustOpenStore(t *testing.T, dir string) store.Store {
 	t.Cleanup(func() { _ = st.Close() })
 	return st
 }
+
+// ptrTime is the one-liner the forecast fixture needs: domain.ProgressMark
+// models "no forecast" as a nil *time.Time, so the round-trip test has to
+// be able to write both a real forecast and the absence of one.
+func ptrTime(t time.Time) *time.Time { return &t }
