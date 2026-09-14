@@ -655,6 +655,9 @@ func samePoint(a, b HistoryPoint) bool {
 		a.Readiness.Coverage != b.Readiness.Coverage {
 		return false
 	}
+	if a.Readiness.Unit != b.Readiness.Unit {
+		return false
+	}
 	switch {
 	case a.Readiness.Percent == nil || b.Readiness.Percent == nil:
 		return a.Readiness.Percent == nil && b.Readiness.Percent == nil
@@ -883,5 +886,45 @@ func TestReplay_HardDeleteTakesTheJournalWithIt(t *testing.T) {
 	}
 	if kept < 2 {
 		t.Fatalf("the surviving card has %d journal entries left, want its creation and estimate at least", kept)
+	}
+}
+
+// TestSamePoint_ComparesUnit pins the negative control: samePoint must say
+// "not the same point" when two points agree on every other field but disagree
+// on Readiness.Unit. The Unit is the project's unit of effort that the user
+// reads next to the percentage, and silently dropping it from the comparison
+// is the defect that hid the empty-unit regression.
+func TestSamePoint_ComparesUnit(t *testing.T) {
+	base := HistoryPoint{
+		At:              time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC),
+		TotalTasks:      1, OpenTasks: 0, DoneTasks: 1,
+		Leaves: 1, DoneLeaves: 1, LeavesEstimated: 1,
+		EstimateTotal: 5, EstimateDone: 5,
+		Readiness: EstimateReadiness{
+			Basis: ReadinessEstimates, Percent: intPtrLocal(100),
+			Unit: "h", Label: "by estimates",
+			Coverage: "1 of 1 estimated",
+		},
+	}
+	other := base
+	if !samePoint(base, other) {
+		t.Fatal("identical points reported as different")
+	}
+
+	mutators := map[string]func(*HistoryPoint){
+		"unit":          func(p *HistoryPoint) { p.Readiness.Unit = "pt" },
+		"percent":       func(p *HistoryPoint) { v := 99; p.Readiness.Percent = &v },
+		"basis":         func(p *HistoryPoint) { p.Readiness.Basis = ReadinessNone },
+		"partial":       func(p *HistoryPoint) { p.Readiness.Partial = true },
+		"coverage":      func(p *HistoryPoint) { p.Readiness.Coverage = "wrong" },
+		"estimate_done": func(p *HistoryPoint) { p.EstimateDone = 4 },
+		"at":            func(p *HistoryPoint) { p.At = p.At.Add(time.Hour) },
+	}
+	for name, mutate := range mutators {
+		other := base
+		mutate(&other)
+		if samePoint(base, other) {
+			t.Fatalf("changing %s did not change samePoint's verdict", name)
+		}
 	}
 }
