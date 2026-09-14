@@ -130,7 +130,7 @@ var standardPrompts = []PromptCard{
 			"- Always send if_version on fields that compete with other writers; on a conflict, merge and retry.\n" +
 			"- Never send an \"actor\" field — identity comes from the bearer token.\n" +
 			"- Creating or reconfiguring a project is an admin action; if you lack admin scope, ask the human instead of guessing.\n\n" +
-			"Thoughts feed (KANB-39): post the FIRST thought at the start of work, then KEEP POSTING as the task moves through its stages — one post per stage transition (claimed, started, blocked, unblocked, finished). Pulse roughly every five minutes of ACTIVE work — not on a wall clock, only while you are actually doing things for the task — so a long quiet stretch between posts is the honest signal that nothing has happened, not invented activity. Always name the REASON when you stop (waiting on a tool, waiting on a human, paused for the night), and always write a final SUMMARY post when you finish or stop. The board shows the time of the last post and the gap since, and never shows an \"online\" dot — it does not know whether your process is alive, and a fake indicator would lie exactly when a real failure matters most.\n\n" +
+			"Thoughts feed (KANB-39): " + domain.FeedPostingRules + "\n\n" +
 			"Always reply to the human in the language they are writing in. The board is English; the conversation is not.",
 	},
 	{

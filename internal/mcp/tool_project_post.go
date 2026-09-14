@@ -66,7 +66,8 @@ const projectPostDescription = "Post a live message to the project chat feed. " 
 	"A command's executor turns it into work atomically with task_create(source_message). " +
 	"A reply references the message it answers with reply_to. " +
 	"Send idempotency_key to make retries safe: the same key of yours with the same content returns the existing message.\n" +
-	"Returns `data`: the posted message with its id, author, body, timestamp and, when addressed, its resolved_executor."
+	"Returns `data`: the posted message with its id, author, body, timestamp and, when addressed, its resolved_executor.\n" +
+	"Keeping the feed: " + domain.FeedPostingRules
 
 func projectPostTool() *gomcp.Tool {
 	s := schemaFor[projectPostInput]()
