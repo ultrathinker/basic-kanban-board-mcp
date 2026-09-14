@@ -309,6 +309,11 @@ type EventRepo interface {
 type TokenRepo interface {
 	Create(tx Tx, t *domain.Token) error
 	GetByName(tx Tx, name string) (*domain.Token, error)
+	// GetByID resolves a token by its stable identifier. tokens.id — not the
+	// name — is the identity that survives secret rotation and renaming of
+	// everything human-readable, so every stored reference to "who" (project
+	// coordinator, message executor) resolves through here.
+	GetByID(tx Tx, id string) (*domain.Token, error)
 	// GetByHash is the authentication hot path; the comparison against the
 	// candidate hash must be constant-time at the call site.
 	GetByHash(tx Tx, hash []byte) (*domain.Token, error)

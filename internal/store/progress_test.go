@@ -160,10 +160,20 @@ func TestMigration0005_ProgressAndChat(t *testing.T) {
 		return s
 	}
 
-	// Fresh file: both tables exist, version 5 is recorded, columns are exact.
+	// Fresh file: both tables exist, the newest migration version is
+	// recorded, columns are exact. The expected version and row count come
+	// from the embedded migrations themselves, not a hand-pinned number:
+	// parallel work tracks add migration files to this package, and a pinned
+	// count here would turn every such merge into a test failure.
+	migs, err := collectMigrations()
+	if err != nil {
+		t.Fatalf("collect migrations: %v", err)
+	}
+	wantVersion := migs[len(migs)-1].version
+	wantApplied := len(migs)
 	s1 := open()
-	if got := migrationVersion(s1.(*sqlStore), ctx); got != 5 {
-		t.Fatalf("migration version after fresh Open = %d, want 5", got)
+	if got := migrationVersion(s1.(*sqlStore), ctx); got != wantVersion {
+		t.Fatalf("migration version after fresh Open = %d, want %d", got, wantVersion)
 	}
 	wantCols := []string{"id", "project_id", "task_id", "assessor", "percent", "eta", "created_at"}
 	if got := tableColumns(t, s1, "progress_marks"); !reflect.DeepEqual(got, wantCols) {
@@ -184,10 +194,11 @@ func TestMigration0005_ProgressAndChat(t *testing.T) {
 
 	s2 := open()
 	defer func() { _ = s2.Close() }()
-	if got := migrationVersion(s2.(*sqlStore), ctx); got != 5 {
-		t.Fatalf("migration version after reopen = %d, want 5", got)
+	if got := migrationVersion(s2.(*sqlStore), ctx); got != wantVersion {
+		t.Fatalf("migration version after reopen = %d, want %d", got, wantVersion)
 	}
-	// Reopening must not re-apply anything: exactly five recorded migrations.
+	// Reopening must not re-apply anything: exactly one recorded row per
+	// migration file.
 	var applied int
 	if err := s2.Read(ctx, func(tx Tx) error {
 		return tx.(*txWrap).tx.QueryRowContext(ctx,
@@ -195,8 +206,8 @@ func TestMigration0005_ProgressAndChat(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("count schema_migrations: %v", err)
 	}
-	if applied != 5 {
-		t.Fatalf("schema_migrations rows = %d, want 5", applied)
+	if applied != wantApplied {
+		t.Fatalf("schema_migrations rows = %d, want %d", applied, wantApplied)
 	}
 	// The data written before the reopen is still there, and new writes work.
 	hist := progressHistory(t, s2, p.ID, &task.ID)

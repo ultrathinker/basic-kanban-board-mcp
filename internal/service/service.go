@@ -227,9 +227,25 @@ type BoardProject struct {
 	ClaimTTLSeconds     int
 	Archived            bool
 
+	// Coordinator is the appointed coordinator, nil when none is set, and
+	// Participants is everyone who MAY participate — every active token with
+	// access to the project (KANB-44). Having access says "may participate",
+	// not "is working right now"; nothing here tracks presence. No secrets
+	// travel with either: a Participant is an id and a display name only.
+	Coordinator  *Participant
+	Participants []Participant
+
 	Columns   []BoardColumn
 	DoneTotal int
 	DoneShown int
+}
+
+// Participant names one actor who may take part in a project's
+// communication. TokenID is the stable identity (tokens.id); Name is the
+// display label. The token's secret never appears in this shape.
+type Participant struct {
+	TokenID string
+	Name    string
 }
 
 type BoardColumn struct {
@@ -612,6 +628,12 @@ type ProjectSettings struct {
 	EnforceDependencies *bool
 	StrictDone          *bool
 	ClaimTTLSeconds     *int
+	// Coordinator appoints the project's coordinator (KANB-44). The value is
+	// a tokens.id — the identity that survives secret rotation — or an empty
+	// string to clear the appointment. nil leaves it unchanged. There is
+	// deliberately no participant list to set: participants are derived from
+	// the tokens that have access to the project.
+	Coordinator *string
 }
 
 type ProjectUpsertResult struct {

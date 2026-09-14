@@ -226,16 +226,20 @@ func columnOutList(cols []domain.Column) []columnOut {
 // service method to resolve one to the other from this call, surfacing the
 // ID would break the "keys not UUIDs" contract (PLAN §6 principles).
 type projectOut struct {
-	Key                 string      `json:"key"`
-	Name                string      `json:"name"`
-	Description         string      `json:"description,omitempty"`
-	Version             int         `json:"version"`
-	EstimateUnit        string      `json:"estimate_unit"`
-	EnforceDependencies bool        `json:"enforce_dependencies"`
-	StrictDone          bool        `json:"strict_done"`
-	ClaimTTLSeconds     int         `json:"claim_ttl_seconds"`
-	Archived            bool        `json:"archived"`
-	Columns             []columnOut `json:"columns,omitempty"`
+	Key                 string `json:"key"`
+	Name                string `json:"name"`
+	Description         string `json:"description,omitempty"`
+	Version             int    `json:"version"`
+	EstimateUnit        string `json:"estimate_unit"`
+	EnforceDependencies bool   `json:"enforce_dependencies"`
+	StrictDone          bool   `json:"strict_done"`
+	ClaimTTLSeconds     int    `json:"claim_ttl_seconds"`
+	// CoordinatorTokenID echoes the appointed coordinator's tokens.id, or is
+	// absent when none is set (KANB-44). The id, not the name: board_get
+	// resolves ids to display names, this echo just confirms what was stored.
+	CoordinatorTokenID string      `json:"coordinator_token_id,omitempty"`
+	Archived           bool        `json:"archived"`
+	Columns            []columnOut `json:"columns,omitempty"`
 }
 
 func projectOutFrom(p domain.Project, cols []domain.Column) projectOut {
@@ -248,6 +252,7 @@ func projectOutFrom(p domain.Project, cols []domain.Column) projectOut {
 		EnforceDependencies: p.EnforceDependencies,
 		StrictDone:          p.StrictDone,
 		ClaimTTLSeconds:     p.ClaimTTLSeconds,
+		CoordinatorTokenID:  p.CoordinatorTokenID,
 		Archived:            p.ArchivedAt != nil,
 		Columns:             columnOutList(cols),
 	}

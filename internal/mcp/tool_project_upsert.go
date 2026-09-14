@@ -29,6 +29,10 @@ type projectSettingsIn struct {
 	EnforceDependencies *bool   `json:"enforce_dependencies,omitempty"`
 	StrictDone          *bool   `json:"strict_done,omitempty"`
 	ClaimTTLSeconds     *int    `json:"claim_ttl_seconds,omitempty"`
+	// Coordinator is the tokens.id of the project's coordinator, or an empty
+	// string to clear the appointment (KANB-44). The id — never the display
+	// name — is the contract: it survives secret rotation, a name does not.
+	Coordinator *string `json:"coordinator,omitempty" jsonschema:"tokens.id of the coordinator (read participants from board_get), or an empty string to clear the appointment; absence leaves it unchanged"`
 }
 
 type projectUpsertInput struct {
@@ -145,6 +149,7 @@ func settingsToService(s *projectSettingsIn) *service.ProjectSettings {
 		EnforceDependencies: s.EnforceDependencies,
 		StrictDone:          s.StrictDone,
 		ClaimTTLSeconds:     s.ClaimTTLSeconds,
+		Coordinator:         s.Coordinator,
 	}
 }
 

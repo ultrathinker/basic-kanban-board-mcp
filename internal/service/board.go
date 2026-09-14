@@ -48,11 +48,15 @@ func (s *svc) BoardGet(ctx context.Context, a Actor, in BoardGetInput) (*Board, 
 		}
 		cc := newColumnCache(s, tx)
 		pc := newProjectCache(s, tx)
+		pix, err := s.buildParticipantIndex(tx)
+		if err != nil {
+			return err
+		}
 
 		board.Projects = make([]BoardProject, 0, len(projects))
 		for _, p := range projects {
 			pc.prime(p)
-			bp, err := s.buildBoardProject(tx, cc, pc, p, view, doneLimit, in.Filter, in.Include, now)
+			bp, err := s.buildBoardProject(tx, cc, pc, pix, p, view, doneLimit, in.Filter, in.Include, now)
 			if err != nil {
 				return err
 			}
@@ -64,6 +68,60 @@ func (s *svc) BoardGet(ctx context.Context, a Actor, in BoardGetInput) (*Board, 
 		return nil, err
 	}
 	return &board, nil
+}
+
+// participantIndex answers "who may participate in project X" for every
+// project of one board read from a single token listing (KANB-44). The
+// participant catalogue is DERIVED, never stored: a token participates in
+// every project its scope grants access to, so the board read resolves the
+// list from the same source of truth authentication checks — one query for
+// the whole board, not one per project.
+type participantIndex struct {
+	byID map[string]*domain.Token
+}
+
+func (s *svc) buildParticipantIndex(tx store.Tx) (*participantIndex, error) {
+	toks, err := s.store.Tokens().List(tx)
+	if err != nil {
+		return nil, err
+	}
+	ix := &participantIndex{byID: make(map[string]*domain.Token, len(toks))}
+	for _, t := range toks {
+		ix.byID[t.ID] = t
+	}
+	return ix, nil
+}
+
+// participantsFor lists who MAY participate in the project: every active
+// token with access. Access is permission, not presence — nothing here says
+// anyone is working right now, and the two states must not be conflated.
+// Names, not secrets: the shape carries an id and a display name only.
+func (ix *participantIndex) participantsFor(key string) []Participant {
+	out := make([]Participant, 0, len(ix.byID))
+	for _, t := range ix.byID {
+		if !t.Active() || !t.MayAccessProject(key) {
+			continue
+		}
+		out = append(out, Participant{TokenID: t.ID, Name: t.Name})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// coordinator resolves the project's appointed coordinator to a Participant.
+// A token id survives secret rotation by construction (rotation rewrites the
+// hash on the same row), so this lookup keeps naming the same actor across
+// rotations. A revoked appointee is still reported: the appointment is a
+// fact about configuration, and pretending it is empty would hide why
+// commands are being refused.
+func (ix *participantIndex) coordinator(p *domain.Project) *Participant {
+	if p.CoordinatorTokenID == "" {
+		return nil
+	}
+	if t, ok := ix.byID[p.CoordinatorTokenID]; ok {
+		return &Participant{TokenID: t.ID, Name: t.Name}
+	}
+	return &Participant{TokenID: p.CoordinatorTokenID}
 }
 
 func (s *svc) listProjectsForBoard(tx store.Tx, a Actor, key string) ([]*domain.Project, error) {
@@ -88,7 +146,7 @@ func (s *svc) listProjectsForBoard(tx store.Tx, a Actor, key string) ([]*domain.
 }
 
 func (s *svc) buildBoardProject(
-	tx store.Tx, cc *columnCache, pc *projectCache, p *domain.Project,
+	tx store.Tx, cc *columnCache, pc *projectCache, pix *participantIndex, p *domain.Project,
 	view BoardView, doneLimit int, filter BoardFilter, include Includes, now time.Time,
 ) (*BoardProject, error) {
 	cols, err := s.store.Columns().ListByProject(tx, p.ID)
@@ -105,6 +163,8 @@ func (s *svc) buildBoardProject(
 		StrictDone:          p.StrictDone,
 		ClaimTTLSeconds:     p.ClaimTTLSeconds,
 		Archived:            p.ArchivedAt != nil,
+		Coordinator:         pix.coordinator(p),
+		Participants:        pix.participantsFor(p.Key),
 		Columns:             make([]BoardColumn, 0, len(cols)),
 	}
 	if p.FocusTaskID != nil {

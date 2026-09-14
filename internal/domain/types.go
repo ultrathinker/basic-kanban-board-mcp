@@ -181,9 +181,14 @@ type Project struct {
 	EnforceDependencies bool
 	StrictDone          bool
 	ClaimTTLSeconds     int // clamped to [ClaimTTLMin, ClaimTTLMax]
-	ArchivedAt          *time.Time
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
+	// CoordinatorTokenID names the project's coordinator (KANB-44). It is a
+	// tokens.id, never a display name: the id is the stable identity that
+	// survives secret rotation, while a name is a label that can be reused by
+	// a different token. Empty = no coordinator appointed.
+	CoordinatorTokenID string
+	ArchivedAt         *time.Time
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
 }
 
 // Column belongs to a project. Names are unique per project because tools

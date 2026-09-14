@@ -41,6 +41,32 @@ type boardColumnOut struct {
 	Tasks    []taskOut   `json:"tasks,omitempty"`
 }
 
+// participantOut is one actor who may take part in the project's
+// communication (KANB-44): the stable tokens.id plus the display name. The
+// secret never travels — there is no field for it.
+type participantOut struct {
+	TokenID string `json:"token_id"`
+	Name    string `json:"name"`
+}
+
+func participantOuts(ps []service.Participant) []participantOut {
+	if len(ps) == 0 {
+		return nil
+	}
+	out := make([]participantOut, len(ps))
+	for i, p := range ps {
+		out[i] = participantOut{TokenID: p.TokenID, Name: p.Name}
+	}
+	return out
+}
+
+func participantOutPtr(p *service.Participant) *participantOut {
+	if p == nil {
+		return nil
+	}
+	return &participantOut{TokenID: p.TokenID, Name: p.Name}
+}
+
 // boardProjectOut publishes the project's whole configuration, not just its
 // identity. `version` in particular closes a loop that was open: project_upsert
 // (mode:"update") requires if_version and this is the only tool that reads a
@@ -49,19 +75,25 @@ type boardColumnOut struct {
 // can send a modified copy of what it read instead of guessing at the values
 // it is about to overwrite.
 type boardProjectOut struct {
-	Key                 string           `json:"key"`
-	Name                string           `json:"name"`
-	Description         string           `json:"description,omitempty"`
-	Version             int              `json:"version" jsonschema:"the project configuration version; send it back as project_upsert's if_version"`
-	FocusKey            string           `json:"focus_key,omitempty"`
-	EstimateUnit        string           `json:"estimate_unit" jsonschema:"the unit every estimate on this project is expressed in, e.g. h or d"`
-	EnforceDependencies bool             `json:"enforce_dependencies"`
-	StrictDone          bool             `json:"strict_done"`
-	ClaimTTLSeconds     int              `json:"claim_ttl_seconds"`
-	Archived            bool             `json:"archived,omitempty"`
-	Columns             []boardColumnOut `json:"columns"`
-	DoneTotal           int              `json:"done_total"`
-	DoneShown           int              `json:"done_shown"`
+	Key                 string `json:"key"`
+	Name                string `json:"name"`
+	Description         string `json:"description,omitempty"`
+	Version             int    `json:"version" jsonschema:"the project configuration version; send it back as project_upsert's if_version"`
+	FocusKey            string `json:"focus_key,omitempty"`
+	EstimateUnit        string `json:"estimate_unit" jsonschema:"the unit every estimate on this project is expressed in, e.g. h or d"`
+	EnforceDependencies bool   `json:"enforce_dependencies"`
+	StrictDone          bool   `json:"strict_done"`
+	ClaimTTLSeconds     int    `json:"claim_ttl_seconds"`
+	Archived            bool   `json:"archived,omitempty"`
+	// Coordinator names the appointed coordinator (nil/absent when none),
+	// Participants everyone who MAY participate: every active token with
+	// access to the project. Access is permission, not presence (KANB-44).
+	// Pass coordinator as project_upsert's settings.coordinator (tokens.id).
+	Coordinator  *participantOut  `json:"coordinator,omitempty"`
+	Participants []participantOut `json:"participants,omitempty" jsonschema:"derived from tokens with access to this project; may participate, not is-present"`
+	Columns      []boardColumnOut `json:"columns"`
+	DoneTotal    int              `json:"done_total"`
+	DoneShown    int              `json:"done_shown"`
 }
 
 type boardGetData struct {
@@ -214,6 +246,8 @@ func registerBoardGet(s *gomcp.Server, svc service.Service) {
 				StrictDone:          p.StrictDone,
 				ClaimTTLSeconds:     p.ClaimTTLSeconds,
 				Archived:            p.Archived,
+				Coordinator:         participantOutPtr(p.Coordinator),
+				Participants:        participantOuts(p.Participants),
 				Columns:             cols,
 				DoneTotal:           p.DoneTotal,
 				DoneShown:           p.DoneShown,
