@@ -17,7 +17,7 @@ const methodCallTool = "tools/call"
 
 // schemaErrorOutput is the envelope a schema rejection carries. It is the
 // {ok, op, error} subset every tool's declared output schema already allows
-// (all nine share ok/op/data?/meta?/error?), so a client validating
+// (every tool shares ok/op/data?/meta?/error?), so a client validating
 // structuredContent against the tool's outputSchema still accepts it.
 type schemaErrorOutput struct {
 	OK    bool           `json:"ok"`
@@ -33,13 +33,13 @@ type schemaErrorOutput struct {
 var toolInputSchemas = buildToolInputSchemas()
 
 func buildToolInputSchemas() map[string]*jsonschema.Schema {
-	tools := []*gomcp.Tool{
-		boardGetTool(), taskNextTool(), taskGetTool(), taskCreateTool(),
-		taskUpdateTool(), taskLinkTool(), taskClaimTool(), taskRemoveTool(),
-		projectUpsertTool(), projectPostTool(), progressSetTool(), progressHistoryTool(),
-	}
-	m := make(map[string]*jsonschema.Schema, len(tools))
-	for _, t := range tools {
+	// Built from the one registry in registry.go. Listing the tools again
+	// here is how a new tool used to end up with the generic remediation
+	// instead of one naming its required properties: the list was correct
+	// on the day it was written and silently behind ever after.
+	m := make(map[string]*jsonschema.Schema, len(fullToolFactories))
+	for _, f := range fullToolFactories {
+		t := f()
 		// Tool.InputSchema is `any` on the wire type; every tool in this
 		// package sets it from schemaFor, so the assertion cannot fail —
 		// and if a future tool sets something else, the missing entry

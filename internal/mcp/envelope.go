@@ -56,7 +56,7 @@ func asDomainError(err error) *domain.Error {
 
 // toolMeta is the shared shape of every tool's `meta` field. Every tool uses
 // a subset; the rest stay zero and are omitted from the wire form, so one
-// type keeps the envelope shape consistent across all nine tools instead of
+// type keeps the envelope shape consistent across every tool instead of
 // nine near-identical structs.
 type toolMeta struct {
 	Count      int                `json:"count,omitempty"`

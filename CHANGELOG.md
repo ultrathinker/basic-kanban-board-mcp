@@ -7,14 +7,14 @@ first tagged release onward.
 
 ## [Unreleased]
 
-Pre-1.0 development. The public surface — nine MCP tools, the compact board
-grammar, the CLI, and the web UI — is settling toward a `v1.0.0` tag. Until
-then, minor breaking changes may land without a major-version bump.
+Pre-1.0 development. The public surface — the MCP tool set (current list and
+count generated at `docs/MCP-TOOLS.md`), the compact board grammar, the CLI,
+and the web UI — is settling toward a `v1.0.0` tag. Until then, minor breaking
+changes may land without a major-version bump.
 
 ### Added
-- Native MCP server over streamable-HTTP with mandatory bearer auth.
-- Nine MCP tools: `board_get`, `task_next`, `task_get`, `task_create`,
-  `task_update`, `task_claim`, `task_link`, `task_remove`, `project_upsert`.
+- Native MCP server over streamable-HTTP with mandatory bearer auth; see
+  `docs/MCP-TOOLS.md` for the current tool list.
 - Compact board read (~90% fewer tokens than a JSON dump).
 - Dependency-aware `task_next` with an atomic claim/start; optimistic
   concurrency (`if_version`) with conflicts carrying the current state.

@@ -611,27 +611,26 @@ func runExport(args []string) error {
 	}
 	defer storeHandle.Close()
 
-	svc := service.New(storeHandle, nil)
 	actor := service.Actor{
 		Name:   "cli-admin",
 		Scopes: domain.Scopes{domain.ScopeAdmin, domain.ScopeWrite, domain.ScopeRead},
 	}
-	board, err := svc.BoardGet(ctx, actor, service.BoardGetInput{
-		ProjectKey: *project,
-		View:       service.ViewTasks,
-		DoneLimit:  domain.MaxDoneLimit,
-		Include: service.Includes{
-			service.IncludeBody,
-			service.IncludeAcceptance,
-			service.IncludeLinks,
-			service.IncludeMetadata,
-		},
-	})
+	doc, err := exportBoard(ctx, service.New(storeHandle, nil), storeHandle, actor, *project)
 	if err != nil {
 		return err
 	}
 
-	data, err := json.MarshalIndent(board, "", "  ")
+	// A done column past domain.MaxDoneLimit exports short: board_get's own
+	// cap, inherited here rather than bypassed. That cap is a deliberate
+	// limit, not a bug, but KANB-29 exists because a silent one is
+	// indistinguishable from no loss at all — so name it on stderr (stdout
+	// carries the document itself and must stay pipeable into `kanban
+	// import`) in addition to the `truncated` field already in the JSON.
+	for _, t := range doc.Truncated {
+		fmt.Fprintf(os.Stderr, "warning: project %s exports only %d of %d done tasks (see \"truncated\" in the output; the rest are still on the board, just not in this export)\n", t.Project, t.Included, t.Total)
+	}
+
+	data, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return fmt.Errorf("export marshal: %w", err)
 	}
@@ -664,14 +663,6 @@ func runImport(args []string) error {
 		return fmt.Errorf("import read: %w", err)
 	}
 
-	var board service.Board
-	if err := json.Unmarshal(raw, &board); err != nil {
-		return fmt.Errorf("import unmarshal: %w", err)
-	}
-	if len(board.Projects) == 0 {
-		return errors.New("import: no projects found in input")
-	}
-
 	ctx := context.Background()
 	storeHandle, err := openStore(ctx, *dataDir)
 	if err != nil {
@@ -679,164 +670,22 @@ func runImport(args []string) error {
 	}
 	defer storeHandle.Close()
 
-	svc := service.New(storeHandle, nil)
 	actor := service.Actor{
 		Name:   "cli-admin",
 		Scopes: domain.Scopes{domain.ScopeAdmin, domain.ScopeWrite, domain.ScopeRead},
 	}
+	if err := importBoard(ctx, service.New(storeHandle, nil), storeHandle, actor, raw); err != nil {
+		return err
+	}
 
-	for _, bp := range board.Projects {
-		cols := make([]service.ColumnSpec, len(bp.Columns))
-		for i, c := range bp.Columns {
-			cols[i] = service.ColumnSpec{
-				Name:     c.Name,
-				Kind:     c.Kind,
-				WIPLimit: c.WIPLimit,
-			}
+	// A friendly confirmation per project matches what the old runImport
+	// printed, so the operator who piped an export file in still sees
+	// which projects landed on their store.
+	var doc exportDocument
+	if err := json.Unmarshal(raw, &doc); err == nil {
+		for _, bp := range doc.Projects {
+			fmt.Fprintf(os.Stdout, "Imported project %s (%s)\n", bp.Key, bp.Name)
 		}
-		desc := bp.Description
-		upsertInput := service.ProjectUpsertInput{
-			Mode:        service.UpsertCreate,
-			Key:         bp.Key,
-			Name:        bp.Name,
-			Description: &desc,
-			Columns:     cols,
-			Settings: &service.ProjectSettings{
-				EstimateUnit:        &bp.EstimateUnit,
-				EnforceDependencies: &bp.EnforceDependencies,
-				StrictDone:          &bp.StrictDone,
-				ClaimTTLSeconds:     &bp.ClaimTTLSeconds,
-			},
-		}
-		if _, err := svc.ProjectUpsert(ctx, actor, upsertInput); err != nil {
-			return fmt.Errorf("import project %s: %w", bp.Key, err)
-		}
-
-		idToKey := make(map[string]string)
-		for _, col := range bp.Columns {
-			for _, tv := range col.Tasks {
-				idToKey[tv.ID] = tv.Key
-			}
-		}
-
-		keyMap := make(map[string]string)
-		// Task versions after the last write, so a follow-up patch can pass the
-		// if_version the service demands for replacement-style fields.
-		versions := make(map[string]int)
-		type linkReq struct {
-			srcKey, dstKey string
-		}
-		var linksToCreate []linkReq
-		type reparentReq struct {
-			taskKey   string
-			parentKey string
-		}
-		var reparents []reparentReq
-
-		for _, col := range bp.Columns {
-			for _, tv := range col.Tasks {
-				var acceptanceStrings []string
-				for _, it := range tv.Acceptance {
-					acceptanceStrings = append(acceptanceStrings, it.Text)
-				}
-				res, err := svc.TaskCreate(ctx, actor, service.TaskCreateInput{
-					Tasks: []service.NewTask{
-						{
-							ProjectKey: bp.Key,
-							Column:     col.Name,
-							Title:      tv.Title,
-							Body:       tv.Body,
-							Type:       tv.Type,
-							Priority:   tv.Priority,
-							Tags:       tv.Tags,
-							Estimate:   tv.Estimate,
-							Actual:     tv.Actual,
-							Assignee:   tv.Assignee,
-							Reviewer:   tv.Reviewer,
-							Acceptance: acceptanceStrings,
-							DueAt:      tv.DueAt,
-							Metadata:   tv.Metadata,
-						},
-					},
-				})
-				if err != nil {
-					return fmt.Errorf("import task %s: %w", tv.Key, err)
-				}
-				if len(res.Tasks) > 0 {
-					createdTask := res.Tasks[0]
-					keyMap[tv.Key] = createdTask.Key
-					versions[createdTask.Key] = createdTask.Version
-
-					hasDone := false
-					for _, it := range tv.Acceptance {
-						if it.Done {
-							hasDone = true
-							break
-						}
-					}
-					if hasDone {
-						updated, err := applyPatch(ctx, svc, actor, service.TaskPatch{
-							Key:        createdTask.Key,
-							IfVersion:  &createdTask.Version,
-							Acceptance: tv.Acceptance,
-						})
-						if err != nil {
-							return fmt.Errorf("import acceptance of %s: %w", createdTask.Key, err)
-						}
-						versions[createdTask.Key] = updated.Version
-					}
-
-					if tv.ParentID != nil {
-						if pKey, ok := idToKey[*tv.ParentID]; ok {
-							reparents = append(reparents, reparentReq{
-								taskKey:   createdTask.Key,
-								parentKey: pKey,
-							})
-						}
-					}
-				}
-
-				for _, blockerKey := range tv.BlockedBy {
-					linksToCreate = append(linksToCreate, linkReq{srcKey: blockerKey, dstKey: tv.Key})
-				}
-			}
-		}
-
-		for _, r := range reparents {
-			newParentKey, ok := keyMap[r.parentKey]
-			if !ok {
-				continue
-			}
-			version, ok := versions[r.taskKey]
-			if !ok {
-				return fmt.Errorf("import parent of %s: no version recorded for the created task", r.taskKey)
-			}
-			if _, err := applyPatch(ctx, svc, actor, service.TaskPatch{
-				Key:       r.taskKey,
-				IfVersion: &version,
-				Parent:    service.FieldString{Set: true, Value: newParentKey},
-			}); err != nil {
-				return fmt.Errorf("import parent of %s: %w", r.taskKey, err)
-			}
-		}
-
-		var addPairs []service.LinkPair
-		for _, link := range linksToCreate {
-			newSrc, okSrc := keyMap[link.srcKey]
-			newDst, okDst := keyMap[link.dstKey]
-			if okSrc && okDst {
-				addPairs = append(addPairs, service.LinkPair{
-					Blocker: newSrc,
-					Blocked: newDst,
-				})
-			}
-		}
-		if len(addPairs) > 0 {
-			if _, err := svc.TaskLink(ctx, actor, service.TaskLinkInput{Add: addPairs}); err != nil {
-				return fmt.Errorf("import links for %s: %w", bp.Key, err)
-			}
-		}
-		fmt.Fprintf(os.Stdout, "Imported project %s (%s)\n", bp.Key, bp.Name)
 	}
 	return nil
 }

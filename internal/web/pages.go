@@ -474,9 +474,10 @@ func (w *Web) handleActivity(rw http.ResponseWriter, r *http.Request) {
 }
 
 // handleProjectExport is "/p/{key}/export": a full JSON dump of one
-// project's board, built from board_get with every include on. It is not
-// the compact grammar (that is the MCP surface's job) — just a convenience
-// download for the "Export" link on the board page.
+// project's board, built from board_get with every include on plus the
+// progress marks and chat messages that board_get alone never carried.
+// The document matches what `kanban export --project KEY` produces, so
+// the same import path serves both.
 func (w *Web) handleProjectExport(rw http.ResponseWriter, r *http.Request) {
 	tok, ok := w.requireSessionPage(rw, r, domain.ScopeRead)
 	if !ok {
@@ -492,21 +493,14 @@ func (w *Web) handleProjectExport(rw http.ResponseWriter, r *http.Request) {
 		apiError(rw, err)
 		return
 	}
-	board, err := w.d.Service.BoardGet(r.Context(), actorFor(tok), service.BoardGetInput{
-		ProjectKey: key, View: service.ViewTasks, DoneLimit: domain.MaxDoneLimit,
-		Include: service.Includes{service.IncludeBody, service.IncludeAcceptance, service.IncludeLinks, service.IncludeMetadata},
-	})
+	doc, err := buildWebExportDoc(r.Context(), w.d.Service, actorFor(tok), key)
 	if err != nil {
 		apiError(rw, err)
 		return
 	}
-	if len(board.Projects) == 0 {
-		apiError(rw, domain.NotFound("project", key))
-		return
-	}
 	rw.Header().Set("Content-Type", "application/json; charset=utf-8")
 	rw.Header().Set("Content-Disposition", `attachment; filename="`+strings.ToLower(key)+`-export.json"`)
-	writeJSONIndent(rw, board.Projects[0])
+	writeJSONIndent(rw, doc)
 }
 
 // handleProjectCreate is "POST /projects": the admin-only "New project" form

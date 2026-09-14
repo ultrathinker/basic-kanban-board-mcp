@@ -224,7 +224,9 @@ write, admin}, project_keys [] (empty = all), created_at, last_used_at, revoked_
 
 ---
 
-## 6. MCP tool surface — nine tools
+## 6. MCP tool surface
+
+The current tool count and list are generated, not written here — see `docs/MCP-TOOLS.md`.
 
 Principles: **task writes are batches** (`task_create`, `task_update`, `task_remove`); **reads
 are compact by default**, `include` widens (one param name everywhere); **strict schemas**
