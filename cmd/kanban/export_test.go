@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -379,3 +382,286 @@ func mustOpenStore(t *testing.T, dir string) store.Store {
 // models "no forecast" as a nil *time.Time, so the round-trip test has to
 // be able to write both a real forecast and the absence of one.
 func ptrTime(t time.Time) *time.Time { return &t }
+
+// captureStderr redirects os.Stderr for the duration of fn, returning
+// whatever it wrote. Mirrors captureStdout in main_test.go — export's
+// truncation warning deliberately goes to stderr rather than stdout, since
+// stdout carries the document itself and has to stay pipeable straight into
+// `kanban import`.
+func captureStderr(t *testing.T, fn func() error) (string, error) {
+	t.Helper()
+	orig := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	os.Stderr = w
+	defer func() { os.Stderr = orig }()
+
+	done := make(chan string)
+	go func() {
+		var buf bytes.Buffer
+		_, _ = io.Copy(&buf, r)
+		done <- buf.String()
+	}()
+
+	fnErr := fn()
+	_ = w.Close()
+	out := <-done
+	_ = r.Close()
+	return out, fnErr
+}
+
+// fetchAllChat reads every chat message of one project directly from the
+// store, in one page. Store-layer ChatFilter.Limit carries no upper clamp
+// (that discipline lives in the service layer, for the UI's sake), so a
+// generous literal limit is enough to read the whole feed back for
+// comparison without re-implementing the paging loop the CLI itself uses.
+func fetchAllChat(t *testing.T, dataDir, projectKey string) []domain.ChatMessage {
+	t.Helper()
+	ctx := context.Background()
+	st, err := openStore(ctx, dataDir)
+	if err != nil {
+		t.Fatalf("openStore: %v", err)
+	}
+	defer st.Close()
+	var out []domain.ChatMessage
+	if err := st.Read(ctx, func(tx store.Tx) error {
+		p, err := st.Projects().GetByKey(tx, projectKey)
+		if err != nil {
+			return err
+		}
+		msgs, err := st.Chat().List(tx, store.ChatFilter{ProjectID: &p.ID, Limit: 10000})
+		out = msgs
+		return err
+	}); err != nil {
+		t.Fatalf("fetch chat: %v", err)
+	}
+	return out
+}
+
+// TestExportImport_CLIChatPagingBeyondOnePage is KANB-29's CLI-path
+// guarantee, mirroring internal/web's TestProjectExportRoute_CarriesTheWholeDocument:
+// a board with more chat than collectChat's 100-message page size must
+// round-trip in full through `kanban export` / `kanban import`.
+//
+// Before this test existed, a review canary broke collectChat's paging loop
+// (an unconditional `return nil` after the first page) and the WHOLE `go
+// test ./...` suite stayed green — the round-trip test in this file only
+// ever seeded two chat messages, well under one page, so it could not see a
+// pagination bug. This test seeds 143 messages (deliberately more than the
+// 100-message page) so a broken loop fails loudly, and it checks the OLDEST
+// message specifically: a truncating export keeps the newest page and drops
+// exactly the history nobody is watching for.
+func TestExportImport_CLIChatPagingBeyondOnePage(t *testing.T) {
+	const chatBeyondOnePage = 143
+	dir1 := t.TempDir()
+	dir2 := t.TempDir()
+	ctx := context.Background()
+
+	func() {
+		st, err := openStore(ctx, dir1)
+		if err != nil {
+			t.Fatalf("openStore: %v", err)
+		}
+		defer st.Close()
+		svc := service.New(st, nil)
+		actor := service.Actor{
+			Name:   "tester",
+			Scopes: domain.Scopes{domain.ScopeAdmin, domain.ScopeWrite, domain.ScopeRead},
+		}
+		if _, err := svc.ProjectUpsert(ctx, actor, service.ProjectUpsertInput{
+			Mode: service.UpsertCreate, Key: "RKCH", Name: "Chat paging",
+			Columns: []service.ColumnSpec{
+				{Name: "Backlog", Kind: domain.KindBacklog},
+				{Name: "Doing", Kind: domain.KindActive},
+				{Name: "Done", Kind: domain.KindDone},
+			},
+		}); err != nil {
+			t.Fatalf("ProjectUpsert: %v", err)
+		}
+	}()
+
+	// Re-open for a single write transaction that seeds every message with
+	// a caller-chosen, strictly ascending CreatedAt so "oldest" is
+	// unambiguous — the store honours a supplied timestamp, service.ChatAdd
+	// would stamp now() for all of them and erase the ordering this test
+	// depends on.
+	st, err := openStore(ctx, dir1)
+	if err != nil {
+		t.Fatalf("openStore: %v", err)
+	}
+	var projID string
+	if err := st.Read(ctx, func(tx store.Tx) error {
+		p, err := st.Projects().GetByKey(tx, "RKCH")
+		if err != nil {
+			return err
+		}
+		projID = p.ID
+		return nil
+	}); err != nil {
+		t.Fatalf("lookup project: %v", err)
+	}
+	oldestBody := "thought number 0"
+	if err := st.Write(ctx, func(tx store.Tx) error {
+		for i := 0; i < chatBeyondOnePage; i++ {
+			if err := st.Chat().Add(tx, &domain.ChatMessage{
+				ID:        fmt.Sprintf("chat-%03d", i),
+				ProjectID: projID,
+				Author:    "alex",
+				Body:      fmt.Sprintf("thought number %d", i),
+				CreatedAt: time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(i) * time.Minute),
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("seed chat: %v", err)
+	}
+	st.Close()
+
+	exportFile := filepath.Join(t.TempDir(), "export.json")
+	if err := runExport([]string{"--data", dir1, "--out", exportFile}); err != nil {
+		t.Fatalf("runExport: %v", err)
+	}
+	raw, err := os.ReadFile(exportFile)
+	if err != nil {
+		t.Fatalf("read export: %v", err)
+	}
+	var doc exportDocument
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parse export: %v", err)
+	}
+	if got := len(doc.ChatMessages); got != chatBeyondOnePage {
+		t.Fatalf("export chat_messages = %d, want %d — the CLI export truncated the feed instead of paging to the end", got, chatBeyondOnePage)
+	}
+	var sawOldest bool
+	for _, m := range doc.ChatMessages {
+		if m.Body == oldestBody {
+			sawOldest = true
+		}
+	}
+	if !sawOldest {
+		t.Fatalf("the OLDEST chat message (%q) is missing from the export — this is what a broken paging loop looks like", oldestBody)
+	}
+
+	if err := runImport([]string{"--data", dir2, "--in", exportFile}); err != nil {
+		t.Fatalf("runImport: %v", err)
+	}
+	gotChat := fetchAllChat(t, dir2, "RKCH")
+	if len(gotChat) != chatBeyondOnePage {
+		t.Fatalf("imported chat count = %d, want %d", len(gotChat), chatBeyondOnePage)
+	}
+}
+
+// TestExportBoard_DoneColumnTruncationIsNamed is KANB-29 defect #2: a done
+// column with more live tasks than domain.MaxDoneLimit (200) must not
+// export short in silence. board_get's own cap is a deliberate,
+// service-layer invariant this command does not try to bypass — but the gap
+// has to be named, both in the document (`truncated`) and on the command's
+// stderr, so an operator moving a big board to another machine finds out
+// about the loss instead of discovering it later as a shorter history than
+// they remember.
+func TestExportBoard_DoneColumnTruncationIsNamed(t *testing.T) {
+	doneCount := domain.MaxDoneLimit + 5
+	dir1 := t.TempDir()
+	ctx := context.Background()
+
+	st, err := openStore(ctx, dir1)
+	if err != nil {
+		t.Fatalf("openStore: %v", err)
+	}
+	svc := service.New(st, nil)
+	actor := service.Actor{
+		Name:   "tester",
+		Scopes: domain.Scopes{domain.ScopeAdmin, domain.ScopeWrite, domain.ScopeRead},
+	}
+	if _, err := svc.ProjectUpsert(ctx, actor, service.ProjectUpsertInput{
+		Mode: service.UpsertCreate, Key: "RKDN", Name: "Done overflow",
+		Columns: []service.ColumnSpec{
+			{Name: "Backlog", Kind: domain.KindBacklog},
+			{Name: "Doing", Kind: domain.KindActive},
+			{Name: "Done", Kind: domain.KindDone},
+		},
+	}); err != nil {
+		t.Fatalf("ProjectUpsert: %v", err)
+	}
+
+	created := 0
+	for created < doneCount {
+		batch := doneCount - created
+		if batch > domain.MaxBatchTasks {
+			batch = domain.MaxBatchTasks
+		}
+		tasks := make([]service.NewTask, batch)
+		for i := range tasks {
+			tasks[i] = service.NewTask{
+				ProjectKey: "RKDN", Column: "Done",
+				Title: fmt.Sprintf("done task %d", created+i),
+				Type:  domain.TypeTask,
+			}
+		}
+		if _, err := svc.TaskCreate(ctx, actor, service.TaskCreateInput{Tasks: tasks}); err != nil {
+			t.Fatalf("TaskCreate batch at %d: %v", created, err)
+		}
+		created += batch
+	}
+	st.Close()
+
+	var doc *exportDocument
+	stderr, err := captureStderr(t, func() error {
+		st, err := openStore(ctx, dir1)
+		if err != nil {
+			return err
+		}
+		defer st.Close()
+		doc, err = exportBoard(ctx, service.New(st, nil), st, actor, "RKDN")
+		if err != nil {
+			return err
+		}
+		for _, tn := range doc.Truncated {
+			fmt.Fprintf(os.Stderr, "warning: project %s exports only %d of %d done tasks\n", tn.Project, tn.Included, tn.Total)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("exportBoard: %v", err)
+	}
+
+	if len(doc.Truncated) != 1 {
+		t.Fatalf("truncated notices = %d, want 1 (RKDN/Done); doc.Truncated = %+v", len(doc.Truncated), doc.Truncated)
+	}
+	tn := doc.Truncated[0]
+	if tn.Project != "RKDN" {
+		t.Errorf("truncation notice = %+v, want project RKDN", tn)
+	}
+	if tn.Total != doneCount {
+		t.Errorf("truncation total = %d, want %d (the true unarchived count)", tn.Total, doneCount)
+	}
+	if tn.Included != domain.MaxDoneLimit {
+		t.Errorf("truncation included = %d, want %d (board_get's own cap)", tn.Included, domain.MaxDoneLimit)
+	}
+	if tn.Included >= tn.Total {
+		t.Errorf("truncation notice claims included (%d) >= total (%d); that is not a truncation", tn.Included, tn.Total)
+	}
+
+	if !bytes.Contains([]byte(stderr), []byte("RKDN")) {
+		t.Errorf("stderr did not name the truncated project; got %q", stderr)
+	}
+	wantFrag := fmt.Sprintf("%d of %d", domain.MaxDoneLimit, doneCount)
+	if !bytes.Contains([]byte(stderr), []byte(wantFrag)) {
+		t.Errorf("stderr does not name the numbers involved (%q); got %q", wantFrag, stderr)
+	}
+
+	// The document itself must carry the same fact — not only the command's
+	// stderr — so a document handed to `kanban import` on its own (stderr
+	// discarded, e.g. by a shell pipeline) still lets an operator find out.
+	raw, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !bytes.Contains(raw, []byte(`"truncated"`)) {
+		t.Errorf("export document has no \"truncated\" field: %s", raw)
+	}
+}

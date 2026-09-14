@@ -620,6 +620,16 @@ func runExport(args []string) error {
 		return err
 	}
 
+	// A done column past domain.MaxDoneLimit exports short: board_get's own
+	// cap, inherited here rather than bypassed. That cap is a deliberate
+	// limit, not a bug, but KANB-29 exists because a silent one is
+	// indistinguishable from no loss at all — so name it on stderr (stdout
+	// carries the document itself and must stay pipeable into `kanban
+	// import`) in addition to the `truncated` field already in the JSON.
+	for _, t := range doc.Truncated {
+		fmt.Fprintf(os.Stderr, "warning: project %s exports only %d of %d done tasks (see \"truncated\" in the output; the rest are still on the board, just not in this export)\n", t.Project, t.Included, t.Total)
+	}
+
 	data, err := json.MarshalIndent(doc, "", "  ")
 	if err != nil {
 		return fmt.Errorf("export marshal: %w", err)

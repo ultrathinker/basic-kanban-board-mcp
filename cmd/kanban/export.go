@@ -27,6 +27,28 @@ type exportDocument struct {
 	Projects      []service.BoardProject `json:"projects"`
 	ProgressMarks []exportProgressMark   `json:"progress_marks"`
 	ChatMessages  []exportChatMessage    `json:"chat_messages"`
+
+	// Truncated names every project whose done tasks did not all fit in
+	// this export. board_get (and therefore this export, which reads the
+	// board through the same service call) caps how many done tasks a
+	// project hands back at domain.MaxDoneLimit — that is a deliberate,
+	// service-layer invariant this command does not try to bypass. But
+	// KANB-29's whole complaint is data loss nobody notices, so the gap is
+	// named here (Included/Total come straight from BoardProject's own
+	// DoneShown/DoneTotal, board_get's own accounting) instead of being
+	// left for someone to discover as "fewer tasks than I remember" after
+	// the fact: runExport also prints one warning line per entry to stderr.
+	Truncated []exportTruncationNotice `json:"truncated,omitempty"`
+}
+
+// exportTruncationNotice records one project whose done tasks exceeded the
+// export's capacity. Total is every done task the project actually has
+// (BoardProject.DoneTotal); Included is how many of those made it into this
+// export's Projects (BoardProject.DoneShown).
+type exportTruncationNotice struct {
+	Project  string `json:"project"`
+	Included int    `json:"included"`
+	Total    int    `json:"total"`
 }
 
 // exportProgressMark carries the human-readable project and task keys so
@@ -77,6 +99,15 @@ func exportBoard(ctx context.Context, svc service.Service, st store.Store, actor
 	}
 
 	out := &exportDocument{Projects: board.Projects}
+	for _, bp := range board.Projects {
+		if bp.DoneTotal > bp.DoneShown {
+			out.Truncated = append(out.Truncated, exportTruncationNotice{
+				Project:  bp.Key,
+				Included: bp.DoneShown,
+				Total:    bp.DoneTotal,
+			})
+		}
+	}
 
 	// The store is what the append-only tables live behind: pulling the
 	// whole history through service.ProgressHistory would still hit the

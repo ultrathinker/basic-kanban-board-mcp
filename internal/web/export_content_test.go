@@ -228,6 +228,21 @@ func assertFullContent(t *testing.T, doc exportDoc, route string, wantETA time.T
 			if m.Task == "" {
 				t.Errorf("%s: pm-task lost its task key, so an importer cannot reattach it", route)
 			}
+			// Every field, not just the task key and the (absent) forecast:
+			// a review canary showed that trimming pm-task down to
+			// {ID, Project, Task} left this whole test suite green, because
+			// nothing here checked the task-scoped mark's author, percent
+			// or timestamp — only the project-scoped one was checked in
+			// full. KANB-29 criterion 2 names author, percent AND time.
+			if m.Assessor != "bea" {
+				t.Errorf("%s: pm-task assessor = %q, want bea", route, m.Assessor)
+			}
+			if m.Percent != 75 {
+				t.Errorf("%s: pm-task percent = %d, want 75", route, m.Percent)
+			}
+			if !m.CreatedAt.Equal(time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)) {
+				t.Errorf("%s: pm-task created_at = %s, want the seeded time", route, m.CreatedAt)
+			}
 			if m.ETA != nil {
 				t.Errorf("%s: pm-task eta = %s, want none — an absent forecast must stay absent", route, m.ETA)
 			}
