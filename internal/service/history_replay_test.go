@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/domain"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/store"
@@ -492,5 +493,35 @@ func TestProgressHistory_ExposesTheReplay(t *testing.T) {
 	last := got.Replay[len(got.Replay)-1]
 	if last.TotalTasks != 1 || last.DoneTasks != 1 || last.EstimateDone != 2 {
 		t.Fatalf("last replayed point = %+v, want 1 task, done, 2h of estimate", last)
+	}
+}
+
+// Acceptance 1: state at a POINT IN TIME, not only at a point in the journal.
+// replayAt is the by-time face of the same walk — it picks the last entry at
+// or before the instant asked for, answers "empty board" for an instant that
+// predates the whole journal, and agrees with the by-id replay everywhere
+// they overlap.
+func TestReplayAt_AnswersForAnInstant(t *testing.T) {
+	env := openTestEnv(t)
+	a := makeBacklogTask(t, env, "a")
+	setEstimate(t, env, a, 4)
+	moveTask(t, env, a, "Done")
+	makeBacklogTask(t, env, "b")
+
+	entries := journalOf(t, env)
+	origin := readOrigin(t, env)
+
+	if got := replayAt(entries, origin.Add(-time.Hour)); got != (boardCounts{}) {
+		t.Fatalf("replay before the journal began = %+v, want an empty board", got)
+	}
+	last := entries[len(entries)-1]
+	if got, want := replayAt(entries, last.TS), replayJournal(entries, 0); got != want {
+		t.Fatalf("replay at the last entry's instant = %+v, want the same as replaying everything %+v", got, want)
+	}
+	if got, want := replayAt(entries, time.Time{}), replayJournal(entries, 0); got != want {
+		t.Fatalf("replay at the zero time = %+v, want now %+v", got, want)
+	}
+	if d := diffCounts(liveCounts(t, env), replayAt(entries, last.TS)); len(d) > 0 {
+		t.Fatalf("replay at now diverges from the live board: %v", d)
 	}
 }
