@@ -53,13 +53,9 @@ type webExportChatMessage struct {
 
 // buildWebExportDoc mirrors cmd/kanban/export.go's exportBoard through the
 // public service.Service surface, so the web Export button and `kanban
-// export --out file.json` produce byte-for-byte the same document. The
-// limit is that the service caps chat pages at 100 (ChatList's own rule
-// for the UI) and progress_history at MaxProgressHistoryLimit, so a board
-// with more chat than 100 messages needs `kanban export` for the full
-// round-trip — and that is documented in KANB-29.
-//
-// The progress read passes Limit=0 to ProgressHistory, which the service
+// export --out file.json` produce byte-for-byte the same document. Chat is
+// paged through in full below (100 is the page size, not a cap), and the
+// progress read passes Limit=0 to ProgressHistory, which the service
 // interprets as "the whole scope" (no Tail cap), so a long progress track
 // travels in full here too.
 func buildWebExportDoc(ctx context.Context, svc service.Service, actor service.Actor, projectKey string) (*webExportDoc, error) {
