@@ -650,10 +650,32 @@ type ProjectUpsertResult struct {
 // chat
 // ---------------------------------------------------------------------------
 
+// ChatAddInput posts one message to a project feed. Project/Author/Body are
+// the original trio and behave exactly as before; the remaining fields are
+// the communication protocol (KANB-46). Their names and types are a frozen
+// wire contract — the next stage's adapter and external clients bind to
+// them.
 type ChatAddInput struct {
 	ProjectKey string
 	Author     string // optional: defaults to Actor.Name
 	Body       string
+	// Kind is one of update | scope_change | question | command. Empty
+	// means update — a call that predates the protocol is indistinguishable
+	// from one that chose its default.
+	Kind string
+	// Recipient is a participant's tokens.id or the literal "all". Empty is
+	// legal and, for question/command, means "the project's coordinator" —
+	// resolved ONCE, at send time.
+	Recipient string
+	// ReplyTo names the message this one answers. It must exist in the same
+	// project; a reply across projects is refused.
+	ReplyTo string
+	// IdempotencyKey deduplicates retries of one send, per authorized
+	// sender. The same key with the same content returns the existing
+	// message; with different content it is an explicit error. Unlike
+	// task_create's 24h idempotency window, the key lives as long as the
+	// message does.
+	IdempotencyKey string
 }
 
 type ChatMessageAddInput = ChatAddInput

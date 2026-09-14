@@ -297,6 +297,10 @@ type ChatRepo interface {
 	Add(tx Tx, m *domain.ChatMessage) error
 	// Get resolves one message by id.
 	Get(tx Tx, id string) (*domain.ChatMessage, error)
+	// GetBySenderKey resolves the message an (author token, idempotency key)
+	// pair already produced, or NotFound. The pair is unique among keyed
+	// messages for the message's whole lifetime.
+	GetBySenderKey(tx Tx, tokenID, key string) (*domain.ChatMessage, error)
 	// List returns a page of chat messages, newest first, with optional
 	// project filtering and tie-breaking cursor pagination. A filter with
 	// After set inverts the direction to oldest-first.

@@ -81,6 +81,25 @@ func (r *chatRepo) Get(tx Tx, id string) (*domain.ChatMessage, error) {
 	return m, err
 }
 
+// GetBySenderKey resolves the message a (sender, idempotency_key) pair
+// already produced, if any. Chat is never pruned, so the pair is stable for
+// the message's whole lifetime — this is the durable retry guard, not the
+// 24h idempotency table task_create uses.
+func (r *chatRepo) GetBySenderKey(tx Tx, tokenID, key string) (*domain.ChatMessage, error) {
+	if tokenID == "" || key == "" {
+		return nil, domain.Invalid("idempotency", "author token id and key are required",
+			"Both fields are part of the message's deduplication identity.")
+	}
+	tw := tx.(*txWrap)
+	row := tw.tx.QueryRowContext(tw.ctx(),
+		chatSelectSQL+` WHERE author_token_id = ? AND idempotency_key = ?`, tokenID, key)
+	m, err := scanChatMessage(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, domain.NotFound("message", key)
+	}
+	return m, err
+}
+
 // chatSelectSQL is the shared projection for every chat read: the five
 // original columns plus the communication-protocol columns (KANB-45..47).
 const chatSelectSQL = `SELECT id, project_id, author, body, created_at,

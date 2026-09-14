@@ -11,6 +11,11 @@ import (
 
 // ChatAdd appends one message to a project chat. The body is validated for
 // length and non-emptiness, but stored verbatim without escaping.
+//
+// The communication protocol fields (KANB-46) are validated and resolved
+// INSIDE the write transaction together with the insert, so addressing can
+// never race a settings change: resolved_executor is computed from the
+// project configuration as of this send and then frozen on the row.
 func (s *svc) ChatAdd(ctx context.Context, a Actor, in ChatAddInput) (*domain.ChatMessage, error) {
 	if err := requireWrite(a); err != nil {
 		return nil, err
@@ -28,6 +33,27 @@ func (s *svc) ChatAdd(ctx context.Context, a Actor, in ChatAddInput) (*domain.Ch
 	}
 	if err := domain.ValidateChatMessageBody(in.Body); err != nil {
 		return nil, err
+	}
+
+	kind := domain.MessageKind(strings.TrimSpace(in.Kind))
+	if kind == "" {
+		kind = domain.MessageUpdate
+	}
+	if !kind.Valid() {
+		return nil, domain.Invalid("kind",
+			fmt.Sprintf("message kind %q is invalid", in.Kind),
+			"Use one of: update, scope_change, question, command.")
+	}
+	recipient := strings.TrimSpace(in.Recipient)
+	replyTo := strings.TrimSpace(in.ReplyTo)
+	idemKey := strings.TrimSpace(in.IdempotencyKey)
+	// A key deduplicates retries of ONE authorized sender; without a token
+	// identity there is nothing to key on, and silently skipping the
+	// deduplication would be the quiet downgrade AGENTS.md forbids.
+	if idemKey != "" && a.TokenID == "" {
+		return nil, domain.Invalid("idempotency_key",
+			"an idempotency key requires an authenticated token",
+			"Post through an authenticated surface; the key is scoped to the sender's token.")
 	}
 
 	author := strings.TrimSpace(in.Author)
@@ -49,11 +75,65 @@ func (s *svc) ChatAdd(ctx context.Context, a Actor, in ChatAddInput) (*domain.Ch
 		if err != nil {
 			return err
 		}
+
+		// Retry deduplication: the same key of the same authorized sender
+		// with the same content returns the existing message; different
+		// content is an explicit conflict. Checked before anything else so a
+		// replay costs nothing but the lookup — and inside the transaction,
+		// so a concurrent twin send cannot slip past the check.
+		if idemKey != "" {
+			existing, err := s.store.Chat().GetBySenderKey(tx, a.TokenID, idemKey)
+			if err != nil && !isNotFound(err) {
+				return err
+			}
+			if existing != nil {
+				if existing.Kind != kind || existing.Recipient != recipient ||
+					existing.ReplyToID != replyTo || existing.Body != in.Body {
+					return &domain.Error{
+						Code: domain.CodeIdempotencyMismatch,
+						Message: fmt.Sprintf(
+							"idempotency key %q was already used with a different message", idemKey),
+						Remediation: "Reuse the original content to receive the original message, or send a new message with a new key.",
+					}
+				}
+				out = *existing
+				return nil
+			}
+		}
+
+		executor, aerr := s.resolveMessageAddressing(tx, p, kind, recipient)
+		if aerr != nil {
+			return aerr
+		}
+		if replyTo != "" {
+			target, err := s.store.Chat().Get(tx, replyTo)
+			if isNotFound(err) {
+				return domain.Invalid("reply_to",
+					fmt.Sprintf("reply_to message %s does not exist", replyTo),
+					"Pass the id of a message in the same project, taken from the feed.")
+			}
+			if err != nil {
+				return err
+			}
+			if target.ProjectID != p.ID {
+				return domain.Invalid("reply_to",
+					fmt.Sprintf("reply_to message %s belongs to a different project", replyTo),
+					"Pass the id of a message in the same project, taken from the feed.")
+			}
+		}
+
 		m := &domain.ChatMessage{
 			ID:        newID(),
 			ProjectID: p.ID,
 			Author:    author,
 			Body:      in.Body,
+
+			Kind:             kind,
+			AuthorTokenID:    a.TokenID,
+			Recipient:        recipient,
+			ResolvedExecutor: executor,
+			ReplyToID:        replyTo,
+			IdempotencyKey:   idemKey,
 		}
 		if err := s.store.Chat().Add(tx, m); err != nil {
 			return err
@@ -72,6 +152,97 @@ func (s *svc) ChatAdd(ctx context.Context, a Actor, in ChatAddInput) (*domain.Ch
 	}
 	s.publishAll(pending)
 	return &out, nil
+}
+
+// RecipientAll is the literal broadcast recipient on every wire surface.
+const RecipientAll = "all"
+
+// resolveMessageAddressing validates the recipient the caller named and
+// fixes the single executor of a question or command AT SEND TIME (KANB-46).
+//
+// The rules, in the order a caller trips over them:
+//   - "all" broadcasts: legal for updates and questions (a question to the
+//     room needs no single answerer), refused for a command — a command
+//     nobody can accept is undeliverable work, not a broadcast.
+//   - an explicit token id must name an active participant of THIS project:
+//     addressing is checked against the project's configuration, not the
+//     sender's say-so.
+//   - an absent recipient on a question/command means the coordinator, read
+//     from the project as of this send. No coordinator configured (or a
+//     broken appointment) refuses the send loudly: an assignment without an
+//     addressee must not go out as executable.
+//
+// resolved_executor is non-empty only for a question/command that resolved
+// to exactly one token. Updates and scope changes never carry one, and the
+// value, once written, is never recomputed — a coordinator change later must
+// not silently readdress old commands.
+func (s *svc) resolveMessageAddressing(tx store.Tx, p *domain.Project, kind domain.MessageKind, recipient string) (string, error) {
+	needsExecutor := kind == domain.MessageQuestion || kind == domain.MessageCommand
+
+	switch {
+	case recipient == RecipientAll:
+		if kind == domain.MessageCommand {
+			return "", domain.Invalid("recipient",
+				"a command addressed to \"all\" has no executor to accept it",
+				fmt.Sprintf("Pass one participant's tokens.id as recipient, or appoint settings.coordinator on project %s and omit recipient.", p.Key))
+		}
+		return "", nil
+
+	case recipient != "":
+		tok, err := s.store.Tokens().GetByID(tx, recipient)
+		if isNotFound(err) {
+			return "", domain.Invalid("recipient",
+				fmt.Sprintf("recipient %s is not a known token", recipient),
+				"Pass a participant's tokens.id from board_get(view:summary), or \"all\".")
+		}
+		if err != nil {
+			return "", err
+		}
+		if !tok.Active() {
+			return "", domain.Invalid("recipient",
+				fmt.Sprintf("recipient %s (%s) is revoked", recipient, tok.Name),
+				"Address an active participant.")
+		}
+		if !tok.MayAccessProject(p.Key) {
+			return "", domain.Invalid("recipient",
+				fmt.Sprintf("recipient %s (%s) has no access to project %s", recipient, tok.Name, p.Key),
+				"Address a participant of this project, taken from board_get(view:summary).")
+		}
+		if needsExecutor {
+			return recipient, nil
+		}
+		return "", nil
+
+	default:
+		if !needsExecutor {
+			return "", nil
+		}
+		if p.CoordinatorTokenID == "" {
+			return "", domain.Invalid("recipient",
+				fmt.Sprintf("project %s has no coordinator, so a %s without a recipient has nowhere to go", p.Key, kind),
+				"Pass an explicit recipient, or ask an admin to appoint settings.coordinator on the project.")
+		}
+		tok, err := s.store.Tokens().GetByID(tx, p.CoordinatorTokenID)
+		if isNotFound(err) {
+			return "", domain.Invalid("recipient",
+				fmt.Sprintf("project %s's coordinator token no longer exists", p.Key),
+				"Ask an admin to re-appoint settings.coordinator on the project.")
+		}
+		if err != nil {
+			return "", err
+		}
+		if !tok.Active() {
+			return "", domain.Invalid("recipient",
+				fmt.Sprintf("project %s's coordinator %s is revoked", p.Key, tok.Name),
+				"Ask an admin to re-appoint settings.coordinator on the project.")
+		}
+		if !tok.MayAccessProject(p.Key) {
+			return "", domain.Invalid("recipient",
+				fmt.Sprintf("project %s's coordinator %s has no access to the project", p.Key, tok.Name),
+				"Ask an admin to re-appoint settings.coordinator on the project.")
+		}
+		return p.CoordinatorTokenID, nil
+	}
 }
 
 // ChatList returns a page of chat messages, newest first. If in.ProjectKey is
@@ -267,7 +438,7 @@ func (s *svc) ChatFeed(ctx context.Context, a Actor, in ChatFeedInput) (*ChatFee
 				Message:  m,
 				TaskKeys: acceptances[m.ID].TaskKeys,
 			}
-			if m.Recipient != "" && m.Recipient != recipientAll {
+			if m.Recipient != "" && m.Recipient != RecipientAll {
 				fm.RecipientName = names[m.Recipient]
 			}
 			if m.ResolvedExecutor != "" {
@@ -282,9 +453,6 @@ func (s *svc) ChatFeed(ctx context.Context, a Actor, in ChatFeedInput) (*ChatFee
 	}
 	return &result, nil
 }
-
-// recipientAll is the literal broadcast recipient on the wire.
-const recipientAll = "all"
 
 // ChatMessageAdd is an alias for ChatAdd.
 func (s *svc) ChatMessageAdd(ctx context.Context, a Actor, in ChatAddInput) (*domain.ChatMessage, error) {

@@ -1,0 +1,122 @@
+package mcp
+
+import (
+	"testing"
+	"time"
+
+	"github.com/ultrathinker/basic-kanban-board-mcp/internal/domain"
+)
+
+// ---------------------------------------------------------------------------
+// KANB-46 — project_post's kind, recipient, reply_to, idempotency_key on the
+// MCP surface.
+// ---------------------------------------------------------------------------
+
+// TestProjectPost_ProtocolFieldsForwarded: the four new parameters reach the
+// service verbatim (kind canonicalized), the response echoes them, and the
+// schema teaches the enum.
+func TestProjectPost_ProtocolFieldsForwarded(t *testing.T) {
+	t.Parallel()
+	cs, svc := roundtripServer(t, NewServer)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	svc.DefaultChatAdd = &domain.ChatMessage{
+		ID: "msg-9", ProjectID: "p", Author: "lead", Body: "do it", CreatedAt: now,
+		Kind:             domain.MessageCommand,
+		Recipient:        "tok-agent",
+		ResolvedExecutor: "tok-agent",
+		ReplyToID:        "msg-1",
+		IdempotencyKey:   "send-9",
+	}
+
+	res, sc := callTool(t, cs, "project_post", map[string]any{
+		"project":         "kanb",
+		"author":          "lead",
+		"body":            "do it",
+		"kind":            "command",
+		"recipient":       "tok-agent",
+		"reply_to":        "msg-1",
+		"idempotency_key": "send-9",
+	})
+	if res.IsError {
+		t.Fatalf("callTool failed: %v", sc)
+	}
+	expectOK(t, sc, "project_post")
+
+	in := svc.LastChatAdd
+	if in.Kind != "command" {
+		t.Errorf("service Kind = %q, want the canonicalized command", in.Kind)
+	}
+	if in.Recipient != "tok-agent" || in.ReplyTo != "msg-1" || in.IdempotencyKey != "send-9" {
+		t.Errorf("service forwarding = recipient %q reply_to %q key %q", in.Recipient, in.ReplyTo, in.IdempotencyKey)
+	}
+
+	data, _ := sc["data"].(map[string]any)
+	if data["kind"] != "command" {
+		t.Errorf("data.kind = %v", data["kind"])
+	}
+	if data["resolved_executor"] != "tok-agent" {
+		t.Errorf("data.resolved_executor = %v", data["resolved_executor"])
+	}
+	if data["reply_to"] != "msg-1" {
+		t.Errorf("data.reply_to = %v", data["reply_to"])
+	}
+	if data["idempotency_key"] != "send-9" {
+		t.Errorf("data.idempotency_key = %v", data["idempotency_key"])
+	}
+}
+
+// TestProjectPost_DefaultKindAndUpdate: without kind the call is an update —
+// the pre-protocol shape of the tool keeps working unchanged.
+func TestProjectPost_DefaultKindAndUpdate(t *testing.T) {
+	t.Parallel()
+	cs, svc := roundtripServer(t, NewServer)
+	svc.DefaultChatAdd = &domain.ChatMessage{ID: "m", Author: "a", Body: "b", Kind: domain.MessageUpdate}
+
+	res, sc := callTool(t, cs, "project_post", map[string]any{
+		"project": "kanb", "author": "a", "body": "b",
+	})
+	if res.IsError {
+		t.Fatalf("legacy call failed: %v", sc)
+	}
+	if svc.LastChatAdd.Kind != "update" {
+		t.Errorf("service Kind = %q, want update", svc.LastChatAdd.Kind)
+	}
+	data, _ := sc["data"].(map[string]any)
+	if data["kind"] != "update" {
+		t.Errorf("data.kind = %v, want update", data["kind"])
+	}
+	if _, has := data["resolved_executor"]; has {
+		t.Errorf("data.resolved_executor = %v on an update — only question/command resolve one", data["resolved_executor"])
+	}
+}
+
+// TestProjectPost_UnknownKindRejectedBySchemaAndHandler: the enum is taught
+// by the schema (a wrong JSON type never reaches the handler) and a bogus
+// kind name is refused whichever layer sees it.
+func TestProjectPost_UnknownKindRejectedBySchemaAndHandler(t *testing.T) {
+	t.Parallel()
+	cs, svc := roundtripServer(t, NewServer)
+
+	// kind is a real typed property of the published schema: a non-string
+	// value is rejected before the handler runs.
+	res, sc := callTool(t, cs, "project_post", map[string]any{
+		"project": "kanb", "author": "a", "body": "b", "kind": 123,
+	})
+	if !res.IsError {
+		t.Fatalf("a non-string kind was accepted: %v", sc)
+	}
+	if svc.LastChatAdd.Body != "" {
+		t.Errorf("service was invoked despite the schema rejection: %+v", svc.LastChatAdd)
+	}
+
+	res, sc = callTool(t, cs, "project_post", map[string]any{
+		"project": "kanb", "author": "a", "body": "b", "kind": "memo",
+	})
+	if !res.IsError {
+		t.Fatalf("unknown kind accepted: %v", sc)
+	}
+	errBlock, _ := sc["error"].(map[string]any)
+	if errBlock["code"] != "validation" {
+		t.Fatalf("error = %v, want validation", errBlock)
+	}
+}
