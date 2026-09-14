@@ -1139,7 +1139,6 @@ select, .field input, .field textarea {
   line-height: 1;
   padding: 0;
   cursor: pointer;
-  display: flex;
   align-items: center;
   justify-content: center;
 }
