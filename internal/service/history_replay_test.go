@@ -525,3 +525,151 @@ func TestReplayAt_AnswersForAnInstant(t *testing.T) {
 		t.Fatalf("replay at now diverges from the live board: %v", d)
 	}
 }
+
+// waitForClockTick blocks until the database clock reads a different instant
+// from the one it reads now.
+//
+// buildHistoryPoints collapses everything recorded inside a single instant
+// into one point, which is correct — a chart cannot draw two states at the
+// same moment. But it means a test about a PAST point has to make the past a
+// genuinely different instant from today, and the journal is stamped from the
+// database clock at millisecond resolution. Polling that same clock is the
+// honest way to know it has moved; a fixed sleep would be a guess about timer
+// granularity on whatever machine happens to run this.
+func waitForClockTick(t *testing.T, env *testEnv) {
+	t.Helper()
+	read := func() time.Time {
+		var now time.Time
+		if err := env.Read(context.Background(), func(tx store.Tx) error {
+			var err error
+			now, err = tx.Now()
+			return err
+		}); err != nil {
+			t.Fatalf("read database clock: %v", err)
+		}
+		return now
+	}
+	start := read()
+	deadline := time.Now().Add(5 * time.Second)
+	for !read().After(start) {
+		if time.Now().After(deadline) {
+			t.Fatal("the database clock did not advance within 5s")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// samePoint compares two history points field by field. It exists because
+// HistoryPoint carries a *int percent, so == would compare pointer identity
+// and quietly pass for two points that disagree about everything.
+func samePoint(a, b HistoryPoint) bool {
+	if !a.At.Equal(b.At) ||
+		a.TotalTasks != b.TotalTasks || a.OpenTasks != b.OpenTasks || a.DoneTasks != b.DoneTasks ||
+		a.Leaves != b.Leaves || a.DoneLeaves != b.DoneLeaves || a.LeavesEstimated != b.LeavesEstimated ||
+		a.EstimateTotal != b.EstimateTotal || a.EstimateDone != b.EstimateDone {
+		return false
+	}
+	if a.Readiness.Basis != b.Readiness.Basis || a.Readiness.Partial != b.Readiness.Partial ||
+		a.Readiness.Coverage != b.Readiness.Coverage {
+		return false
+	}
+	switch {
+	case a.Readiness.Percent == nil || b.Readiness.Percent == nil:
+		return a.Readiness.Percent == nil && b.Readiness.Percent == nil
+	default:
+		return *a.Readiness.Percent == *b.Readiness.Percent
+	}
+}
+
+// KANB-31 acceptance 7 and KANB-35 acceptance 4, proved ON THE PATH THAT
+// BUILDS THE USER'S CURVE.
+//
+// There are two ways into the replay: replayJournal, cut off by entry id, and
+// buildHistoryPoints, which walks by time and is what ProgressHistory returns
+// as Result.Replay. The rule "today's estimate edits do not rewrite
+// yesterday's points" was originally only asserted against the first, so the
+// function that actually implements the rule for the product had no test of
+// its own standing on it. This is that test.
+func TestHistoryPoints_PastPointsSurviveTodaysEstimateEdits(t *testing.T) {
+	env := openTestEnv(t)
+	unit := env.proj.EstimateUnit
+	small := makeBacklogTask(t, env, "small")
+	big := makeBacklogTask(t, env, "big")
+
+	setEstimate(t, env, small, 1)
+	setEstimate(t, env, big, 3)
+	moveTask(t, env, small, "Done")
+
+	before := buildHistoryPoints(journalOf(t, env), unit)
+	if len(before) == 0 {
+		t.Fatal("no history points at all")
+	}
+	past := before[len(before)-1]
+	if past.EstimateTotal != 4 || past.EstimateDone != 1 {
+		t.Fatalf("the past point divides %v/%v, want 1/4", past.EstimateDone, past.EstimateTotal)
+	}
+	if past.Readiness.Percent == nil || *past.Readiness.Percent != 25 {
+		t.Fatalf("readiness at the past point = %v, want 25%%", past.Readiness.Percent)
+	}
+
+	// Today is a different instant, or the question does not arise.
+	waitForClockTick(t, env)
+
+	// Today someone decides the unfinished card is far bigger, and the
+	// finished one a little bigger too. Recomputing the past from today's
+	// numbers would put that old point at 3/100 = 3%.
+	setEstimate(t, env, big, 97)
+	setEstimate(t, env, small, 3)
+
+	after := buildHistoryPoints(journalOf(t, env), unit)
+	var found *HistoryPoint
+	for i := range after {
+		if after[i].At.Equal(past.At) {
+			found = &after[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("the past instant %s vanished from the curve; the test cannot prove anything", past.At)
+	}
+	if !samePoint(past, *found) {
+		t.Fatalf("the past point was rewritten by today's estimate edits:\n  was %+v\n  now %+v", past, *found)
+	}
+
+	// The edits must have landed on a LATER instant, otherwise "past" and
+	// "today" were the same point and the check above was vacuous.
+	last := after[len(after)-1]
+	if !last.At.After(past.At) {
+		t.Fatalf("today's edits landed at %s, not after the past point at %s", last.At, past.At)
+	}
+	// And today's point did move, so the curve is not simply frozen.
+	if last.EstimateTotal != 100 || last.EstimateDone != 3 {
+		t.Fatalf("today's point divides %v/%v, want 3/100", last.EstimateDone, last.EstimateTotal)
+	}
+	if last.Readiness.Percent == nil || *last.Readiness.Percent != 3 {
+		t.Fatalf("readiness today = %v, want 3%%", last.Readiness.Percent)
+	}
+
+	// The same curve, reached the way a caller reaches it.
+	var svc Service = env.svc
+	got, err := svc.ProgressHistory(context.Background(), env.actor, ProgressHistoryInput{
+		ProjectKey:    env.proj.Key,
+		IncludeReplay: true,
+	})
+	if err != nil {
+		t.Fatalf("ProgressHistory: %v", err)
+	}
+	var served *HistoryPoint
+	for i := range got.Replay {
+		if got.Replay[i].At.Equal(past.At) {
+			served = &got.Replay[i]
+			break
+		}
+	}
+	if served == nil {
+		t.Fatalf("the past instant %s is missing from the served curve", past.At)
+	}
+	if !samePoint(past, *served) {
+		t.Fatalf("the curve served to a caller rewrote the past point:\n  was %+v\n  now %+v", past, *served)
+	}
+}
