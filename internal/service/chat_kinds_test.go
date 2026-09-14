@@ -91,21 +91,26 @@ func TestChatAdd_ResolvedExecutorFixedAtSend(t *testing.T) {
 	}
 
 	// Change the coordinator AFTER the sends: the old commands keep their
-	// frozen executor; only new ones address the new coordinator.
+	// frozen executor; only new ones address the new coordinator. Look the
+	// messages up by id — two posts inside one millisecond tie on time and
+	// the (created_at, id) order between them is not insertion order.
 	setCoordinator(t, env, env.actor, "tok-coord-2")
 	fresh, err := env.svc.ChatFeed(ctx, env.actor, ChatFeedInput{ProjectKey: env.proj.Key})
 	if err != nil {
 		t.Fatalf("ChatFeed: %v", err)
 	}
-	if len(fresh.Messages) != 2 {
-		t.Fatalf("feed held %d messages, want 2", len(fresh.Messages))
+	byID := map[string]string{}
+	for _, fm := range fresh.Messages {
+		byID[fm.Message.ID] = fm.Message.ResolvedExecutor
 	}
-	if fresh.Messages[0].Message.ResolvedExecutor != "tok-coord-1" {
-		t.Fatalf("old command's executor = %q after coordinator change, want the frozen tok-coord-1",
-			fresh.Messages[0].Message.ResolvedExecutor)
+	if len(byID) != 2 {
+		t.Fatalf("feed held %d messages, want 2", len(byID))
 	}
-	if fresh.Messages[1].Message.ResolvedExecutor != "tok-agent" {
-		t.Fatalf("direct command's executor = %q, want the frozen tok-agent", fresh.Messages[1].Message.ResolvedExecutor)
+	if byID[cmd.ID] != "tok-coord-1" {
+		t.Fatalf("old command's executor = %q after coordinator change, want the frozen tok-coord-1", byID[cmd.ID])
+	}
+	if byID[direct.ID] != "tok-agent" {
+		t.Fatalf("direct command's executor = %q, want the frozen tok-agent", byID[direct.ID])
 	}
 	newCmd := postKind(t, env, env.actor, ChatAddInput{
 		ProjectKey: env.proj.Key, Author: "lead", Body: "after the change", Kind: "command",
