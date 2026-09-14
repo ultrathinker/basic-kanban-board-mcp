@@ -47,6 +47,22 @@ func (s *svc) ChatAdd(ctx context.Context, a Actor, in ChatAddInput) (*domain.Ch
 	recipient := strings.TrimSpace(in.Recipient)
 	replyTo := strings.TrimSpace(in.ReplyTo)
 	idemKey := strings.TrimSpace(in.IdempotencyKey)
+	// A key that is only whitespace would trim to "" and silently disable
+	// the deduplication the caller believes it enabled — the quiet downgrade
+	// AGENTS.md forbids, refused here the same way as any other invalid key.
+	if idemKey == "" && in.IdempotencyKey != "" {
+		return nil, domain.Invalid("idempotency_key",
+			"idempotency_key is empty after trimming",
+			"Pass a non-blank key, or omit idempotency_key to send without retry protection.")
+	}
+	// The key is a lookup handle the client invents, not content — capped so
+	// one argument cannot grow without bound; the schema publishes the same
+	// number.
+	if len(idemKey) > domain.MaxChatIdempotencyKeyLen {
+		return nil, domain.Invalid("idempotency_key",
+			fmt.Sprintf("idempotency_key is %d characters, the limit is %d", len(idemKey), domain.MaxChatIdempotencyKeyLen),
+			fmt.Sprintf("Use a key of at most %d characters.", domain.MaxChatIdempotencyKeyLen))
+	}
 	// A key deduplicates retries of ONE authorized sender; without a token
 	// identity there is nothing to key on, and silently skipping the
 	// deduplication would be the quiet downgrade AGENTS.md forbids.

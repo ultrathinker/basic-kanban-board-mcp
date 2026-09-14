@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -91,9 +92,9 @@ func TestChatAdd_ResolvedExecutorFixedAtSend(t *testing.T) {
 	}
 
 	// Change the coordinator AFTER the sends: the old commands keep their
-	// frozen executor; only new ones address the new coordinator. Look the
-	// messages up by id — two posts inside one millisecond tie on time and
-	// the (created_at, id) order between them is not insertion order.
+	// frozen executor; only new ones address the new coordinator. The
+	// assertions look messages up by id so they hold whatever the feed
+	// position of each post is.
 	setCoordinator(t, env, env.actor, "tok-coord-2")
 	fresh, err := env.svc.ChatFeed(ctx, env.actor, ChatFeedInput{ProjectKey: env.proj.Key})
 	if err != nil {
@@ -431,5 +432,65 @@ func TestChatAdd_IdempotencyKeyIsPerProject(t *testing.T) {
 	}
 	if again.ProjectID != env.proj.ID {
 		t.Fatalf("replayed message project = %s, want the requested project %s", again.ProjectID, env.proj.ID)
+	}
+}
+
+// TestChatAdd_BlankOrOversizedKeyRefused: a key of only whitespace would
+// trim to "" and silently disable the deduplication the caller believes it
+// enabled — refused loudly instead, like every other invalid key, and
+// nothing is stored. Keys are also capped: a retry handle is a lookup
+// identity, not content.
+func TestChatAdd_BlankOrOversizedKeyRefused(t *testing.T) {
+	env := openTestEnv(t)
+	ctx := context.Background()
+
+	_, err := env.svc.ChatAdd(ctx, env.actor, ChatAddInput{
+		ProjectKey: env.proj.Key, Author: "a", Body: "guard me", Kind: "update", IdempotencyKey: "   ",
+	})
+	de := domain.AsError(err)
+	if de == nil || de.Code != domain.CodeValidation || de.Field != "idempotency_key" {
+		t.Fatalf("whitespace key: got %v, want a validation error on idempotency_key", err)
+	}
+	if !strings.Contains(de.Message, "empty after trimming") {
+		t.Fatalf("whitespace key error = %q, want the trimming explanation", de.Message)
+	}
+	feed, err := env.svc.ChatFeed(ctx, env.actor, ChatFeedInput{ProjectKey: env.proj.Key})
+	if err != nil {
+		t.Fatalf("feed: %v", err)
+	}
+	if len(feed.Messages) != 0 {
+		t.Fatalf("the refused key still stored %d message(s)", len(feed.Messages))
+	}
+
+	tooLong := strings.Repeat("k", domain.MaxChatIdempotencyKeyLen+1)
+	_, err = env.svc.ChatAdd(ctx, env.actor, ChatAddInput{
+		ProjectKey: env.proj.Key, Author: "a", Body: "guard me", Kind: "update", IdempotencyKey: tooLong,
+	})
+	de = domain.AsError(err)
+	if de == nil || de.Code != domain.CodeValidation || de.Field != "idempotency_key" {
+		t.Fatalf("oversized key: got %v, want a validation error on idempotency_key", err)
+	}
+	if !strings.Contains(de.Message, fmt.Sprintf("%d", domain.MaxChatIdempotencyKeyLen)) {
+		t.Fatalf("oversized key error = %q, want it to name the limit", de.Message)
+	}
+
+	// Exactly at the limit is accepted, surrounding whitespace is trimmed
+	// BEFORE storage, and the trimmed form is what deduplicates.
+	atLimit := strings.Repeat("k", domain.MaxChatIdempotencyKeyLen)
+	m, err := env.svc.ChatAdd(ctx, env.actor, ChatAddInput{
+		ProjectKey: env.proj.Key, Author: "a", Body: "guard me", Kind: "update", IdempotencyKey: atLimit,
+	})
+	if err != nil {
+		t.Fatalf("key at the limit refused: %v", err)
+	}
+	padded, err := env.svc.ChatAdd(ctx, env.actor, ChatAddInput{
+		ProjectKey: env.proj.Key, Author: "a", Body: "guard me", Kind: "update", IdempotencyKey: "  " + atLimit + " ",
+	})
+	if err != nil {
+		t.Fatalf("padded variant: %v", err)
+	}
+	if m.IdempotencyKey != atLimit || padded.ID != m.ID {
+		t.Fatalf("trim/dedup mismatch: stored %q, padded variant returned %s (original %s)",
+			m.IdempotencyKey, padded.ID, m.ID)
 	}
 }

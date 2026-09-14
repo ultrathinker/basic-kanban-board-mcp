@@ -120,3 +120,31 @@ func TestProjectPost_UnknownKindRejectedBySchemaAndHandler(t *testing.T) {
 		t.Fatalf("error = %v, want validation", errBlock)
 	}
 }
+
+// TestProjectPost_IdempotencyKeyForwardedVerbatimAndBounded: the key is the
+// service's to judge, so the MCP layer forwards it untouched (trimming here
+// would turn a refused whitespace key into a silently unprotected send) and
+// the published schema carries the same 255-character bound the service
+// enforces.
+func TestProjectPost_IdempotencyKeyForwardedVerbatimAndBounded(t *testing.T) {
+	t.Parallel()
+	cs, svc := roundtripServer(t, NewServer)
+	svc.DefaultChatAdd = &domain.ChatMessage{ID: "msg-x", Author: "a", Kind: domain.MessageUpdate}
+
+	props := schemaNode(t, toolByName(t, cs, "project_post").InputSchema, "properties")
+	prop, ok := props["idempotency_key"].(map[string]any)
+	if !ok {
+		t.Fatalf("project_post schema has no idempotency_key property: %v", props)
+	}
+	maxLen, ok := prop["maxLength"].(float64)
+	if !ok || maxLen != float64(domain.MaxChatIdempotencyKeyLen) {
+		t.Fatalf("idempotency_key maxLength = %v, want %d", prop["maxLength"], domain.MaxChatIdempotencyKeyLen)
+	}
+
+	callTool(t, cs, "project_post", map[string]any{
+		"project": "kanb", "author": "a", "body": "b", "idempotency_key": "  send-x  ",
+	})
+	if svc.LastChatAdd.IdempotencyKey != "  send-x  " {
+		t.Fatalf("service received idempotency_key %q, want it forwarded verbatim", svc.LastChatAdd.IdempotencyKey)
+	}
+}

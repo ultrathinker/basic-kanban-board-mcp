@@ -26,7 +26,7 @@ type projectPostInput struct {
 	// command means the project's coordinator AT SEND TIME.
 	Recipient      string `json:"recipient,omitempty" jsonschema:"tokens.id of one participant, or \"all\"; empty = the project coordinator for question/command"`
 	ReplyTo        string `json:"reply_to,omitempty" jsonschema:"id of the message this one answers, same project"`
-	IdempotencyKey string `json:"idempotency_key,omitempty" jsonschema:"stable key of ONE send: the same key with the same content returns the existing message, different content (including a different project) is an error; lives as long as the message"`
+	IdempotencyKey string `json:"idempotency_key,omitempty" jsonschema:"stable key of ONE send: the same key with the same content returns the existing message, different content (including a different project) is an error; lives as long as the message; not blank, at most 255 characters"`
 }
 
 type projectPostData struct {
@@ -76,6 +76,7 @@ func projectPostTool() *gomcp.Tool {
 	setMaxLen(prop(s, "body"), domain.MaxChatMessageLen)
 	setEnum(prop(s, "kind"), messageKindNames()...)
 	setDefault(prop(s, "kind"), string(domain.MessageUpdate))
+	setMaxLen(prop(s, "idempotency_key"), domain.MaxChatIdempotencyKeyLen)
 
 	return &gomcp.Tool{
 		Name:        opProjectPost,
@@ -140,6 +141,10 @@ func registerProjectPost(s *gomcp.Server, svc service.Service) {
 		// second, drift-prone error message.
 		recipient := strings.TrimSpace(in.Recipient)
 
+		// The idempotency key is forwarded VERBATIM: the service owns every
+		// rule about it (blank after trimming, length, token requirement),
+		// and trimming here would turn a refused "   " key into a silently
+		// unprotected send.
 		msg, svcErr := svc.ChatAdd(ctx, actor, service.ChatAddInput{
 			ProjectKey:     key,
 			Author:         author,
@@ -147,7 +152,7 @@ func registerProjectPost(s *gomcp.Server, svc service.Service) {
 			Kind:           string(parsedKind),
 			Recipient:      recipient,
 			ReplyTo:        strings.TrimSpace(in.ReplyTo),
-			IdempotencyKey: strings.TrimSpace(in.IdempotencyKey),
+			IdempotencyKey: in.IdempotencyKey,
 		})
 		if svcErr != nil {
 			derr := asDomainError(svcErr)
