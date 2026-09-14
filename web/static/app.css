@@ -441,6 +441,66 @@ select, .field input, .field textarea {
 .card:active { cursor: grabbing; }
 .card.sortable-ghost { opacity: 0.3; }
 .card.sortable-chosen { outline: 1px solid var(--ink); outline-offset: 2px; }
+/* KANB-41: the brief highlight a card gets when a flight is suppressed
+   (over the 3-flight cap, or both source and target offscreen, or
+   reduced-motion). Two-second outline pulse — visible without motion,
+   so a user who has asked for less movement still sees "something
+   changed here". The colour is the only ink-on-paper "alarm" the
+   board already uses elsewhere (see .mark) — never a hue. */
+.card-highlight {
+  outline: 2px solid var(--ink);
+  outline-offset: -2px;
+  animation: card-highlight-pulse 1.6s ease-out 1;
+}
+@keyframes card-highlight-pulse {
+  from { outline-color: var(--ink); }
+  to   { outline-color: transparent; }
+}
+
+/* KANB-41: the moving ghost. position:fixed (so it can travel between
+   two boards' columns without scrolling them); pointer-events:none
+   (so it NEVER eats a click — the real card under it must remain
+   clickable); z-index high enough to sit above the board chrome but
+   below the modal stack. The ghost carries the card key (its task
+   key, in the same mono the card uses) so a reader can tell which
+   card moved, and nothing else — no title, no metadata, because the
+   goal is the "this card, from there to here" cue, not a re-render
+   of the card itself. */
+.card-flight {
+  position: fixed;
+  pointer-events: none;
+  z-index: 50;
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  padding: 0.3rem 0.6rem;
+  background: var(--paper);
+  border: 1px solid var(--ink);
+  color: var(--ink);
+  font-family: var(--font-mono);
+  font-size: var(--fs-1);
+  line-height: 1.2;
+  white-space: nowrap;
+  opacity: 0.7;
+  will-change: transform;
+  /* The flight itself animates via JS Web Animations API so the start
+     and end coordinates are pixel-accurate against the live DOM —
+     the CSS transition here is the safety net for any UA that does
+     not honour the Web Animations call (which is none today, but the
+     property stays set so the file's reduced-motion override below
+     kills the animation correctly either way). */
+  transition: transform 2s ease-in-out, opacity 2s ease-in-out;
+}
+/* Reduced motion: a flight is a movement, not a state — under
+   prefers-reduced-motion the ghost still appears, but without the
+   transition (the Web Animations API call's duration is already 0 in
+   that branch, see app.js). Keeping the rule here means a UA that
+   flips the preference while a flight is in flight kills the
+   remaining motion too. */
+@media (prefers-reduced-motion: reduce) {
+  .card-flight { transition: none; }
+  .card-highlight { animation: none; outline: 2px solid var(--ink); }
+}
 
 .card .head { display: flex; align-items: baseline; gap: 0.5rem; font-size: var(--fs-1); }
 .card .head .key { font-family: var(--font-mono); font-weight: 600; color: var(--ink); text-decoration: none; }

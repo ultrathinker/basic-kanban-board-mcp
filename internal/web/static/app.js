@@ -330,12 +330,24 @@
             appendNewChatEntries(fresh, doc);
             continue;
           }
+          // KANB-41: capture each card's screen position + column BEFORE
+          // the swap, so the post-swap diff (below) can fly a ghost from
+          // the real source to the real target. Skipping the very first
+          // refresh (no "before" state ever existed) is handled by the
+          // flag flipped in initFlights().
+          if (current.id === 'board') captureBoardSnapshot(current);
           var firstRow = current.querySelector('.row');
           var previousFirstRowText = firstRow ? firstRow.textContent.trim() : null;
           var progressState = captureProgressState(current);
           current.innerHTML = fresh.innerHTML;
           restoreProgressState(current, progressState);
           markNewRows(current, previousFirstRowText);
+          // KANB-41: after a board swap, fire the ghost flights for every
+          // card that changed column since the snapshot above. Each
+          // flight is one element, on its own layer, pointer-events:none,
+          // so the real card underneath is still fully clickable and the
+          // page can keep scrolling.
+          if (current.id === 'board') detectAndFlyCards(current, fresh);
         }
         // Every region has now either restored or refetched every chart
         // markProgressEventDirty flagged since the last refresh: the flags
@@ -496,6 +508,10 @@
           // The service ranks by "top" or "bottom" only, so anything that
           // did not land first is a bottom insert.
           var position = evt.newIndex === 0 ? 'top' : 'bottom';
+          // KANB-41: SortableJS already showed the user where the card
+          // went; remember the key so the next refresh does not fly a
+          // ghost on top of that animation.
+          rememberSelfMoved(card.getAttribute('data-task-key'));
           moveTask(card, columnName, position).then(function (ok) {
             if (ok || !evt.from || !evt.from.insertBefore) return;
             // Put the card back where it came from; the server rejected it.
@@ -519,10 +535,190 @@
       if (!card || !column) return;
       var url = sel.getAttribute('data-move-url') || '/fragments/move';
       card.setAttribute('data-move-url', url);
+      // KANB-41: the user just moved this card via the keyboard menu;
+      // remember the key so the next SSE refresh does not fly a ghost
+      // on top of the move the user already saw happen.
+      rememberSelfMoved(card.getAttribute('data-task-key'));
       moveTask(card, column, 'bottom').then(function (ok) {
         if (ok) toast(card.getAttribute('data-task-key') + ' → ' + column);
       });
     });
+  }
+
+  // -- 4b. card movement animation (KANB-41) ------------------------------
+  //
+  // A ghost carrying the card's key flies from the card's PREVIOUS
+  // position to its NEW position over ~2 seconds when an SSE refresh
+  // shows the card has moved between columns. The actual card is in
+  // its final state the moment the refresh swaps innerHTML; the ghost
+  // exists only to explain the change, never to delay it.
+  //
+  // The ghost layer is position:fixed and pointer-events:none, so it
+  // never intercepts clicks, never moves the page under the user's
+  // cursor, and never blocks the next refresh.
+  //
+  // Skip rules (per brief):
+  //   - First refresh ever: nothing existed before, nothing to fly.
+  //   - Both source and target offscreen: nothing to see, skip.
+  //   - User's own drag-and-drop: SortableJS already animated this;
+  //     remember the key for ~2.5s and skip the duplicate flight.
+  //   - Mass update: cap active flights at 3. Beyond that, briefly
+  //     highlight the destination card instead — the cue ("this moved")
+  //     survives without a screenful of overlapping ghosts.
+  //   - prefers-reduced-motion: no animation, just the highlight.
+  //   - Text-only changes: handled by the column-equality check below
+  //     (same column = no flight).
+
+  var FLIGHT_DURATION_MS = 2000;
+  var FLIGHT_MAX_ACTIVE = 3;
+  var SELF_MOVE_SKIP_MS = 2500;
+
+  // cardsSnapshot is the pre-refresh state of every visible card: key ->
+  // {column, rect}. Set by captureBoardSnapshot on every board refresh;
+  // consumed by detectAndFlyCards. Cleared by initFlights' first-call
+  // gate so the very first refresh has nothing to compare against.
+  var cardsSnapshot = null;
+  var flightsActive = 0;
+  var selfMovedKeys = {};
+
+  // captureBoardSnapshot walks the board region and records, for every
+  // card carrying data-task-key + data-column, the column it sits in
+  // AND the on-screen rectangle it occupies at this instant. The
+  // rectangle is captured via getBoundingClientRect here (not later),
+  // because once the swap runs the original DOM node is gone.
+  function captureBoardSnapshot(root) {
+    if (cardsSnapshot === null) {
+      // First ever refresh: there is no "before" to diff against. Seed
+      // the snapshot so subsequent refreshes CAN diff, but mark nothing
+      // moved this time.
+      cardsSnapshot = {};
+      return;
+    }
+    var next = {};
+    var cards = root.querySelectorAll('[data-task-key]');
+    for (var i = 0; i < cards.length; i++) {
+      var key = cards[i].getAttribute('data-task-key');
+      var col = cards[i].getAttribute('data-column');
+      if (!key || !col) continue;
+      next[key] = { column: col, rect: cards[i].getBoundingClientRect() };
+    }
+    cardsSnapshot = next;
+  }
+
+  // detectAndFlyCards compares the snapshot (pre-swap) against the
+  // fresh DOM (post-swap). For each card whose column changed, fly
+  // a ghost from the snapshot's rect to the fresh card's rect. A card
+  // that stayed put is not animated at all — that is the "text-only
+  // changes don't animate" rule (KANB-41) folded into the same check:
+  // column-equality means column-equality means nothing visibly changed.
+  function detectAndFlyCards(current, fresh) {
+    if (!cardsSnapshot) return;
+    var freshCards = fresh.querySelectorAll('[data-task-key]');
+    for (var i = 0; i < freshCards.length; i++) {
+      var key = freshCards[i].getAttribute('data-task-key');
+      var newCol = freshCards[i].getAttribute('data-column');
+      if (!key || !newCol) continue;
+      var before = cardsSnapshot[key];
+      if (!before) continue; // a brand-new card, no animation
+      if (before.column === newCol) continue; // no column change
+      // The card we just moved ourselves (SortableJS already showed
+      // the user where it went) — skip the second flight.
+      if (selfMovedKeys[key] && (Date.now() - selfMovedKeys[key]) < SELF_MOVE_SKIP_MS) continue;
+      var targetRect = freshCards[i].getBoundingClientRect();
+      flyCard(key, before.rect, targetRect);
+    }
+  }
+
+  // flyCard creates one ghost element, animates it from sourceRect to
+  // targetRect via Web Animations API (cancellable, GPU-accelerated,
+  // and the only way to drive a position:fixed element between two
+  // arbitrary pixels without touching layout), and removes it when
+  // the animation finishes. The Web Animations duration is 0 under
+  // prefers-reduced-motion, so the brief still passes that gate.
+  function flyCard(key, sourceRect, targetRect) {
+    var reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reduced || !isAnyVisible(sourceRect, targetRect)) {
+      // Source or target (or both) offscreen, or motion is suppressed:
+      // the brief says a brief highlight is enough. Highlight the
+      // destination card AFTER the swap so the user sees WHERE it
+      // landed, not just that it moved.
+      highlightCardByKey(key);
+      return;
+    }
+    if (flightsActive >= FLIGHT_MAX_ACTIVE) {
+      // Brief says up to three simultaneous flights; the rest fall
+      // back to highlight. Cap the visible flights, not the cue.
+      highlightCardByKey(key);
+      return;
+    }
+    var ghost = document.createElement('div');
+    ghost.className = 'card-flight';
+    ghost.setAttribute('aria-hidden', 'true');
+    ghost.textContent = key;
+    ghost.style.left = sourceRect.left + 'px';
+    ghost.style.top = sourceRect.top + 'px';
+    ghost.style.width = sourceRect.width + 'px';
+    document.body.appendChild(ghost);
+    flightsActive++;
+    var dx = targetRect.left - sourceRect.left;
+    var dy = targetRect.top - sourceRect.top;
+    var anim = ghost.animate(
+      [
+        { transform: 'translate(0, 0)', opacity: 0.7 },
+        { transform: 'translate(' + dx + 'px,' + dy + 'px)', opacity: 0.7 }
+      ],
+      {
+        duration: reduced ? 1 : FLIGHT_DURATION_MS,
+        easing: 'ease-in-out',
+        fill: 'forwards'
+      }
+    );
+    var done = function () {
+      flightsActive--;
+      if (ghost.parentNode) ghost.parentNode.removeChild(ghost);
+    };
+    if (anim && anim.finished && typeof anim.finished.then === 'function') {
+      anim.finished.then(done, done);
+    } else {
+      setTimeout(done, FLIGHT_DURATION_MS + 50);
+    }
+  }
+
+  // isAnyVisible returns true if at least one of the two rectangles is
+  // (even partially) inside the current viewport. Both offscreen =>
+  // no point flying a ghost that the reader cannot see.
+  function isAnyVisible(a, b) {
+    var vw = window.innerWidth || 0;
+    var vh = window.innerHeight || 0;
+    return rectVisible(a, vw, vh) || rectVisible(b, vw, vh);
+  }
+  function rectVisible(r, vw, vh) {
+    if (!r) return false;
+    return r.right > 0 && r.bottom > 0 && r.left < vw && r.top < vh;
+  }
+
+  // highlightCardByKey briefly pulses the destination card's outline,
+  // so a user still gets "this card moved" without a flight. Skipping
+  // the flight for any reason routes through here. The .card-highlight
+  // class is added and removed on a timer that matches the flight
+  // duration, so the cue length is consistent across all branches.
+  function highlightCardByKey(key) {
+    if (!key) return;
+    var card = document.querySelector('[data-task-key="' + key + '"]');
+    if (!card) return;
+    card.classList.add('card-highlight');
+    setTimeout(function () {
+      card.classList.remove('card-highlight');
+    }, FLIGHT_DURATION_MS - 200);
+  }
+
+  // rememberSelfMoved is called from the drag-and-drop handlers (Sortable
+  // + keyboard move menu) the moment a move is accepted by the server,
+  // so the next refresh — which will see the card in its new column —
+  // does not double-animate over the SortableJS move.
+  function rememberSelfMoved(key) {
+    if (!key) return;
+    selfMovedKeys[key] = Date.now();
   }
 
   // -- 5. acceptance checkboxes ------------------------------------------
