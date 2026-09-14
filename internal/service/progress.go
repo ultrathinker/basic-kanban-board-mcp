@@ -290,6 +290,9 @@ func (s *svc) ProjectProgress(ctx context.Context, a Actor, in ProjectProgressIn
 		}
 		result.TotalTasks = live.TotalTasks
 		result.DoneTasks = live.DoneTasks
+		// KANB-35: the estimate-weighted figure, from the same counts, so the
+		// two automatic numbers on the page cannot describe different boards.
+		result.Readiness = readinessFrom(live, p.EstimateUnit)
 		if share, ok := autoPercent(result.DoneTasks, result.TotalTasks); ok {
 			result.Auto = &share
 		}
@@ -352,7 +355,7 @@ func (s *svc) ProgressHistory(ctx context.Context, a Actor, in ProgressHistoryIn
 			if err != nil {
 				return err
 			}
-			result.Replay = buildHistoryPoints(entries)
+			result.Replay = buildHistoryPoints(entries, p.EstimateUnit)
 			origin, err := s.store.TaskHistory().Origin(tx)
 			if err != nil {
 				return err

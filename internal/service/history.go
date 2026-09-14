@@ -311,11 +311,16 @@ type HistoryPoint struct {
 	// carries the old value alongside the new one.
 	EstimateTotal float64
 	EstimateDone  float64
+	// Readiness is the estimate-weighted readiness at this instant, computed
+	// from the estimates that were current THEN (KANB-35). It carries its own
+	// basis, coverage and the sentence a renderer must print beside the curve.
+	Readiness EstimateReadiness
 }
 
-func pointAt(at time.Time, c boardCounts) HistoryPoint {
+func pointAt(at time.Time, c boardCounts, unit string) HistoryPoint {
 	return HistoryPoint{
 		At:              at,
+		Readiness:       readinessFrom(c, unit),
 		TotalTasks:      c.TotalTasks,
 		OpenTasks:       c.OpenTasks,
 		DoneTasks:       c.DoneTasks,
@@ -336,7 +341,7 @@ func pointAt(at time.Time, c boardCounts) HistoryPoint {
 // starts at the origin instant has no line before it, which is the honest
 // answer: that history was never recorded and cannot be recovered from
 // created_at without inventing the half nobody can see.
-func buildHistoryPoints(entries []store.TaskHistoryEntry) []HistoryPoint {
+func buildHistoryPoints(entries []store.TaskHistoryEntry, unit string) []HistoryPoint {
 	if len(entries) == 0 {
 		return nil
 	}
@@ -347,7 +352,7 @@ func buildHistoryPoints(entries []store.TaskHistoryEntry) []HistoryPoint {
 		if i+1 < len(entries) && entries[i+1].TS.Equal(e.TS) {
 			continue
 		}
-		out = append(out, pointAt(e.TS, w.counts()))
+		out = append(out, pointAt(e.TS, w.counts(), unit))
 	}
 	return out
 }

@@ -747,6 +747,13 @@ type ProjectProgressResult struct {
 	// purpose as TaskProgressItem.Tracks, for the project-level scope. Empty
 	// when nobody assessed the project as a whole.
 	ManualTracks []AssessorTrack
+	// Readiness is the estimate-weighted readiness of the board right now
+	// (KANB-35): finished effort over all estimated effort, over the
+	// unarchived LEAVES of the tree, with its coverage and basis attached.
+	// It sits beside Auto rather than replacing it — Auto counts cards, this
+	// weighs them — and both are computed from the same counts, so they
+	// cannot end up describing different boards.
+	Readiness EstimateReadiness
 	// HistoryStartsAt is the instant from which the board's lifecycle journal
 	// is trustworthy — the moment migration 0006 ran (KANB-30). Everything
 	// before it happened while nothing was recording: cards moved, were

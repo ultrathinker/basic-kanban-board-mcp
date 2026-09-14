@@ -460,7 +460,7 @@ func TestReplay_DrawsNothingBeforeTheOrigin(t *testing.T) {
 	makeBacklogTask(t, env, "two")
 
 	origin := readOrigin(t, env)
-	for _, p := range buildHistoryPoints(journalOf(t, env)) {
+	for _, p := range buildHistoryPoints(journalOf(t, env), "h") {
 		if p.At.Before(origin) {
 			t.Fatalf("history point at %s predates the journal origin %s", p.At, origin)
 		}
