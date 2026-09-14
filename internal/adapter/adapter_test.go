@@ -86,6 +86,25 @@ func TestUnavailableResumeUsesVisibleCheckpointFallback(t *testing.T) {
 	}
 }
 
+func TestSecondInstanceForSameIdentityRefuses(t *testing.T) {
+	workDir := t.TempDir()
+	first, err := AcquireInstance("worker-token", "session-a", workDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Release()
+	if _, err := AcquireInstance("worker-token", "session-a", workDir); !errors.Is(err, ErrInstanceHeld) {
+		t.Fatalf("second instance error = %v", err)
+	}
+}
+
+func TestCapabilityTableHasNoImplicitSupport(t *testing.T) {
+	capabilities := ConfirmedCapabilities()
+	if len(capabilities) != 1 || capabilities[0].InputWhileActive == "" || capabilities[0].CrashRecovery == "" {
+		t.Fatalf("capabilities = %#v", capabilities)
+	}
+}
+
 func TestReceiveSurvivesCrashAfterPagePersistence(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	store, err := OpenStore(path, "https://board.example", "KANB", "worker-token")

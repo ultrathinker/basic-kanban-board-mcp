@@ -41,6 +41,14 @@ func run(args []string) error {
 	if strings.TrimSpace(*url) == "" || strings.TrimSpace(*project) == "" || strings.TrimSpace(*identity) == "" {
 		return errors.New("--url, --project, and --identity are required")
 	}
+	if *workdir == "" {
+		return errors.New("--workdir is required for the durable worker registry")
+	}
+	lock, err := adapter.AcquireInstance(*identity, *session, *workdir)
+	if err != nil {
+		return err
+	}
+	defer lock.Release()
 	token := strings.TrimSpace(os.Getenv("KANBAN_ADAPTER_TOKEN"))
 	if token == "" {
 		return errors.New("KANBAN_ADAPTER_TOKEN is required and is never stored in adapter state")
@@ -51,9 +59,6 @@ func run(args []string) error {
 	}
 	if *workerID == "" {
 		*workerID = *identity
-	}
-	if *workdir == "" {
-		return errors.New("--workdir is required for the durable worker registry")
 	}
 	if err := store.UpsertWorker(adapter.Worker{WorkerID: *workerID, Role: *role, Provider: *runnerName, SessionID: *session, WorkDir: *workdir, CurrentTask: *task}); err != nil {
 		return err
