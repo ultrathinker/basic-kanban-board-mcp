@@ -188,7 +188,14 @@ func (w *replayWalker) noteColumn(id *string, kind *domain.Kind) {
 }
 
 func (w *replayWalker) apply(e store.TaskHistoryEntry) {
-	w.noteColumn(e.FromColumn, e.FromKind)
+	// noteColumn(FromColumn, FromKind) was here. It is dead: every entry
+	// that names a from-column also implies the same column was a to-column
+	// on some earlier entry (exists/created/moved/column_kind), and that
+	// earlier entry already registered the kind via noteColumn(ToColumn,
+	// ToKind). A column_kind entry names the same id in both From and To,
+	// so the second noteColumn overwrites the first regardless. The line
+	// read like insurance and left a false impression that the replay
+	// recovers the from-kind from the move entry — it does not need to.
 	w.noteColumn(e.ToColumn, e.ToKind)
 	if e.Kind == store.HistoryColumnKind {
 		return
