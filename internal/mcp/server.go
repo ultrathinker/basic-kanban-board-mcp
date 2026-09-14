@@ -21,7 +21,7 @@ import (
 // initialize.
 const ServerName = "basic-kanban-board-mcp"
 
-// NewServer builds the full nine-tool MCP server. version is the build
+// NewServer builds the full thirteen-tool MCP server. version is the build
 // version reported in the MCP Implementation block (cmd/kanban's -X-linked
 // version string).
 func NewServer(svc service.Service, version string) *gomcp.Server {
@@ -40,17 +40,37 @@ func NewServer(svc service.Service, version string) *gomcp.Server {
 	registerProjectPost(s, svc)
 	registerProgressSet(s, svc)
 	registerProgressHistory(s, svc)
+	// board_guide is the first tool whose own response carries the
+	// registry snapshot (count + per-tool description + parameter list).
+	// Building the snapshot here — rather than inside the tool — keeps
+	// the registry walk to one place: the moment a new toolXTool()
+	// factory is appended below, board_guide sees it on the next call.
+	registerBoardGuide(s, svc, specsFromTools([]func() *gomcp.Tool{
+		boardGetTool,
+		taskNextTool,
+		taskGetTool,
+		taskCreateTool,
+		taskUpdateTool,
+		taskLinkTool,
+		taskClaimTool,
+		taskRemoveTool,
+		projectUpsertTool,
+		projectPostTool,
+		progressSetTool,
+		progressHistoryTool,
+		boardGuideTool,
+	}))
 	s.AddReceivingMiddleware(schemaErrorEnvelope)
 	return s
 }
 
-// NewReadOnlyServer builds the four-tool /mcp/readonly server (PLAN §6
-// rule 4): board_get, task_get, task_next with claim/start disabled, and
-// progress_history — a read, so it belongs on the no-write-scope surface
-// the same as the other three, unlike progress_set which never appears
-// here. It shares every line of translation logic with the full server via
-// the same register* functions — only which tools are registered, and
-// task_next's readOnly flag, differ.
+// NewReadOnlyServer builds the five-tool /mcp/readonly server (PLAN §6
+// rule 4 + KANB-42): board_get, task_get, task_next with claim/start
+// disabled, progress_history, and board_guide — a read, so it belongs
+// on the no-write-scope surface the same as the other three. It shares
+// every line of translation logic with the full server via the same
+// register* functions — only which tools are registered, and task_next's
+// readOnly flag, differ.
 func NewReadOnlyServer(svc service.Service, version string) *gomcp.Server {
 	s := gomcp.NewServer(&gomcp.Implementation{Name: ServerName + "-readonly", Version: version}, &gomcp.ServerOptions{
 		Instructions: instructionsText,
@@ -59,6 +79,13 @@ func NewReadOnlyServer(svc service.Service, version string) *gomcp.Server {
 	registerTaskGet(s, svc)
 	registerTaskNext(s, svc, true)
 	registerProgressHistory(s, svc)
+	registerBoardGuide(s, svc, specsFromTools([]func() *gomcp.Tool{
+		boardGetTool,
+		taskGetTool,
+		taskNextTool,
+		progressHistoryTool,
+		boardGuideTool,
+	}))
 	s.AddReceivingMiddleware(schemaErrorEnvelope)
 	return s
 }

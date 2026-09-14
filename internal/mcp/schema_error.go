@@ -37,6 +37,7 @@ func buildToolInputSchemas() map[string]*jsonschema.Schema {
 		boardGetTool(), taskNextTool(), taskGetTool(), taskCreateTool(),
 		taskUpdateTool(), taskLinkTool(), taskClaimTool(), taskRemoveTool(),
 		projectUpsertTool(), projectPostTool(), progressSetTool(), progressHistoryTool(),
+		boardGuideTool(),
 	}
 	m := make(map[string]*jsonschema.Schema, len(tools))
 	for _, t := range tools {

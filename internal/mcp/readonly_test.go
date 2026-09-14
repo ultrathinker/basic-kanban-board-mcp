@@ -7,12 +7,14 @@ import (
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/service"
 )
 
-// TestReadOnly_ExactlyFourToolsListed pins the read-only server's exposed
-// surface (PLAN §6 rule 4): board_get, task_get, task_next, and
-// progress_history — a read, so it belongs here too, unlike progress_set
-// and every other mutating tool, which must not even be advertised so a
+// TestReadOnly_ExactlyFiveToolsListed pins the read-only server's exposed
+// surface (PLAN §6 rule 4 + KANB-42): board_get, task_get, task_next,
+// progress_history, and board_guide — five reads, with board_guide being
+// the only one that touches the registry. Mutating tools (progress_set,
+// task_create, task_update, task_link, task_claim, task_remove,
+// project_upsert, project_post) must not even be advertised so a
 // misconfigured client cannot reach them without flipping the endpoint.
-func TestReadOnly_ExactlyFourToolsListed(t *testing.T) {
+func TestReadOnly_ExactlyFiveToolsListed(t *testing.T) {
 	t.Parallel()
 	cs, _ := roundtripServer(t, NewReadOnlyServer)
 
@@ -20,11 +22,11 @@ func TestReadOnly_ExactlyFourToolsListed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
-	if len(res.Tools) != 4 {
-		t.Fatalf("tools count = %d, want 4 (got %v)", len(res.Tools), names(res.Tools))
+	if len(res.Tools) != 5 {
+		t.Fatalf("tools count = %d, want 5 (got %v)", len(res.Tools), names(res.Tools))
 	}
 	want := map[string]bool{
-		"board_get": false, "task_get": false, "task_next": false, "progress_history": false,
+		"board_get": false, "task_get": false, "task_next": false, "progress_history": false, "board_guide": false,
 	}
 	for _, tl := range res.Tools {
 		want[tl.Name] = true
