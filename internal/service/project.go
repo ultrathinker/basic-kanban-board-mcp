@@ -311,7 +311,7 @@ func validateColumnSpecs(specs []ColumnSpec) error {
 		seen[lname] = true
 		if !cs.Kind.Valid() {
 			return domain.Invalid("kind", fmt.Sprintf("column kind %q is invalid", cs.Kind),
-				"Use one of: backlog, active, done.")
+				"Use one of: backlog, active, done, waiting.")
 		}
 		if cs.WIPLimit != nil {
 			// A WIP limit only means anything on an active column (it is the

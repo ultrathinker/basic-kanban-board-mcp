@@ -110,8 +110,25 @@ func parseMigrationName(name string) (int, string, error) {
 // records the version. Splitting the DDL into multiple statements in a
 // single tx is fine: modernc executes them one by one on the same
 // connection.
+//
+// foreign_keys is toggled off around the transaction and checked
+// afterward for every migration, not only the ones that happen to need it
+// (0009 is the first): PRAGMA foreign_keys is a documented no-op inside an
+// already-open transaction, so a migration file cannot toggle it itself,
+// and a table rebuild (SQLite's only way to change a CHECK constraint or a
+// column's type) drops the referenced side of a foreign key, which — with
+// enforcement on — performs an implicit delete of every row first and
+// trips any ON DELETE RESTRICT even though nothing is really being deleted
+// for good. The off/on toggle is a no-op in effect for a migration that
+// never touches a referenced table, and the writer pool's single
+// connection (SetMaxOpenConns(1)) guarantees the PRAGMA and the
+// transaction that follows it land on the very same connection.
 func (s *sqlStore) applyOneMigration(ctx context.Context, m migration) error {
-	return s.Write(ctx, func(t Tx) error {
+	if _, err := s.writer.ExecContext(ctx, "PRAGMA foreign_keys=OFF"); err != nil {
+		return fmt.Errorf("disable foreign_keys for migration %s: %w", m.name, err)
+	}
+
+	writeErr := s.Write(ctx, func(t Tx) error {
 		tx := t.(*txWrap).tx
 		if _, err := tx.ExecContext(ctx, m.body); err != nil {
 			return fmt.Errorf("execute: %w", err)
@@ -128,4 +145,28 @@ func (s *sqlStore) applyOneMigration(ctx context.Context, m migration) error {
 		}
 		return nil
 	})
+	if _, err := s.writer.ExecContext(ctx, "PRAGMA foreign_keys=ON"); err != nil {
+		if writeErr != nil {
+			return fmt.Errorf("migration %s failed (%v), and re-enabling foreign_keys also failed: %w", m.name, writeErr, err)
+		}
+		return fmt.Errorf("re-enable foreign_keys after migration %s: %w", m.name, err)
+	}
+	if writeErr != nil {
+		return writeErr
+	}
+
+	// A rebuild that silently dropped or mis-copied a referenced row would
+	// otherwise surface as a dangling column_id months later, on whatever
+	// row happens to be read next. Checking right here, once, with
+	// enforcement freshly back on, turns that into a failed migration
+	// instead.
+	rows, err := s.writer.QueryContext(ctx, "PRAGMA foreign_key_check")
+	if err != nil {
+		return fmt.Errorf("post-migration foreign_key_check for %s: %w", m.name, err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		return fmt.Errorf("migration %s left dangling foreign key references", m.name)
+	}
+	return rows.Err()
 }

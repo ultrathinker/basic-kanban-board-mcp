@@ -18,11 +18,20 @@ const (
 	KindBacklog Kind = "backlog"
 	KindActive  Kind = "active"
 	KindDone    Kind = "done"
+	// KindWaiting marks a column as parked rather than active work (KANB-52):
+	// visible and counted as open, but not a task_next candidate, not part
+	// of any active column's WIP, and not a source of "done" for anything
+	// it blocks. It exists so a project can name that state explicitly
+	// instead of overloading an active column for it (the workaround this
+	// card replaces). No project gets one by default, and no existing
+	// column's kind changes because of this constant: a column becomes
+	// "waiting" only when a caller sets it explicitly.
+	KindWaiting Kind = "waiting"
 )
 
 func (k Kind) Valid() bool {
 	switch k {
-	case KindBacklog, KindActive, KindDone:
+	case KindBacklog, KindActive, KindDone, KindWaiting:
 		return true
 	}
 	return false

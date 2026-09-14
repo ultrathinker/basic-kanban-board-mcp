@@ -332,7 +332,12 @@ func CheckMove(c MoveCheck) error {
 		}
 		return nil
 	}
-	if c.EnforceDependencies && c.To.Kind != KindBacklog && len(c.OpenBlocks) > 0 {
+	// KindWaiting is exempt from the dependency check the same way KindBacklog
+	// is (KANB-52): parking a task while its blocker is still open is exactly
+	// the scenario this column exists for, and the two share a source file on
+	// purpose — a future change to this rule cannot touch one exception
+	// without seeing the other sitting right next to it.
+	if c.EnforceDependencies && c.To.Kind != KindBacklog && c.To.Kind != KindWaiting && len(c.OpenBlocks) > 0 {
 		return Blocked(c.TaskKey, c.OpenBlocks)
 	}
 	if c.To.Kind == KindActive && c.To.WIPLimit != nil && c.ToCount >= *c.To.WIPLimit {
