@@ -369,3 +369,67 @@ func TestChatAdd_LegacyCallUnchanged(t *testing.T) {
 		t.Fatalf("ChatList = %+v, want the one legacy message", page.Messages)
 	}
 }
+
+// TestChatAdd_IdempotencyKeyIsPerProject: one token reusing one key across
+// two projects must not be told "ok, here is your message" with the FIRST
+// project's message id — that silently drops the second publication (its
+// feed stays empty) while the response names a project the message is not
+// in. The destination is part of the content, so a project mismatch is an
+// idempotency_mismatch, same as a body difference. Inside ONE project the
+// key keeps deduplicating as before.
+func TestChatAdd_IdempotencyKeyIsPerProject(t *testing.T) {
+	env := openTestEnv(t)
+	ctx := context.Background()
+	other := seedSecondProject(t, env)
+
+	first, err := env.svc.ChatAdd(ctx, env.actor, ChatAddInput{
+		ProjectKey: env.proj.Key, Author: "a", Body: "same content", Kind: "update", IdempotencyKey: "K-X",
+	})
+	if err != nil {
+		t.Fatalf("first post: %v", err)
+	}
+
+	_, err = env.svc.ChatAdd(ctx, env.actor, ChatAddInput{
+		ProjectKey: other.Key, Author: "a", Body: "same content", Kind: "update", IdempotencyKey: "K-X",
+	})
+	de := domain.AsError(err)
+	if de == nil || de.Code != domain.CodeIdempotencyMismatch {
+		t.Fatalf("same key in another project: got %v, want idempotency_mismatch", err)
+	}
+	if !strings.Contains(de.Message, env.proj.Key) {
+		t.Fatalf("conflict message %q does not name the project where the key is already taken", de.Message)
+	}
+
+	// The refusal created nothing: the second project's feed is empty, and
+	// exactly one message exists in the first.
+	otherFeed, err := env.svc.ChatFeed(ctx, env.actor, ChatFeedInput{ProjectKey: other.Key})
+	if err != nil {
+		t.Fatalf("other feed: %v", err)
+	}
+	if len(otherFeed.Messages) != 0 {
+		t.Fatalf("the refused post leaked %d messages into %s", len(otherFeed.Messages), other.Key)
+	}
+	firstFeed, err := env.svc.ChatFeed(ctx, env.actor, ChatFeedInput{ProjectKey: env.proj.Key})
+	if err != nil {
+		t.Fatalf("first feed: %v", err)
+	}
+	if len(firstFeed.Messages) != 1 || firstFeed.Messages[0].Message.ID != first.ID {
+		t.Fatalf("first project feed = %+v, want exactly the original message", firstFeed.Messages)
+	}
+
+	// Within the original project the key still deduplicates: same content
+	// returns the same message, and the response's project is where the
+	// message actually lives.
+	again, err := env.svc.ChatAdd(ctx, env.actor, ChatAddInput{
+		ProjectKey: env.proj.Key, Author: "a", Body: "same content", Kind: "update", IdempotencyKey: "K-X",
+	})
+	if err != nil {
+		t.Fatalf("in-project replay: %v", err)
+	}
+	if again.ID != first.ID {
+		t.Fatalf("in-project replay returned %s, want the original %s", again.ID, first.ID)
+	}
+	if again.ProjectID != env.proj.ID {
+		t.Fatalf("replayed message project = %s, want the requested project %s", again.ProjectID, env.proj.ID)
+	}
+}

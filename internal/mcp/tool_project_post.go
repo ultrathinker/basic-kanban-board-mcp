@@ -26,7 +26,7 @@ type projectPostInput struct {
 	// command means the project's coordinator AT SEND TIME.
 	Recipient      string `json:"recipient,omitempty" jsonschema:"tokens.id of one participant, or \"all\"; empty = the project coordinator for question/command"`
 	ReplyTo        string `json:"reply_to,omitempty" jsonschema:"id of the message this one answers, same project"`
-	IdempotencyKey string `json:"idempotency_key,omitempty" jsonschema:"stable key of ONE send: the same key with the same content returns the existing message, different content is an error; lives as long as the message"`
+	IdempotencyKey string `json:"idempotency_key,omitempty" jsonschema:"stable key of ONE send: the same key with the same content returns the existing message, different content (including a different project) is an error; lives as long as the message"`
 }
 
 type projectPostData struct {
@@ -154,6 +154,11 @@ func registerProjectPost(s *gomcp.Server, svc service.Service) {
 			return errorResult(opProjectPost, derr), projectPostOutput{OK: false, Op: opProjectPost, Error: newErrorEnvelope(derr)}, nil
 		}
 
+		// `key` is the canonical form of the REQUESTED project, and the
+		// service guarantees a returned message always lives in the project
+		// it was asked for (a dedup hit in another project is refused as an
+		// idempotency mismatch, not echoed) — so Project here is the factual
+		// project of msg, not a request echo.
 		out := projectPostOutput{
 			OK: true,
 			Op: opProjectPost,

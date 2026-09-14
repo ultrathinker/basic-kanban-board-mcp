@@ -339,3 +339,86 @@ func TestTaskCreate_AcceptanceSurvivesRestart(t *testing.T) {
 		t.Fatalf("board holds %d tasks after restart+replay, want 1 — the replay created a second batch", total)
 	}
 }
+
+// TestTaskCreate_AcceptanceReplayIsStrictContent: "same content" for an
+// acceptance replay means EVERY field the caller sent. The command message
+// is the identity, the batch is the content — so a replay differing in the
+// reviewer, the recorded actuals, the client's ref handles or the per-item
+// idempotency keys must conflict loudly instead of silently reusing the
+// original batch with those fields dropped.
+func TestTaskCreate_AcceptanceReplayIsStrictContent(t *testing.T) {
+	env := openAcceptanceEnv(t)
+
+	rev, other := "lead", "kira"
+	act, newAct := 1.5, 2.5
+	full := acceptBatch()
+	full[0].Reviewer = &rev
+	full[0].Actual = &act
+	full[0].Ref = "ref-1"
+	full[0].IdempotencyKey = "item-key-1"
+	// Two checks so a reorder is a real content change: acceptance_check
+	// rows are index-based, so [a, b] and [b, a] are different batches.
+	full[0].Acceptance = []string{"report exists", "report reviewed"}
+
+	res, err := accept(t, env, env.executor, full)
+	if err != nil {
+		t.Fatalf("accept with full content: %v", err)
+	}
+	if res.AlreadyAccepted || len(res.Tasks) != 1 {
+		t.Fatalf("first acceptance = %+v (already=%v)", res.Tasks, res.AlreadyAccepted)
+	}
+	originalKey := res.Tasks[0].Key
+	if *res.Tasks[0].Reviewer != rev || *res.Tasks[0].Actual != act {
+		t.Fatalf("accepted task dropped reviewer/actual: %+v", res.Tasks[0])
+	}
+
+	// The byte-identical replay is still the same acceptance.
+	again, err := accept(t, env, env.executor, full)
+	if err != nil {
+		t.Fatalf("exact replay: %v", err)
+	}
+	if !again.AlreadyAccepted || again.Tasks[0].Key != originalKey {
+		t.Fatalf("exact replay = %+v, want already_accepted with %s", again.Tasks, originalKey)
+	}
+
+	mutations := []struct {
+		name   string
+		mutate func(*NewTask)
+	}{
+		{"changed reviewer", func(n *NewTask) { n.Reviewer = &other }},
+		{"changed actual", func(n *NewTask) { n.Actual = &newAct }},
+		{"changed ref", func(n *NewTask) { n.Ref = "ref-2" }},
+		{"changed per-item idempotency key", func(n *NewTask) { n.IdempotencyKey = "item-key-2" }},
+		{"cleared reviewer", func(n *NewTask) { n.Reviewer = nil }},
+		{"reordered acceptance checks", func(n *NewTask) { n.Acceptance = []string{"report reviewed", "report exists"} }},
+	}
+	for _, tc := range mutations {
+		t.Run(tc.name, func(t *testing.T) {
+			mutated := append([]NewTask(nil), full...)
+			tc.mutate(&mutated[0])
+			_, err := accept(t, env, env.executor, mutated)
+			de := domain.AsError(err)
+			if de == nil || de.Code != domain.CodeIdempotencyMismatch {
+				t.Fatalf("mutated replay (%s): got %v, want idempotency_mismatch", tc.name, err)
+			}
+		})
+	}
+
+	// None of the refusals created anything: the board still holds exactly
+	// the original task.
+	board, err := env.svc.BoardGet(context.Background(), env.actor, BoardGetInput{ProjectKey: env.proj.Key, View: ViewTasks})
+	if err != nil {
+		t.Fatalf("board_get: %v", err)
+	}
+	total := 0
+	keys := map[string]bool{}
+	for _, c := range board.Projects[0].Columns {
+		for _, tv := range c.Tasks {
+			total++
+			keys[tv.Key] = true
+		}
+	}
+	if total != 1 || !keys[originalKey] {
+		t.Fatalf("board holds %d tasks %v after the refused replays, want only the original %s", total, keys, originalKey)
+	}
+}

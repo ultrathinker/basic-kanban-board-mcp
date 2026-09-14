@@ -87,6 +87,26 @@ func (s *svc) ChatAdd(ctx context.Context, a Actor, in ChatAddInput) (*domain.Ch
 				return err
 			}
 			if existing != nil {
+				// The key's scope is the sender's token, but the message's
+				// destination is part of its content: the same key aimed at a
+				// different project asks to store a different message under an
+				// identity that is already taken. Replying ok with the first
+				// project's message id would silently drop this publication —
+				// the second project's feed would stay empty while the caller
+				// believes it was delivered — so it is refused as a mismatch,
+				// exactly like any other content difference.
+				if existing.ProjectID != p.ID {
+					other := existing.ProjectID
+					if otherProject, err := s.store.Projects().GetByID(tx, existing.ProjectID); err == nil {
+						other = otherProject.Key
+					}
+					return &domain.Error{
+						Code: domain.CodeIdempotencyMismatch,
+						Message: fmt.Sprintf(
+							"idempotency key %q was already used for a message in project %s", idemKey, other),
+						Remediation: "Send to the original project to receive the original message, or use a new key for this project.",
+					}
+				}
 				if existing.Kind != kind || existing.Recipient != recipient ||
 					existing.ReplyToID != replyTo || existing.Body != in.Body {
 					return &domain.Error{

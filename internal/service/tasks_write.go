@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -520,15 +521,97 @@ func (s *svc) acceptanceReplayViews(tx store.Tx, cc *columnCache, pc *projectCac
 	return out, nil
 }
 
+// acceptanceItemContent is the acceptance replay's projection of one
+// NewTask item: EVERY field the caller sent. It deliberately differs from
+// idemContent — the 24h task_create replay projection — which ignores Ref
+// and IdempotencyKey because there the key is the identity and a differing
+// ref must still count as the same retry. For an acceptance the COMMAND
+// message is the identity and the batch is the content, so a replay that
+// differs in reviewer, recorded actuals, client ref handles, per-item
+// idempotency keys, or any other field is a different request and must
+// conflict rather than silently reuse the original batch with fields
+// dropped on the floor.
+//
+// Canonicalization mirrors hashNewTask where the semantics agree: Metadata
+// keys sorted, set-like slices (Tags, BlockedBy) sorted, DueAt normalised
+// to UTC. Acceptance criteria keep their order — acceptance_check rows are
+// index-based, so [a, b] and [b, a] create different checks and are
+// different content.
+type acceptanceItemContent struct {
+	ProjectKey     string          `json:"project"`
+	Title          string          `json:"title"`
+	Body           string          `json:"body"`
+	Type           domain.Type     `json:"type"`
+	Priority       domain.Priority `json:"priority"`
+	Estimate       *float64        `json:"estimate,omitempty"`
+	Actual         *float64        `json:"actual,omitempty"`
+	Tags           []string        `json:"tags"`
+	Assignee       *string         `json:"assignee,omitempty"`
+	Reviewer       *string         `json:"reviewer,omitempty"`
+	Column         string          `json:"column"`
+	Parent         string          `json:"parent"`
+	BlockedBy      []string        `json:"blocked_by"`
+	Acceptance     []string        `json:"acceptance"`
+	DueAt          *time.Time      `json:"due_at,omitempty"`
+	Metadata       map[string]any  `json:"metadata"`
+	Ref            string          `json:"ref"`
+	IdempotencyKey string          `json:"idempotency_key"`
+}
+
+// hashAcceptanceItem projects one item into acceptanceItemContent and hashes
+// the canonical JSON form.
+func hashAcceptanceItem(n NewTask) (string, error) {
+	item := acceptanceItemContent{
+		ProjectKey:     domain.NormalizeProjectKey(n.ProjectKey),
+		Title:          n.Title,
+		Body:           n.Body,
+		Type:           n.Type,
+		Priority:       n.Priority,
+		Estimate:       n.Estimate,
+		Actual:         n.Actual,
+		Assignee:       n.Assignee,
+		Reviewer:       n.Reviewer,
+		Column:         n.Column,
+		Parent:         n.Parent,
+		Metadata:       sortedMetadata(n.Metadata),
+		Ref:            n.Ref,
+		IdempotencyKey: n.IdempotencyKey,
+	}
+	if n.Tags != nil {
+		item.Tags = append([]string(nil), n.Tags...)
+		sort.Strings(item.Tags)
+	}
+	if n.BlockedBy != nil {
+		item.BlockedBy = append([]string(nil), n.BlockedBy...)
+		sort.Strings(item.BlockedBy)
+	}
+	if n.Acceptance != nil {
+		item.Acceptance = append([]string(nil), n.Acceptance...)
+	}
+	if n.DueAt != nil {
+		t := n.DueAt.UTC()
+		item.DueAt = &t
+	}
+	enc, err := json.Marshal(item)
+	if err != nil {
+		return "", fmt.Errorf("acceptance: hash batch item: %w", err)
+	}
+	sum := sha256.Sum256(enc)
+	return hex.EncodeToString(sum[:]), nil
+}
+
 // hashAcceptedBatch fingerprints the content of an accepted batch: the
-// command message id plus every item's canonical task hash, in order. Two
-// acceptances of one command with equal fingerprints are the same acceptance;
-// anything else is different content and must conflict, not silently extend.
+// command message id plus every item's FULL sent content, in order. Two
+// acceptances of one command with equal fingerprints are the same
+// acceptance; anything else — a changed reviewer, changed actuals, changed
+// refs or per-item idempotency keys, reordered acceptance checks, a
+// different batch — is different content and must conflict, not silently
+// extend and not silently reuse.
 func hashAcceptedBatch(messageID string, tasks []NewTask) (string, error) {
 	h := sha256.New()
 	h.Write([]byte(messageID))
 	for _, nt := range tasks {
-		item, err := hashNewTask(nt)
+		item, err := hashAcceptanceItem(nt)
 		if err != nil {
 			return "", err
 		}
