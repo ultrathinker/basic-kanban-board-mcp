@@ -42,12 +42,17 @@
 </header>
 
 {{- /* KANB-20: the two project-level progress metrics ("assessed" / "tasks
-     done") plus the Thoughts toggle move to their own centered row under
-     the header, per the owner's request — the header itself is otherwise
-     untouched. #project-progress keeps its id (KANB-12's live-refresh
-     target) and .proj-progress-group keeps display:contents so the two bars
-     still sit side by side exactly as before; only the row that contains
-     them moved.
+     done") move to their own centered row under the header, per the
+     owner's request — the header itself is otherwise untouched.
+     #project-progress keeps its id (KANB-12's live-refresh target) and
+     .proj-progress-group keeps display:contents so the two bars still sit
+     side by side exactly as before; only the row that contains them moved.
+
+     KANB-33: the Thoughts toggle is gone from this row — the owner's
+     request is that the panel's controls live on the panel itself, not
+     in the project header. The row is now ONLY the progress metrics;
+     the chart and thoughts toggles, plus the collapse-panel control, are
+     inside #chat-panel (see below).
 
      The row is rendered UNCONDITIONALLY, and an empty one is collapsed by
      CSS (.page-subhead with no metric and no button -> display:none) rather
@@ -76,8 +81,6 @@
   {{- if .ManualProgress}}<span class="proj-progress" title="Manual progress: the mean of the latest AI assessments of this project. Task-level marks are not included."><span class="caps text-subtle">assessed</span>{{template "progress-bar" (dict "Progress" .ManualProgress)}}</span>{{end}}
   {{- if .AutoProgress}}<span class="proj-progress" title="Automatic progress: the share of this project's tasks sitting in done columns. Computed from the board, not from any assessment."><span class="caps text-subtle">tasks done</span>{{template "progress-bar" (dict "Progress" .AutoProgress)}}</span>{{end}}
   </span>
-  {{if .Chat}}<button type="button" class="btn btn-sm" data-chat-toggle
-        aria-expanded="false" aria-controls="chat-panel">Thoughts</button>{{end}}
 </div>
 
 {{template "focus-banner" (dict "Focus" .Focus)}}
@@ -94,84 +97,132 @@
 
 {{- /* Split layout: the thoughts panel (when open) takes a fixed-ish left
      column and the whole board compresses proportionally to its right —
-     every column stays visible, no horizontal scroll. The server always
-     renders the closed state; app.js restores the persisted state and
-     toggles the class. With no chat content at all (read failed) neither
-     the button above nor the panel below renders. data-chat-project feeds
-     app.js the project key for the "older messages" endpoint. */ -}}
-<div class="board-split{{if .ChatOpen}} is-open{{end}}" data-chat-split data-chat-project="{{.Project.Key}}">
-  {{- /* The left column holds two things, in this order: the progress chart
-       and the thoughts feed. The chart used to open inline underneath the
-       metric it belongs to, which pushed the whole board down the moment it
-       appeared; the owner asked for it here instead, so opening a chart
-       moves nothing on the right-hand side. There is exactly ONE chart slot
-       on the page, shared by every clickable bar — opening a second metric
-       replaces the first rather than stacking.
+     every column stays visible, no horizontal scroll. KANB-33: the server
+     always renders the OPEN state — charts and thoughts visible, panel
+     expanded — and app.js restores the persisted per-project state from
+     localStorage (chart visibility, thoughts visibility, panel collapse)
+     before first paint, applying a one-time reset of the pre-KANB-33
+     "closed" default at the same time. data-chat-project feeds app.js
+     the project key for the "older messages" endpoint and the panel-state
+     localStorage namespace. */ -}}
+<div class="board-split" data-chat-split data-chat-project="{{.Project.Key}}">
+  {{- /* KANB-33: the left column holds the panel as a whole. Inside the
+       panel, two sections — charts and thoughts — render in this order,
+       each with its own header (label + per-section toggle). The whole
+       panel can also be collapsed (a third control, in the panel footer);
+       collapsing hides the panel and the splitter and reveals a thin
+       expand button (a SIBLING of the panel, never nested inside it) at
+       the panel's previous edge — putting the "show the panel" affordance
+       exactly where the panel used to be, not on a separate row the user
+       has to hunt for.
 
        The <aside> renders even when .Chat is nil (a failed best-effort chat
        read), because the chart does not depend on the thoughts feed and must
-       still have somewhere to open. Only the feed itself is guarded. */ -}}
-  <aside class="chat-panel" id="chat-panel" data-chat-panel aria-label="AI thoughts"{{if not .ChatOpen}} hidden{{end}}>
-    <div class="chart-slot" id="progress-chart-slot" data-progress-chart-slot hidden></div>
+       still have somewhere to open. Only the thoughts section is guarded. */ -}}
+  <aside class="chat-panel" id="chat-panel" data-chat-panel aria-label="Charts and thoughts">
+    {{- /* Charts section: always rendered. The slot is the one place on
+         the page a clickable progress bar opens its history chart into
+         (see the "progress chart toggle" section of app.js), regardless
+         of whether the thoughts section has anything to show. */ -}}
+    <section class="panel-section panel-section-charts" aria-labelledby="panel-section-charts-label">
+      <header class="panel-section-head">
+        <span class="caps" id="panel-section-charts-label">charts</span>
+        <span class="spacer"></span>
+        {{- /* The toggle verb is set from app.js to match the current
+             state: "hide" when the section is showing, "show" when it is
+             hidden. The button always carries aria-expanded, so a screen
+             reader gets the same state the sighted user sees. */ -}}
+        <button type="button" class="section-toggle" data-charts-toggle aria-controls="panel-section-charts-body" aria-expanded="true">hide</button>
+      </header>
+      <div class="panel-section-body" id="panel-section-charts-body">
+        <div class="chart-slot" id="progress-chart-slot" data-progress-chart-slot hidden></div>
+      </div>
+    </section>
     {{if .Chat}}
-    <header class="chat-panel-head">
-      <span class="caps">thoughts</span>
-      <span class="spacer"></span>
-      {{- /* KANB-22: a refresh icon in the panel HEADER — outside .chat-feed,
-           so it is outside the one zone allowed colour (the greyscale test
-           fences exactly that zone) and must stay plain ink like every other
-           icon-btn. Clicking it re-runs refreshLiveRegions() — the exact
-           fetch-and-swap the SSE handler already triggers on every event —
-           rather than a second, bespoke "just reload the chat" fetch. */ -}}
-      <button type="button" class="icon-btn" data-chat-refresh aria-label="Refresh thoughts" title="Refresh thoughts">
-        <span aria-hidden="true">⟳</span>
-      </button>
-      <span class="mono text-subtle">{{.Chat.Count}}</span>
-    </header>
-    {{- /* The <ol> always renders, even with zero entries: its id is the
-         live-region target (see data-live-region="#chat-feed" above), and
-         app.js's appendNewChatEntries needs somewhere to land the project's
-         very first message the moment it arrives — a panel that started
-         empty must not need a reload just because it had nothing to show
-         yet. app.js reveals it (and hides the placeholder) the first time
-         it appends an entry. KANB-23: entries render newest first now (see
-         view.ChatEntriesNewestFirst), a live arrival is inserted at the top.
-         The panel has no scroll region of its own (the owner does not want
-         one — see app.css's comment on .chat-feed), so there is no
-         autoscroll and no "new thoughts" marker: the panel just grows. */ -}}
-    <ol class="chat-feed" id="chat-feed" data-chat-feed{{if not (hasAny .Chat.Entries)}} hidden{{end}}>
-      {{range .Chat.Entries}}{{template "chat-entry" .}}{{end}}
-    </ol>
-    <p class="chat-empty text-subtle" data-chat-empty{{if hasAny .Chat.Entries}} hidden{{end}}>No thoughts yet. Agents post here with the <code>project_post</code> tool.</p>
-    {{- /* KANB-24: "show more" / "hide all history". Only rendered when the
-         initial page did not already cover the whole feed (NextCursor set) —
-         a project with 10 or fewer messages has nothing to page through and
-         nothing worth collapsing. Both controls are wired in app.js
-         (data-chat-show-more / data-chat-hide-history) against the same
-         GET /p/{key}/chat/older route the old scroll-triggered pagination
-         used; "hide all history" starts hidden and app.js reveals it once a
-         "show more" click has actually grown the feed past the initial
-         chatInitialLimit. */ -}}
-    {{if .Chat.NextCursor}}
-    <div class="chat-history-controls" data-chat-history-controls>
-      <span data-chat-next-cursor="{{.Chat.NextCursor}}" hidden></span>
-      <button type="button" data-chat-show-more>Show more</button>
-      <button type="button" data-chat-hide-history hidden>Hide all history</button>
+    {{- /* Thoughts section: rendered only when .Chat is non-nil. The
+         legacy .chat-panel-head class is kept on this header so the
+         existing app.js hooks (data-chat-refresh, the count print) keep
+         finding the same DOM without changes. */ -}}
+    <section class="panel-section panel-section-thoughts" aria-labelledby="panel-section-thoughts-label">
+      <header class="panel-section-head chat-panel-head">
+        <span class="caps" id="panel-section-thoughts-label">thoughts</span>
+        {{- /* KANB-22: a refresh icon in the panel HEADER — outside .chat-feed,
+             so it is outside the one zone allowed colour (the greyscale test
+             fences exactly that zone) and must stay plain ink like every other
+             icon-btn. Clicking it re-runs refreshLiveRegions() — the exact
+             fetch-and-swap the SSE handler already triggers on every event —
+             rather than a second, bespoke "just reload the chat" fetch. */ -}}
+        <button type="button" class="icon-btn" data-chat-refresh aria-label="Refresh thoughts" title="Refresh thoughts">
+          <span aria-hidden="true">⟳</span>
+        </button>
+        <span class="mono text-subtle">{{.Chat.Count}}</span>
+        <span class="spacer"></span>
+        <button type="button" class="section-toggle" data-thoughts-toggle aria-controls="panel-section-thoughts-body" aria-expanded="true">hide</button>
+      </header>
+      <div class="panel-section-body" id="panel-section-thoughts-body">
+        {{- /* The <ol> always renders, even with zero entries: its id is the
+             live-region target (see data-live-region="#chat-feed" above), and
+             app.js's appendNewChatEntries needs somewhere to land the project's
+             very first message the moment it arrives — a panel that started
+             empty must not need a reload just because it had nothing to show
+             yet. app.js reveals it (and hides the placeholder) the first time
+             it appends an entry. KANB-23: entries render newest first now (see
+             view.ChatEntriesNewestFirst), a live arrival is inserted at the top.
+             The panel has no scroll region of its own (the owner does not want
+             one — see app.css's comment on .chat-feed), so there is no
+             autoscroll and no "new thoughts" marker: the panel just grows. */ -}}
+        <ol class="chat-feed" id="chat-feed" data-chat-feed{{if not (hasAny .Chat.Entries)}} hidden{{end}}>
+          {{range .Chat.Entries}}{{template "chat-entry" .}}{{end}}
+        </ol>
+        <p class="chat-empty text-subtle" data-chat-empty{{if hasAny .Chat.Entries}} hidden{{end}}>No thoughts yet. Agents post here with the <code>project_post</code> tool.</p>
+        {{- /* KANB-24: "show more" / "hide all history". Only rendered when the
+             initial page did not already cover the whole feed (NextCursor set) —
+             a project with 10 or fewer messages has nothing to page through and
+             nothing worth collapsing. Both controls are wired in app.js
+             (data-chat-show-more / data-chat-hide-history) against the same
+             GET /p/{key}/chat/older route the old scroll-triggered pagination
+             used; "hide all history" starts hidden and app.js reveals it once a
+             "show more" click has actually grown the feed past the initial
+             chatInitialLimit. */ -}}
+        {{if .Chat.NextCursor}}
+        <div class="chat-history-controls" data-chat-history-controls>
+          <span data-chat-next-cursor="{{.Chat.NextCursor}}" hidden></span>
+          <button type="button" data-chat-show-more>Show more</button>
+          <button type="button" data-chat-hide-history hidden>Hide all history</button>
+        </div>
+        {{end}}
+      </div>
+    </section>
+    {{end}}
+    {{- /* Panel footer: the one control that affects the WHOLE panel.
+         It is in the panel itself (KANB-33: "controls over the panel,
+         not only in the project header") and lives at the bottom, where
+         a footer always sits — the user expects collapse actions at the
+         end, not interleaved with the content they collapse. */ -}}
+    <div class="panel-footer">
+      <button type="button" class="btn btn-sm" data-panel-collapse aria-controls="chat-panel" aria-expanded="true" title="Collapse the panel" aria-label="Collapse the panel">collapse</button>
     </div>
-    {{end}}
-    {{end}}
   </aside>
   {{- /* KANB-25 D1: the draggable splitter. It only exists (and is only
-       reachable by keyboard) while the panel is open — hidden along with the
-       panel, in step with its `hidden` attribute above, since there is
-       nothing to resize against when the panel itself is not shown. app.js
-       reads/writes its width via a CSS custom property on .board-split
+       reachable by keyboard) while the panel is open — collapsed together
+       with the panel by .board-split.is-collapsed in app.css (display:none),
+       so the user never sees a splitter with nothing to resize against.
+       app.js reads/writes its width via a CSS custom property on .board-split
        (--chat-panel-w) rather than inline width on the aside, so the panel
        and the splitter never disagree about the current width. */ -}}
   <div class="chat-splitter" data-chat-splitter role="separator" aria-orientation="vertical"
        aria-controls="chat-panel" aria-label="Resize the thoughts panel"
        aria-valuemin="0" aria-valuenow="288"
-       tabindex="0"{{if not .ChatOpen}} hidden{{end}}></div>
+       tabindex="0"></div>
+  {{- /* KANB-33: expand button. Always in the DOM (not nested inside the
+       panel it reveals, so it never disappears together with the panel),
+       and shown only when the panel itself is collapsed — see .chat-expand
+       and .board-split.is-collapsed .chat-expand in app.css. Sits in the
+       panel's previous column, so it appears at exactly the edge the user
+       already expects. */ -}}
+  <button type="button" class="chat-expand" data-panel-expand aria-controls="chat-panel"
+          aria-expanded="false" aria-label="Show the charts and thoughts panel"
+          title="Show the charts and thoughts panel"><span aria-hidden="true">›</span></button>
   <div class="board-region">
     {{template "board-columns" (dict "Columns" .Columns "CSRF" $.CSRF)}}
   </div>

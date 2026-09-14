@@ -83,61 +83,70 @@ func TestChatFeed_NewestFirstAtTop(t *testing.T) {
 // TestChatPanel_EmptyProjectShowsSaneEmptiness: a project without messages
 // opens the panel into a clear empty state — not an error, not a broken
 // template, not a lie about messages existing.
+//
+// KANB-33: the panel is visible by default, so the previous assertion
+// (the page must still carry the toggle button to open it) is gone: the
+// panel itself renders. What still matters is that the empty state is
+// explicit and that a failed chat read does NOT render a placeholder.
 func TestChatPanel_EmptyProjectShowsSaneEmptiness(t *testing.T) {
 	m := boardWithChat(view.NewChatPanel(nil, "", chatFixtureNow, nil), true)
 	html := renderProgress(t, "page-board", view.SamplePage("Test", "board", m))
 	if !strings.Contains(html, "No thoughts yet") {
 		t.Fatalf("empty project panel does not explain itself: %s", html)
 	}
-	if !strings.Contains(html, `data-chat-toggle`) {
-		t.Fatal("empty project still needs the toggle button: the panel must open")
-	}
 
-	// A failed chat read (Chat == nil) renders no thoughts content and no
-	// toggle button — never a panel pretending the chat is empty.
-	//
-	// The left column ITSELF still renders, because it also holds the
-	// progress chart's one slot, and the chart has nothing to do with the
-	// chat: a transient failure of the best-effort chat read must not take
-	// the chart with it. So the assertion is about the thoughts, not about
-	// the <aside>.
+	// A failed chat read (Chat == nil) renders no thoughts content — never
+	// a panel pretending the chat is empty. The thoughts section is the
+	// one zone that depends on Chat; the panel itself (with its charts
+	// section) still renders, because the chart does not depend on the
+	// chat read.
 	none := boardWithChat(nil, false)
 	noneHTML := renderProgress(t, "page-board", view.SamplePage("Test", "board", none))
-	if strings.Contains(noneHTML, "data-chat-toggle") {
-		t.Error("a failed chat read still offered the Thoughts button")
-	}
 	if strings.Contains(noneHTML, "No thoughts yet") || strings.Contains(noneHTML, `id="chat-feed"`) {
 		t.Error("a failed chat read rendered the feed or its empty-state text, which would claim there are no messages")
 	}
 	if !strings.Contains(noneHTML, "data-progress-chart-slot") {
 		t.Error("the chart slot went missing with the chat: the chart does not depend on the chat read")
 	}
+	// KANB-33: the panel always renders its chrome (charts section +
+	// collapse control) so the user has somewhere to land an explicit
+	// state, even with no chat.
+	if !strings.Contains(noneHTML, "data-panel-collapse") {
+		t.Error("a failed chat read lost the panel's own collapse control")
+	}
 }
 
-// TestBoardLayout_ClosedVsOpenMarkup: the closed page is distinguishable
-// from the open one in markup alone — the wrapper carries is-open and the
-// panel loses hidden only when the split is on. The server always renders
-// closed; app.js flips it.
-func TestBoardLayout_ClosedVsOpenMarkup(t *testing.T) {
-	closed := renderProgress(t, "page-board",
-		view.SamplePage("Test", "board", boardWithChat(view.NewChatPanel(chatFixtureMsgs, "", chatFixtureNow, nil), false)))
-	open := renderProgress(t, "page-board",
-		view.SamplePage("Test", "board", boardWithChat(view.NewChatPanel(chatFixtureMsgs, "", chatFixtureNow, nil), true)))
+// TestBoardLayout_PanelControlsRenderOnThePanel is KANB-33's structural
+// contract: the panel renders its own controls (charts toggle, thoughts
+// toggle, collapse panel) and they live on the panel — NOT in the project
+// header — so the user's toggles never require a separate row to find.
+// app.js wires the three buttons by data-attribute and persists the state
+// per project in localStorage; the markup must carry the hooks.
+func TestBoardLayout_PanelControlsRenderOnThePanel(t *testing.T) {
+	m := boardWithChat(view.NewChatPanel(chatFixtureMsgs, "", chatFixtureNow, nil), true)
+	html := renderProgress(t, "page-board", view.SamplePage("Test", "board", m))
 
-	if !strings.Contains(closed, `class="board-split" data-chat-split`) {
-		t.Fatalf("closed page lost the plain split wrapper: %s", closed[:0])
+	if !strings.Contains(html, `id="chat-panel"`) {
+		t.Fatal("the panel must render (KANB-33: visible by default)")
 	}
-	if !strings.Contains(open, `class="board-split is-open" data-chat-split`) {
-		t.Fatal("open page wrapper does not carry is-open")
+	if !strings.Contains(html, "data-charts-toggle") {
+		t.Fatal("the panel is missing its charts toggle")
 	}
-	if !strings.Contains(closed, `aria-label="AI thoughts" hidden`) {
-		t.Fatal("closed page panel is not hidden")
+	if !strings.Contains(html, "data-thoughts-toggle") {
+		t.Fatal("the panel is missing its thoughts toggle")
 	}
-	if strings.Contains(open, `aria-label="AI thoughts" hidden`) {
-		t.Fatal("open page panel is still hidden")
+	if !strings.Contains(html, "data-panel-collapse") {
+		t.Fatal("the panel is missing its collapse control")
 	}
-	if !strings.Contains(closed, `id="board"`) || !strings.Contains(open, `id="board"`) {
-		t.Fatal("the board region must render in both states")
+	// The expand button is always in the DOM (it lives outside the panel
+	// so it can survive the panel collapsing); app.css hides it until the
+	// panel is collapsed.
+	if !strings.Contains(html, "data-panel-expand") {
+		t.Fatal("the panel is missing its expand button")
+	}
+	// The board region renders alongside the panel by default.
+	if !strings.Contains(html, `id="board"`) {
+		t.Fatal("the board region must render")
 	}
 }
 

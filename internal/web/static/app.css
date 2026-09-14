@@ -968,32 +968,127 @@ select, .field input, .field textarea {
   margin-right: 0.375rem;
 }
 
-/* --- ai thoughts panel: split layout -------------------------------------- */
-/* Opening the panel narrows the board's container; the board is a
-   proportional grid (auto-fit + 1fr), so EVERY column compresses by the
-   same share — the whole board shrinks, no column is favoured, nothing
-   scrolls horizontally and nothing is pushed off-screen. A column that
-   would drop below its floor width wraps to the next row instead, which
-   keeps every column visible; see the numbers in the feature notes.
+/* --- left panel: split layout (KANB-33) --------------------------------- */
+/* KANB-33: the left panel (charts + thoughts) is visible BY DEFAULT — that
+   is what new users see — and stays visible until the user collapses it
+   explicitly. A user that picks a state persists it, by project, in
+   localStorage (see app.js, panelState). The grid takes the panel column
+   whenever the panel is shown, and the splitter width lives in the same
+   row only while the panel is open; collapsing drops the panel AND the
+   splitter and leaves a thin expand-button column in the panel's place,
+   so the button is always at the panel's previous edge (never hidden
+   inside the panel it is meant to reveal).
    KANB-25 D1: the panel's own column width is a CSS custom property,
    declared with its default right here (18rem — the pre-KANB-25 fixed
    width) so it renders sanely before any JS runs; app.js (initChatSplitter)
    overrides it with an inline style once it applies a persisted or dragged
    value, which always wins over this class-level default. The 6px middle
    column is the splitter handle (see .chat-splitter below). */
-.board-split.is-open {
+.board-split {
   --chat-panel-w: 18rem;
   display: grid;
   grid-template-columns: var(--chat-panel-w) 6px minmax(0, 1fr);
   gap: 0.75rem;
   align-items: start;
 }
+/* Collapsed: panel and splitter hidden, expand button visible at the
+   panel's previous edge. The 1.5rem slot is the expand button's own
+   column — the SAME edge the panel used to occupy, never its own row
+   the user has to hunt for. */
+.board-split.is-collapsed {
+  grid-template-columns: 1.5rem minmax(0, 1fr);
+  gap: 0.4rem;
+}
+.board-split.is-collapsed .chat-panel,
+.board-split.is-collapsed .chat-splitter { display: none; }
+.chat-expand { display: none; }
+.board-split.is-collapsed .chat-expand { display: flex; }
 .chat-panel {
   border: 1px solid var(--rule);
   background: var(--paper);
   display: flex;
   flex-direction: column;
+  min-width: 0;
 }
+/* KANB-33: per-section toggle. The two section bodies (charts and
+   thoughts) are independently hideable: the user can keep the thoughts
+   feed but not the chart, or vice versa, without losing the panel as a
+   whole. The classes are set from app.js (panelState) and toggled by
+   data-charts-toggle / data-thoughts-toggle buttons in the section
+   headers. */
+.chat-panel.charts-hidden .panel-section-charts,
+.chat-panel.thoughts-hidden .panel-section-thoughts { display: none; }
+.panel-section {
+  display: flex;
+  flex-direction: column;
+}
+.panel-section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  padding: 0.4rem 0.75rem;
+  border-bottom: 1px solid var(--rule);
+}
+.panel-section-head .caps { font-weight: 600; }
+.panel-section-head .spacer { flex: 1 1 auto; }
+.panel-section-body { padding: 0 0.75rem; }
+.panel-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0.4rem 0.75rem;
+  border-top: 1px solid var(--rule);
+  margin-top: auto;
+}
+/* The expand button: lives in the panel's column when the panel itself
+   is hidden, so the "show the panel" affordance is exactly where the
+   panel was — the user does not have to look for it elsewhere. A
+   vertical bar in the same hairline vocabulary the splitter already
+   uses, with the same :hover/:focus treatment, so a hover anywhere
+   along the bar reads as "this opens the panel". */
+.chat-expand {
+  align-self: stretch;
+  background: var(--rule);
+  color: var(--ink-muted);
+  border: 0;
+  font: inherit;
+  font-size: var(--fs-2);
+  line-height: 1;
+  padding: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.chat-expand:hover,
+.chat-expand:focus-visible {
+  background: var(--rule-strong);
+  color: var(--ink);
+  outline: none;
+}
+/* Per-section toggle buttons: small, hairline, in the same vocabulary as
+   every other control on this board. The label is a verb that reflects
+   the current state ("hide" when the section is showing, "show" when it
+   is hidden) — what the click will do, not what it was. */
+.section-toggle {
+  flex: none;
+  border: 1px solid var(--ink-subtle);
+  background: var(--paper);
+  color: var(--ink-muted);
+  font: inherit;
+  font-size: var(--fs-1);
+  line-height: 1.4;
+  padding: 0.05rem 0.4rem;
+  cursor: pointer;
+  border-radius: 0;
+}
+.section-toggle:hover {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+/* The original .chat-panel-head is now one of the two .panel-section-head
+   instances; the legacy class is kept on the thoughts section's head so
+   the existing chat-refresh / chat-count hooks keep working without
+   changing app.js's data-attribute lookups. */
 .chat-panel-head {
   display: flex;
   align-items: baseline;
@@ -1145,14 +1240,18 @@ select, .field input, .field textarea {
    columns onto a second row on common screens; an 11rem floor keeps a
    four-column board on one row down to ~1100px of remaining board width
    while staying legible (titles wrap, meta rows are short). */
-.board-split.is-open .board {
+.board-split .board {
   grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
 }
 @media (max-width: 40rem) {
-  .board-split.is-open { grid-template-columns: 1fr; }
-  /* The layout stacks (panel above board) instead of sitting side by side,
-     so there is nothing left for the splitter to resize between. */
-  .chat-splitter { display: none; }
+  /* KANB-33: on narrow screens the layout stacks (panel above board)
+     instead of sitting side by side, so the splitter disappears and the
+     expand button collapses inline with the panel's own scroll. The
+     panel + buttons remain reachable. */
+  .board-split,
+  .board-split.is-collapsed { grid-template-columns: 1fr; gap: 0.5rem; }
+  .chat-splitter,
+  .chat-expand { display: none; }
 }
 /* --- progress forecast badge ----------------------------------------------
    Rides next to a summary progress metric (project header "assessed" and

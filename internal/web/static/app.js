@@ -915,7 +915,19 @@
     });
   }
 
-  // -- 7. ai thoughts panel -----------------------------------------------
+  // -- 7. left panel: charts + thoughts (KANB-33) ----------------------------
+  //
+  // KANB-33 reversed the long-standing "thoughts panel is closed by default
+  // and the user clicks to open it" design: the panel is now visible by
+  // default, with its two sections (charts and thoughts) independently
+  // hideable and a third control that collapses the whole panel. The
+  // controls live ON THE PANEL (not in the project header — the owner's
+  // request). Per-project state persists in localStorage under
+  // "kanban.panel.<projectKey>". A legacy "kanban.chatPanel" key from the
+  // pre-KANB-33 single-button design is removed exactly once: after the
+  // migration sentinel is set, this code never reads the old key again, so
+  // no later change can re-introduce the closed default for an existing
+  // user.
   //
   // KANB-23 reversed a previously deliberate decision: the panel used to be
   // a chat window with the newest message at the BOTTOM. The owner now wants
@@ -934,114 +946,126 @@
   // (section 7b below), which also replaced the panel's old
   // scroll-triggered infinite pagination with explicit controls to click.
 
-  var CHAT_STORAGE_KEY = 'kanban.chatPanel';
+  var PANEL_STATE_PREFIX = 'kanban.panel.';
+  var PANEL_MIGRATED_KEY = 'kanban.panel.migrated';
+  // Legacy key from the pre-KANB-33 design, removed on first load after
+  // the migration. Kept here so the variable still explains itself.
+  var LEGACY_CHAT_KEY = 'kanban.chatPanel';
 
   function chatFeedEl() {
     return document.querySelector('[data-chat-feed]');
   }
 
-  // revealChatFeed un-hides the feed <ol> (and hides the "No thoughts yet"
-  // placeholder next to it) the first time a message actually lands on a
-  // project that had none when the page rendered. The <ol> is always in the
-  // DOM precisely so this moment does not need a reload — see pages.html's
-  // comment on the chat-feed markup.
-  function revealChatFeed(feed) {
-    if (feed.hidden) feed.hidden = false;
-    var empty = document.querySelector('[data-chat-empty]');
-    if (empty && !empty.hidden) empty.hidden = true;
+  // panelProjectKey reads the project key straight out of the board-split
+  // wrapper, the same key app.js already uses for the "older chat
+  // messages" endpoint and the SSE URL. Per-project persistence keys off
+  // it: the same panel state in one project does not leak to another.
+  function panelProjectKey() {
+    var split = document.querySelector('[data-chat-split]');
+    return split ? (split.getAttribute('data-chat-project') || '') : '';
   }
 
-  // insertChatEntriesAtTop inserts one or more freshly-arrived <li> nodes at
-  // the very top of the feed, preserving their relative order. nodes must
-  // already be newest-first (matching the freshly fetched document's own
-  // order); inserting each one against the SAME reference node — the feed's
-  // first child from before any of them were inserted — is what keeps a
-  // batch of several new entries in that same newest-first order, rather
-  // than reversed by N separate "insert right before whatever is now first"
-  // calls.
-  function insertChatEntriesAtTop(feed, nodes) {
-    var ref = feed.firstChild;
-    for (var i = 0; i < nodes.length; i++) {
-      feed.insertBefore(nodes[i], ref);
-    }
+  // defaultPanelState is what a brand-new project / fresh browser sees:
+  // both sections visible, the whole panel expanded. This is the only place
+  // those defaults are encoded, so "new users see both blocks open" has one
+  // definition rather than being tribal knowledge shared between the
+  // template's default markup and a string literal here.
+  function defaultPanelState() {
+    return { charts: 'shown', thoughts: 'shown', collapsed: false };
   }
 
-  // appendNewChatEntries is the thoughts-feed's own swap strategy — never a
-  // blind innerHTML replace like the generic path below. fresh is the
-  // freshly fetched document's counterpart of the live <ol>; every entry in
-  // it not already present (matched by data-chat-id, the message's own,
-  // stable id) is genuinely new and gets inserted as one block at the top,
-  // in fresh's own newest-first order. There is no scroll position to
-  // preserve or follow here — see this section's header comment.
-  function appendNewChatEntries(fresh, doc) {
-    var feed = chatFeedEl();
-    if (!feed) return;
-    var known = {};
-    var existing = feed.querySelectorAll('[data-chat-id]');
-    for (var i = 0; i < existing.length; i++) {
-      known[existing[i].getAttribute('data-chat-id')] = true;
-    }
-    var incoming = fresh.querySelectorAll('[data-chat-id]');
-    var nodes = [];
-    var overlaps = false;
-    for (var j = 0; j < incoming.length; j++) {
-      var id = incoming[j].getAttribute('data-chat-id');
-      if (!id) continue;
-      if (known[id]) { overlaps = true; continue; }
-      nodes.push(document.importNode(incoming[j], true));
-    }
-    if (nodes.length === 0) return;
-    // The merge can only ever see what the server rendered, and the server
-    // renders the newest chatInitialLimit entries. So if the feed already
-    // held messages and NOT ONE of the fresh ones is among them, the two
-    // lists do not touch: more than a full page committed since the last
-    // refresh, and whatever fell between them would be inserted nowhere.
-    // "Show more" pages strictly OLDER than the feed's cursor, so those
-    // messages would not be reachable by any click either — the feed would
-    // read as continuous while having a hole in it.
-    //
-    // Rather than splice around an unknown gap, take the server's own answer
-    // wholesale: the feed becomes exactly the page that was just rendered,
-    // and the paging cursor is rewound to match it, so everything older is
-    // reachable again through "show more". The cost is that a feed the owner
-    // had expanded collapses back to one page — the same state a reload
-    // would give, without the reload.
-    if (existing.length > 0 && !overlaps) {
-      resetChatFeedTo(fresh, doc);
-      return;
-    }
-    revealChatFeed(feed);
-    insertChatEntriesAtTop(feed, nodes);
+  // loadPanelState reads the persisted state for one project. Any malformed
+  // value (a quota error, JSON.parse failure, an unknown field) collapses
+  // to the default rather than throwing — localStorage is best-effort and
+  // a broken entry must never break the page.
+  function loadPanelState(projectKey) {
+    var fallback = defaultPanelState();
+    if (!projectKey) return fallback;
+    var raw = null;
+    try { raw = localStorage.getItem(PANEL_STATE_PREFIX + projectKey); } catch (e) { return fallback; }
+    if (!raw) return fallback;
+    try {
+      var p = JSON.parse(raw);
+      return {
+        charts: p.charts === 'hidden' ? 'hidden' : 'shown',
+        thoughts: p.thoughts === 'hidden' ? 'hidden' : 'shown',
+        collapsed: p.collapsed === true
+      };
+    } catch (e) { return fallback; }
   }
 
-  // resetChatFeedTo replaces the whole feed with a freshly rendered one and
-  // rewinds the paging state to match it. Used only for the gap case above:
-  // every other live arrival is merged, never swapped.
-  function resetChatFeedTo(fresh, doc) {
-    var feed = chatFeedEl();
-    if (!feed) return;
-    revealChatFeed(feed);
-    feed.innerHTML = fresh.innerHTML;
-    var cursorEl = doc && doc.querySelector('[data-chat-next-cursor]');
-    chatOlderCursor = cursorEl ? cursorEl.getAttribute('data-chat-next-cursor') || '' : '';
-    chatInitialCursor = chatOlderCursor;
-    chatExtraLoaded = 0;
-    updateChatHistoryControls();
+  // savePanelState is best-effort: a private mode browser or a blocked
+  // quota must not break the toggles, only mean the state is not remembered
+  // — same rule as every other localStorage write in this file.
+  function savePanelState(projectKey, state) {
+    if (!projectKey) return;
+    try { localStorage.setItem(PANEL_STATE_PREFIX + projectKey, JSON.stringify(state)); } catch (e) { /* ignore */ }
   }
 
-  function setChatOpen(open) {
+  // resetLegacyChatPanelState clears the pre-KANB-33 "closed" default once.
+  // The sentinel is the gate: this function never touches the old key on a
+  // second run, so the reset is one-time per browser, not every page load
+  // (which would silently undo a state the user had since rebuilt by hand).
+  // Project state itself is untouched — only the single boolean "thoughts
+  // panel was open" gets discarded, never the user's project list, columns
+  // or anything else from the server.
+  function resetLegacyChatPanelState() {
+    try {
+      if (localStorage.getItem(PANEL_MIGRATED_KEY) === '1') return;
+      localStorage.removeItem(LEGACY_CHAT_KEY);
+      localStorage.setItem(PANEL_MIGRATED_KEY, '1');
+    } catch (e) { /* private mode, blocked storage */ }
+  }
+
+  // applyPanelState translates the persisted shape into DOM state: the
+  // collapsed class on the board-split, the section-hidden classes on the
+  // panel itself, and the aria-expanded/visible-label attributes on each
+  // toggle button. Done in one place so the three controls cannot drift
+  // apart from each other or from the persisted value.
+  function applyPanelState(state) {
     var split = document.querySelector('[data-chat-split]');
     var panel = document.getElementById('chat-panel');
-    var btn = document.querySelector('[data-chat-toggle]');
-    if (!split || !panel || !btn) return;
-    split.classList.toggle('is-open', open);
-    panel.hidden = !open;
-    var splitter = document.querySelector('[data-chat-splitter]');
-    if (splitter) splitter.hidden = !open;
-    btn.setAttribute('aria-expanded', open ? 'true' : 'false');
-    // Persistence is best effort: private mode or a blocked quota must not
-    // break the toggle, it only means the state is not remembered.
-    try { localStorage.setItem(CHAT_STORAGE_KEY, open ? 'open' : 'closed'); } catch (e) { /* ignore */ }
+    if (!split || !panel) return;
+    split.classList.toggle('is-collapsed', state.collapsed);
+    panel.classList.toggle('charts-hidden', state.charts === 'hidden');
+    panel.classList.toggle('thoughts-hidden', state.thoughts === 'hidden');
+    var chartsBtn = panel.querySelector('[data-charts-toggle]');
+    if (chartsBtn) {
+      chartsBtn.setAttribute('aria-expanded', state.charts === 'shown' ? 'true' : 'false');
+      chartsBtn.textContent = state.charts === 'shown' ? 'hide' : 'show';
+    }
+    var thoughtsBtn = panel.querySelector('[data-thoughts-toggle]');
+    if (thoughtsBtn) {
+      thoughtsBtn.setAttribute('aria-expanded', state.thoughts === 'shown' ? 'true' : 'false');
+      thoughtsBtn.textContent = state.thoughts === 'shown' ? 'hide' : 'show';
+    }
+    var collapseBtn = panel.querySelector('[data-panel-collapse]');
+    if (collapseBtn) collapseBtn.setAttribute('aria-expanded', state.collapsed ? 'false' : 'true');
+  }
+
+  // currentPanelState reads the panel's current state back out of the DOM
+  // (the source of truth after applyPanelState has run), so a toggle
+  // click can mutate one field, re-apply, and persist — without each
+  // toggle knowing the full shape.
+  function currentPanelState() {
+    var split = document.querySelector('[data-chat-split]');
+    var panel = document.getElementById('chat-panel');
+    if (!split || !panel) return defaultPanelState();
+    return {
+      charts: panel.classList.contains('charts-hidden') ? 'hidden' : 'shown',
+      thoughts: panel.classList.contains('thoughts-hidden') ? 'hidden' : 'shown',
+      collapsed: split.classList.contains('is-collapsed')
+    };
+  }
+
+  // setPanelField mutates one field of the persisted state, re-applies it
+  // to the DOM, and writes the new blob back. The toggle buttons use this;
+  // initPanelToggle wires each click to its own field.
+  function setPanelField(field, value) {
+    var state = currentPanelState();
+    state[field] = value;
+    applyPanelState(state);
+    savePanelState(panelProjectKey(), state);
   }
 
   // initChatRefresh wires KANB-22's refresh icon in the panel header
@@ -1058,13 +1082,43 @@
     });
   }
 
-  document.addEventListener('click', function (e) {
-    var btn = e.target.closest && e.target.closest('[data-chat-toggle]');
-    if (!btn) return;
-    var split = document.querySelector('[data-chat-split]');
-    if (!split) return;
-    setChatOpen(!split.classList.contains('is-open'));
-  });
+  // initPanelToggle wires the four KANB-33 panel controls: per-section
+  // hide/show (data-charts-toggle, data-thoughts-toggle), the whole-panel
+  // collapse (data-panel-collapse) and its counterpart expand
+  // (data-panel-expand). Each click mutates one field of the persisted
+  // state; every action is reversible because each toggle re-reads the
+  // current state via currentPanelState rather than maintaining its own
+  // mirror.
+  function initPanelToggle() {
+    document.addEventListener('click', function (e) {
+      var chartsBtn = e.target.closest && e.target.closest('[data-charts-toggle]');
+      if (chartsBtn) {
+        e.preventDefault();
+        var s = currentPanelState();
+        setPanelField('charts', s.charts === 'shown' ? 'hidden' : 'shown');
+        return;
+      }
+      var thoughtsBtn = e.target.closest && e.target.closest('[data-thoughts-toggle]');
+      if (thoughtsBtn) {
+        e.preventDefault();
+        var st = currentPanelState();
+        setPanelField('thoughts', st.thoughts === 'shown' ? 'hidden' : 'shown');
+        return;
+      }
+      var collapseBtn = e.target.closest && e.target.closest('[data-panel-collapse]');
+      if (collapseBtn) {
+        e.preventDefault();
+        setPanelField('collapsed', true);
+        return;
+      }
+      var expandBtn = e.target.closest && e.target.closest('[data-panel-expand]');
+      if (expandBtn) {
+        e.preventDefault();
+        setPanelField('collapsed', false);
+        return;
+      }
+    });
+  }
 
   // -- 7b. ai thoughts panel: show more / hide all history (KANB-24) --------
   //
@@ -1179,16 +1233,32 @@
     if (hide) hide.addEventListener('click', hideAllChatHistory);
   }
 
+  // initChatPanel: KANB-33's panel is visible by default and manages its
+  // own three-state model; the per-section "show more" / "hide all history"
+  // controls from KANB-24 still belong here, because they target the same
+  // feed. initPanelToggle (above) wires the four KANB-33 buttons; the
+  // per-project state is applied at parse time, so this function only
+  // needs to bootstrap the chat paging cursors and the "show more" / "hide
+  // all history" controls — NOT the panel's open/closed state, which has
+  // its own init path below.
   function initChatPanel() {
-    var btn = document.querySelector('[data-chat-toggle]');
-    if (!btn) return;
+    var split = document.querySelector('[data-chat-split]');
+    if (!split) return;
     var cursorEl = document.querySelector('[data-chat-next-cursor]');
     chatOlderCursor = cursorEl ? cursorEl.getAttribute('data-chat-next-cursor') || '' : '';
     chatInitialCursor = chatOlderCursor;
     initChatHistoryControls();
-    var saved = null;
-    try { saved = localStorage.getItem(CHAT_STORAGE_KEY); } catch (e) { /* ignore */ }
-    setChatOpen(saved === 'open');
+  }
+
+  // initPanelState applies the per-project persisted state at parse time
+  // (the script is deferred but still runs before first paint), so a user
+  // who has chosen "collapsed" / "thoughts hidden" sees their choice, not
+  // a flash of the default. resetLegacyChatPanelState runs first so the
+  // old single-button state does not re-apply and undo this code's work
+  // for users who never opted into it.
+  function initPanelState() {
+    resetLegacyChatPanelState();
+    applyPanelState(loadPanelState(panelProjectKey()));
   }
 
   // -- 7c. ai thoughts panel: draggable / keyboard-resizable splitter -------
@@ -1581,7 +1651,14 @@
     chartSlot.key = key;
     chartSlot.project = bar.getAttribute('data-project') || '';
     chartSlot.task = bar.getAttribute('data-task') || '';
-    setChatOpen(true);
+    // KANB-33: the panel is visible by default; if the user has explicitly
+    // collapsed it, opening a chart must re-expand it (a chart rendered
+    // into a hidden panel would look like a click that did nothing — that
+    // is exactly what this fallback was for, before KANB-33 made the
+    // panel the default). The persisted state is updated so the next page
+    // load does not silently re-collapse the panel.
+    var state = currentPanelState();
+    if (state.collapsed) setPanelField('collapsed', false);
     markOpenChartBar();
     fetchProgressChart();
   }
@@ -1674,6 +1751,7 @@
     initProjectCombobox();
     initChatPanel();
     initChatRefresh();
+    initPanelToggle();
     initChatSplitter();
     initBoardWide();
     initProgressTrackDelete();
@@ -1681,6 +1759,14 @@
     initLiveRefresh();
     startLive();
   }
+
+  // KANB-33: apply the persisted panel state before the first paint, so a
+  // user who has chosen "collapsed" sees their choice, not a flash of the
+  // default visible state. This is the same pattern applyTheme / applyBoardWide
+  // already use; it runs at parse time because the script is deferred but
+  // still parses before the body's first paint, and the data attributes
+  // app.js reads are already on the page by then.
+  initPanelState();
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', boot);
