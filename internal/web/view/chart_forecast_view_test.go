@@ -493,3 +493,41 @@ func TestChart_Forecast_DetailLegendPointsMatchTheDrawnPolyline(t *testing.T) {
 		t.Errorf("legend claims %d points for the consensus but the polyline draws %d", got, want)
 	}
 }
+
+// 12. REVIEW C #11: the modal's date axis must not print the same label
+// twice. pickForecastDateTicks always picks five evenly-spaced ticks, and
+// on an ETA span of a couple of days several of those land on the SAME
+// calendar day — which day-precision labels ("Sep 13") cannot tell apart.
+// The reader got five gridlines signed by two dates, three identical, and
+// could not tell which line was which. A tick whose label repeats the
+// previous one is now dropped whole; this pins that no printed label
+// survives twice on the axis.
+func TestChart_Forecast_ModalDateAxisDoesNotRepeatALabel(t *testing.T) {
+	// ETA span exactly one day, fixed at noon so no DST shift can move a
+	// date under the fixture: the five ticks land two days wide, the very
+	// shape the review measured as "Sep 13" three times.
+	t0 := time.Date(2026, 9, 13, 12, 0, 0, 0, time.Local)
+	marks := []domain.ProgressMark{
+		{ID: "m1", Assessor: "alpha", Percent: 30, CreatedAt: t0, ETA: forecastPt(t0)},
+		{ID: "m2", Assessor: "alpha", Percent: 50, CreatedAt: t0.Add(time.Hour), ETA: forecastPt(t0.Add(24 * time.Hour))},
+	}
+
+	svg := string(RenderForecastChartDetailed(marks, DetailChartWidth, DetailChartHeight))
+
+	textRe := regexp.MustCompile(`<text[^>]*>([^<]+)</text>`)
+	counts := map[string]int{}
+	for _, m := range textRe.FindAllStringSubmatch(svg, -1) {
+		counts[m[1]]++
+	}
+	for label, n := range counts {
+		if n > 1 {
+			t.Errorf("modal date axis printed label %q %d times — repeated labels leave the gridlines indistinguishable:\n%s", label, n, svg)
+		}
+	}
+	// Both end dates must still be named exactly once: the dedupe thins
+	// the MIDDLE of the axis, it must not swallow the bounds a reader
+	// measures the span by.
+	if counts["Sep 13"] != 1 || counts["Sep 14"] != 1 {
+		t.Errorf("date axis labels = %v, want Sep 13 and Sep 14 exactly once each", counts)
+	}
+}

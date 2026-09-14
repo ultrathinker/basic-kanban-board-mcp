@@ -77,8 +77,22 @@ func writePercentAxis(buf *bytes.Buffer, b chartBounds) {
 // and NOT "days remaining from now". Plotting absolute dates is the only
 // mapping that renders a genuinely held promise as flat — "days remaining"
 // would shrink every day even when nothing changed.
+//
+// On a short span several of the evenly-picked ticks land on the SAME
+// calendar day, and formatForecastAxisDate deliberately prints day
+// precision there — five gridlines could come back carrying two labels,
+// three of them the same string. A tick whose label repeats the previous
+// one is dropped whole, line and text together: every line left on the axis
+// is individually labelled, and no date prints twice in a row. Labels are
+// monotone along the tick list, so equal labels are always consecutive.
 func writeDateAxis(buf *bytes.Buffer, yMin, yMax float64, etaMin, etaMax time.Time, xMin, xMax float64) {
+	prev := ""
 	for _, t := range pickForecastDateTicks(etaMin, etaMax) {
+		label := formatForecastAxisDate(t, etaMin, etaMax)
+		if label == prev {
+			continue
+		}
+		prev = label
 		y := yForForecastTime(t, etaMin, etaMax, yMin, yMax)
 		opacity := "0.18"
 		if t.Equal(etaMin) || t.Equal(etaMax) {
@@ -87,7 +101,7 @@ func writeDateAxis(buf *bytes.Buffer, yMin, yMax float64, etaMin, etaMax time.Ti
 		fmt.Fprintf(buf, `<line x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f" stroke="currentColor" stroke-width="1" stroke-opacity="%s"/>`,
 			xMin, y, xMax, y, opacity)
 		fmt.Fprintf(buf, `<text x="%.1f" y="%.1f" text-anchor="end" font-size="11" fill="currentColor" fill-opacity="0.6">%s</text>`,
-			xMin-6.0, y+4.0, html.EscapeString(formatForecastAxisDate(t, etaMin, etaMax)))
+			xMin-6.0, y+4.0, html.EscapeString(label))
 	}
 }
 
@@ -117,8 +131,9 @@ func yForForecastTime(t, etaMin, etaMax time.Time, yMin, yMax float64) float64 {
 // Y axis: at most forecastDateAxisMaxSteps, picked to include etaMin and
 // etaMax and fill the gap with evenly-spaced points. Picking the labelled
 // dates this way (rather than every day in range) is what keeps the axis
-// legible for a 60-day span AND a 6-month span alike: the same chart
-// rendering with different label counts, never a label collision.
+// legible for a 60-day span AND a 6-month span alike. On spans shorter than
+// a few days the picks can share a calendar day, which day-precision labels
+// cannot tell apart — writeDateAxis drops those repeats.
 func pickForecastDateTicks(etaMin, etaMax time.Time) []time.Time {
 	if !etaMax.After(etaMin) {
 		return []time.Time{etaMin}
