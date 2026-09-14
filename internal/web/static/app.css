@@ -491,12 +491,14 @@ select, .field input, .field textarea {
      kills the animation correctly either way). */
   transition: transform 2s ease-in-out, opacity 2s ease-in-out;
 }
-/* Reduced motion: a flight is a movement, not a state — under
-   prefers-reduced-motion the ghost still appears, but without the
-   transition (the Web Animations API call's duration is already 0 in
-   that branch, see app.js). Keeping the rule here means a UA that
-   flips the preference while a flight is in flight kills the
-   remaining motion too. */
+/* Reduced motion: a flight is a movement, not a state. Under
+   prefers-reduced-motion app.js never creates a ghost at all — flyCard
+   returns early and highlights the destination instead (see app.js) —
+   so the .card-flight line below is not load-bearing today; it exists
+   so the safety-net transition declared on .card-flight above can
+   never run under reduced motion either. The .card-highlight line is
+   the one doing real work: it stops the highlight's pulse animation
+   and leaves a plain outline as the cue. */
 @media (prefers-reduced-motion: reduce) {
   .card-flight { transition: none; }
   .card-highlight { animation: none; outline: 2px solid var(--ink); }
@@ -1433,9 +1435,13 @@ select, .field input, .field textarea {
 }
 @media (max-width: 40rem) {
   /* KANB-33: on narrow screens the layout stacks (panel above board)
-     instead of sitting side by side, so the splitter disappears and the
-     expand button collapses inline with the panel's own scroll. The
-     panel + buttons remain reachable. */
+     instead of sitting side by side, so the splitter disappears — this
+     query hides it while the panel is open, and .board-split.is-collapsed
+     hides it while closed. The expand button does NOT hide with it:
+     .board-split.is-collapsed .chat-expand (specificity 0,3,0) outweighs
+     this query's plain .chat-expand (0,1,0), so the button stays visible
+     while collapsed — which is exactly what keeps the closed panel
+     reopenable. The panel + buttons remain reachable. */
   .board-split,
   .board-split.is-collapsed { grid-template-columns: 1fr; gap: 0.5rem; }
   .chat-splitter,
