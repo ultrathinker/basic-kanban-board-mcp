@@ -201,6 +201,46 @@ func formatEstimateLabel(n float64, unit string) string {
 	return fmt.Sprintf("%.1f%s", n, unit)
 }
 
+// overviewTally is one project's cards split by the kind of the column they
+// sit in — the four numbers the overview page reports.
+//
+// It exists as its own type so the split can be tested directly against
+// domain.AllKinds (TestOverview_CountsEveryColumnKind). The bug it replaces
+// was a three-armed switch with no default inside the handler: when KANB-52
+// added the waiting kind, cards parked in a waiting column stopped being
+// counted anywhere on the page — not as backlog, not as active, not as done,
+// and not in the roll-up — and no test could see it, because the split was
+// not reachable from one. The guard test is the default branch this switch
+// cannot usefully have: a page render is the wrong place to fail loudly, so
+// the loudness lives in the build instead.
+type overviewTally struct {
+	Backlog int
+	Active  int
+	Done    int
+	Waiting int
+}
+
+// sum is every card the tally accounted for. A kind with no bucket below
+// contributes nothing to it, which is exactly what the guard test detects.
+func (t overviewTally) sum() int { return t.Backlog + t.Active + t.Done + t.Waiting }
+
+func tallyOverview(cols []service.BoardColumn) overviewTally {
+	var t overviewTally
+	for _, c := range cols {
+		switch c.Kind {
+		case domain.KindBacklog:
+			t.Backlog += c.Count
+		case domain.KindActive:
+			t.Active += c.Count
+		case domain.KindDone:
+			t.Done += c.Count
+		case domain.KindWaiting:
+			t.Waiting += c.Count
+		}
+	}
+	return t
+}
+
 // handleOverview is "/": all accessible projects, counts, focus per project.
 // "?p=KEY" (the project-switcher's plain <select> GET form) redirects to the
 // board instead of rendering here, so the switcher works with JavaScript off.
@@ -227,25 +267,16 @@ func (w *Web) handleOverview(rw http.ResponseWriter, r *http.Request) {
 
 	model := view.OverviewModel{}
 	for _, p := range board.Projects {
-		var active, backlog, done int
-		for _, c := range p.Columns {
-			switch c.Kind {
-			case domain.KindActive:
-				active += c.Count
-			case domain.KindBacklog:
-				backlog += c.Count
-			case domain.KindDone:
-				done += c.Count
-			}
-		}
+		t := tallyOverview(p.Columns)
 		model.Projects = append(model.Projects, view.OverviewProject{
 			Key: p.Key, Name: p.Name, Focus: p.FocusKey,
-			Active: active, Backlog: backlog, Done: done,
+			Active: t.Active, Backlog: t.Backlog, Done: t.Done, Waiting: t.Waiting,
 			URL: "/p/" + p.Key,
 		})
-		model.Total.Active += active
-		model.Total.Backlog += backlog
-		model.Total.Done += done
+		model.Total.Active += t.Active
+		model.Total.Backlog += t.Backlog
+		model.Total.Done += t.Done
+		model.Total.Waiting += t.Waiting
 	}
 	model.Total.Projects = len(board.Projects)
 

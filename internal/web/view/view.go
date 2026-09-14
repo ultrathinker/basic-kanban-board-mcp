@@ -790,7 +790,12 @@ type OverviewProject struct {
 	Active      int // tasks in active columns
 	Backlog     int
 	Done        int
-	URL         string
+	// Waiting is tasks parked in a waiting-kind column (KANB-52). It is
+	// rendered only when non-zero: no project gets a waiting column by
+	// default, and a permanent "waiting 0" on every cell would be noise
+	// about a state most boards never use.
+	Waiting int
+	URL     string
 }
 
 // OverviewTotals is the roll-up shown above the project grid.
@@ -799,6 +804,7 @@ type OverviewTotals struct {
 	Active   int
 	Backlog  int
 	Done     int
+	Waiting  int
 }
 
 // LoginModel is /login.

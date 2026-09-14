@@ -482,7 +482,7 @@
 <header class="page-head">
   <h1>Overview</h1>
   <span class="spacer"></span>
-  <span class="text-subtle text-xs tabular">{{.Total.Projects}} projects · {{.Total.Active}} active · {{.Total.Backlog}} backlog · {{.Total.Done}} done</span>
+  <span class="text-subtle text-xs tabular">{{.Total.Projects}} projects · {{.Total.Active}} active · {{.Total.Backlog}} backlog · {{.Total.Done}} done{{if .Total.Waiting}} · {{.Total.Waiting}} waiting{{end}}</span>
 </header>
 
 {{if hasAny .Projects}}
@@ -499,6 +499,7 @@
       <span>backlog <strong>{{.Backlog}}</strong></span>
       <span>active <strong>{{.Active}}</strong></span>
       <span>done <strong>{{.Done}}</strong></span>
+      {{if .Waiting}}<span>waiting <strong>{{.Waiting}}</strong></span>{{end}}
     </div>
   </article>
   {{end}}

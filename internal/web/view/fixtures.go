@@ -284,13 +284,13 @@ func SampleActivityModel() ActivityModel {
 
 // SampleOverviewModel returns the / page.
 func SampleOverviewModel() OverviewModel {
-	totals := OverviewTotals{Projects: 3, Active: 7, Backlog: 41, Done: 240}
+	totals := OverviewTotals{Projects: 3, Active: 7, Backlog: 41, Done: 240, Waiting: 2}
 	return OverviewModel{
 		Total: totals,
 		Projects: []OverviewProject{
 			{Key: "BMB", Name: "BeeMemoryBank", Description: "Self-hosted kanban for agents.", Focus: "BMB-14", Active: 4, Backlog: 18, Done: 95, URL: boardURL("BMB")},
 			{Key: "KAN", Name: "Kanban UI", Description: "Tailwind + htmx + Alpine dashboard.", Focus: "KAN-3", Active: 2, Backlog: 14, Done: 88, URL: boardURL("KAN")},
-			{Key: "OPS", Name: "Ops & Infra", Description: "Deploy, backup, monitoring.", Focus: "OPS-3", Active: 1, Backlog: 9, Done: 57, URL: boardURL("OPS")},
+			{Key: "OPS", Name: "Ops & Infra", Description: "Deploy, backup, monitoring.", Focus: "OPS-3", Active: 1, Backlog: 9, Done: 57, Waiting: 2, URL: boardURL("OPS")},
 		},
 	}
 }
