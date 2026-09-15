@@ -182,10 +182,56 @@
         {{- /* The mirror of the footer's "top": the feed is long and the
              composer is at its very end, so this jumps straight to where a
              reply is written instead of scrolling past every message. */ -}}
-        <button type="button" class="section-toggle" data-panel-scroll-bottom title="Scroll down to the message composer" aria-label="Scroll down to the message composer">down</button>
+        {{- /* "write" reveals the composer that now sits at the top of this
+             section. Rendered only when there is a composer to reveal: a
+             read-only session gets no button for a form it does not have. */ -}}
+        {{if .Chat.Compose}}<button type="button" class="section-toggle" data-chat-compose-toggle aria-controls="chat-compose-form" aria-expanded="false" title="Show the message composer">write</button>{{end}}
+        <button type="button" class="section-toggle" data-panel-scroll-bottom title="Scroll down to the end of the feed" aria-label="Scroll down to the end of the feed">down</button>
         <button type="button" class="section-toggle" data-thoughts-toggle aria-controls="panel-section-thoughts-body" aria-expanded="true">hide</button>
       </header>
       <div class="panel-section-body" id="panel-section-thoughts-body">
+        {{- /* KANB-48: the composer. Rendered only when the session may
+             post (Chat.Compose nil otherwise); the type select is a real,
+             always-visible <select> because the card's warning is exactly
+             about a neutral post silently becoming a command — no hidden
+             default, no mode remembered behind the user's back. The
+             recipient "coordinator" option posts with no explicit
+             recipient, which the service resolves against the project's
+             coordinator at send time for the kinds that need one. app.js
+             owns draft survival (nothing in this form is inside a live
+             region, so no refresh can wipe it) and the per-attempt
+             idempotency key.
+
+             Owner, 15.09.2026: it sits at the TOP of the section, under the
+             header, and starts hidden. It used to live at the end of the
+             feed, which on a long feed meant scrolling past every message to
+             write one. The header's "write" button reveals it. Hidden with
+             the hidden ATTRIBUTE, never removed from the DOM, so a draft
+             survives being toggled away and back. */ -}}
+        {{if .Chat.Compose}}
+        <form class="chat-compose" id="chat-compose-form" data-chat-compose hidden>
+          <div class="chat-compose-reply" data-chat-compose-reply hidden>
+            <span class="chat-compose-reply-quote text-subtle text-xs" data-chat-compose-reply-quote></span>
+            <button type="button" class="icon-btn" data-chat-compose-reply-cancel aria-label="Cancel the reply" title="Cancel the reply">&#10005;</button>
+          </div>
+          <textarea class="chat-compose-text" data-chat-compose-text rows="2" aria-label="Message text" placeholder="Write to the project feed&#8230;"></textarea>
+          <div class="chat-compose-row">
+            <label class="text-subtle text-xs" for="chat-compose-recipient">to</label>
+            <select id="chat-compose-recipient" class="chat-compose-select" data-chat-compose-recipient>
+              {{range .Chat.Compose.Recipients}}<option value="{{.ID}}">{{.Label}}</option>{{end}}
+            </select>
+            <label class="text-subtle text-xs" for="chat-compose-kind">type</label>
+            <select id="chat-compose-kind" class="chat-compose-select" data-chat-compose-kind>
+              <option value="update">message</option>
+              <option value="question">question</option>
+              <option value="command">command</option>
+            </select>
+            <span class="spacer"></span>
+            <button type="button" class="btn btn-sm" data-chat-compose-send>send</button>
+          </div>
+          <p class="chat-compose-error text-xs" data-chat-compose-error hidden></p>
+        </form>
+        {{end}}
         {{- /* The <ol> always renders, even with zero entries: its id is the
              live-region target (see data-live-region="#chat-feed" above), and
              app.js's appendNewChatEntries needs somewhere to land the project's
@@ -216,41 +262,6 @@
           <button type="button" data-chat-show-more>Show more</button>
           <button type="button" data-chat-hide-history hidden>Hide all history</button>
         </div>
-        {{end}}
-        {{- /* KANB-48: the composer. Rendered only when the session may
-             post (Chat.Compose nil otherwise); the type select is a real,
-             always-visible <select> because the card's warning is exactly
-             about a neutral post silently becoming a command — no hidden
-             default, no mode remembered behind the user's back. The
-             recipient "coordinator" option posts with no explicit
-             recipient, which the service resolves against the project's
-             coordinator at send time for the kinds that need one. app.js
-             owns draft survival (nothing in this form is inside a live
-             region, so no refresh can wipe it) and the per-attempt
-             idempotency key. */ -}}
-        {{if .Chat.Compose}}
-        <form class="chat-compose" data-chat-compose>
-          <div class="chat-compose-reply" data-chat-compose-reply hidden>
-            <span class="chat-compose-reply-quote text-subtle text-xs" data-chat-compose-reply-quote></span>
-            <button type="button" class="icon-btn" data-chat-compose-reply-cancel aria-label="Cancel the reply" title="Cancel the reply">&#10005;</button>
-          </div>
-          <textarea class="chat-compose-text" data-chat-compose-text rows="2" aria-label="Message text" placeholder="Write to the project feed&#8230;"></textarea>
-          <div class="chat-compose-row">
-            <label class="text-subtle text-xs" for="chat-compose-recipient">to</label>
-            <select id="chat-compose-recipient" class="chat-compose-select" data-chat-compose-recipient>
-              {{range .Chat.Compose.Recipients}}<option value="{{.ID}}">{{.Label}}</option>{{end}}
-            </select>
-            <label class="text-subtle text-xs" for="chat-compose-kind">type</label>
-            <select id="chat-compose-kind" class="chat-compose-select" data-chat-compose-kind>
-              <option value="update">message</option>
-              <option value="question">question</option>
-              <option value="command">command</option>
-            </select>
-            <span class="spacer"></span>
-            <button type="button" class="btn btn-sm" data-chat-compose-send>send</button>
-          </div>
-          <p class="chat-compose-error text-xs" data-chat-compose-error hidden></p>
-        </form>
         {{end}}
       </div>
     </section>

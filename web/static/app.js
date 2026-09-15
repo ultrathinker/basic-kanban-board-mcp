@@ -1161,7 +1161,7 @@
   // definition rather than being tribal knowledge shared between the
   // template's default markup and a string literal here.
   function defaultPanelState() {
-    return { charts: 'shown', thoughts: 'shown', collapsed: false };
+    return { charts: 'shown', thoughts: 'shown', collapsed: false, compose: 'hidden' };
   }
 
   // loadPanelState reads the persisted state for one project. Any malformed
@@ -1229,6 +1229,19 @@
       thoughtsBtn.setAttribute('aria-expanded', state.thoughts === 'shown' ? 'true' : 'false');
       thoughtsBtn.textContent = state.thoughts === 'shown' ? 'hide' : 'show';
     }
+    // The composer is revealed by the section header's "write" button. It is
+    // hidden with the hidden ATTRIBUTE and never removed, so a draft written
+    // and toggled away is still there on the way back.
+    var compose = panel.querySelector('[data-chat-compose]');
+    var composeBtn = panel.querySelector('[data-chat-compose-toggle]');
+    var composeShown = state.compose === 'shown';
+    if (compose) compose.hidden = !composeShown;
+    if (composeBtn) {
+      composeBtn.setAttribute('aria-expanded', composeShown ? 'true' : 'false');
+      composeBtn.setAttribute('title', composeShown
+        ? 'Hide the message composer'
+        : 'Show the message composer');
+    }
     var collapseBtn = panel.querySelector('[data-panel-collapse]');
     if (collapseBtn) collapseBtn.setAttribute('aria-expanded', state.collapsed ? 'false' : 'true');
     // The header's toggle is the one control that exists in BOTH states, so
@@ -1256,7 +1269,11 @@
     return {
       charts: panel.classList.contains('charts-hidden') ? 'hidden' : 'shown',
       thoughts: panel.classList.contains('thoughts-hidden') ? 'hidden' : 'shown',
-      collapsed: split.classList.contains('is-collapsed')
+      collapsed: split.classList.contains('is-collapsed'),
+      compose: (function () {
+        var f = panel.querySelector('[data-chat-compose]');
+        return f && !f.hidden ? 'shown' : 'hidden';
+      })()
     };
   }
 
@@ -1360,6 +1377,19 @@
       // Two jumps along the panel's own length. The panel has no scroll
       // region of its own (owner's call — see .chat-feed in app.css), so it
       // is the PAGE that scrolls, and these move the page, not a container.
+      var composeToggle = e.target.closest && e.target.closest('[data-chat-compose-toggle]');
+      if (composeToggle) {
+        e.preventDefault();
+        var cs = currentPanelState();
+        setPanelField('compose', cs.compose === 'shown' ? 'hidden' : 'shown');
+        // Revealing it should put the cursor in it: the click said "I want to
+        // write", not "I want to look at a textarea".
+        if (cs.compose !== 'shown') {
+          var box = document.querySelector('[data-chat-compose-text]');
+          if (box) box.focus();
+        }
+        return;
+      }
       var topBtn = e.target.closest && e.target.closest('[data-panel-scroll-top]');
       if (topBtn) {
         e.preventDefault();
@@ -1379,17 +1409,10 @@
       var bottomBtn = e.target.closest && e.target.closest('[data-panel-scroll-bottom]');
       if (bottomBtn) {
         e.preventDefault();
-        // The composer is the destination: "down" means "take me to where I
-        // write", not merely "take me to the last message". Falling back to
-        // the document's end keeps the button useful for a reader who may
-        // not post (no composer rendered).
-        var composer = document.querySelector('[data-chat-compose]');
-        if (composer) {
-          var y = composer.getBoundingClientRect().bottom + window.pageYOffset;
-          scrollPageTo(y - window.innerHeight + 24);
-        } else {
-          scrollPageTo(document.documentElement.scrollHeight);
-        }
+        // The composer moved to the top of the section (owner, 15.09.2026),
+        // so "down" now means the end of the feed — the oldest messages,
+        // since the feed renders newest first.
+        scrollPageTo(document.documentElement.scrollHeight);
         return;
       }
     });
