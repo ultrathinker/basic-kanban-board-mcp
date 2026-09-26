@@ -54,7 +54,7 @@ When verifying incoming credentials (`Authorization: Bearer kbn_...` or `X-API-K
 
 ## 3. Scopes & Authorization
 
-Token capabilities are governed by three hierarchical scopes:
+Token capabilities are governed by three hierarchical scopes, plus `executor` between `read` and `write` (below):
 
 ```
 ┌────────────────────────────────────────────────────────┐
@@ -70,6 +70,7 @@ Token capabilities are governed by three hierarchical scopes:
 
 - **`read`**: Grants access to read the board (`board_get`), fetch tasks (`task_get`), peek ready work (`task_next` with `action: "peek"`), and request ephemeral SSE tickets. Mutations are blocked.
 - **`write`**: **Implies `read`**. Permits full task lifecycle operations: create tasks (`task_create`), update task fields and status (`task_update`), claim and start work (`task_next` with `action: "start"` or `"claim"`), manage leases (`task_claim`), add/remove dependency links (`task_link`), and archive tasks (`task_remove`).
+- **`executor`**: **Implies `read`**, and is implied by `write`. The scope of an *executor key*, issued with the `executor_key_issue` tool by an admin or by the coordinator of every project on the key. It writes only to cards whose `assignee` equals the key's name: claim/renew/release, `task_next` claim/start (which offers only those cards), `task_update` with `note`, `column` and `rank`, `progress_set` with `assessor` = its name, plus `project_post`. It can never move a card into or out of a `done`-kind column, change `assignee`, `reviewer` or any other field, create, archive or link cards, use `force`, change projects or issue keys — the executor hands work over, the reviewer accepts it. Every refusal is `code: "forbidden"` naming the rule. An executor key always names its projects and always expires (default 24 hours, at most 7 days); the expiry is checked on every credential path (bearer, browser session, SSE ticket), and an expired key drops out of the project's participants by itself. The secret is returned once, in the issuing response, and is never written to events, the feed or logs — only its SHA-256 hash is stored, like every other token.
 - **`admin`**: **Implies `write` and `read`**. Unlocks administrative operations:
   - Minting, rotating, and revoking tokens (`kanban token` / web admin UI).
   - Creating and modifying project definitions and column layouts (`project_upsert`).
