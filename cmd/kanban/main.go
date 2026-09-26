@@ -617,7 +617,7 @@ func runExport(args []string) error {
 		Name:   "cli-admin",
 		Scopes: domain.Scopes{domain.ScopeAdmin, domain.ScopeWrite, domain.ScopeRead},
 	}
-	doc, err := exportBoard(ctx, service.New(storeHandle, nil), storeHandle, actor, *project)
+	doc, err := service.New(storeHandle, nil).Export(ctx, actor, service.ExportInput{ProjectKey: *project})
 	if err != nil {
 		return err
 	}
@@ -666,46 +666,14 @@ func runImport(args []string) error {
 		Name:   "cli-admin",
 		Scopes: domain.Scopes{domain.ScopeAdmin, domain.ScopeWrite, domain.ScopeRead},
 	}
-	if err := importBoard(ctx, service.New(storeHandle, nil), storeHandle, actor, raw); err != nil {
+	res, err := importBoard(ctx, service.New(storeHandle, nil), actor, raw)
+	if err != nil {
 		return err
 	}
-
-	// A friendly confirmation per project matches what the old runImport
-	// printed, so the operator who piped an export file in still sees
-	// which projects landed on their store.
-	var doc exportDocument
-	if err := json.Unmarshal(raw, &doc); err == nil {
-		for _, bp := range doc.Projects {
-			fmt.Fprintf(os.Stdout, "Imported project %s (%s)\n", bp.Key, bp.Name)
-		}
+	for _, key := range res.Projects {
+		fmt.Fprintf(os.Stdout, "Imported project %s\n", key)
 	}
 	return nil
-}
-
-// applyPatch sends a single patch through TaskUpdate and turns a rejected item
-// into a real error. TaskUpdate reports per-item failures inside
-// ItemResult.Err and still returns a nil error, so a caller that only checks
-// the returned error silently discards them — that is exactly how import used
-// to lose every parent link.
-func applyPatch(ctx context.Context, svc service.Service, actor service.Actor, patch service.TaskPatch) (*domain.TaskView, error) {
-	res, err := svc.TaskUpdate(ctx, actor, service.TaskUpdateInput{Patches: []service.TaskPatch{patch}})
-	if err != nil {
-		return nil, err
-	}
-	if len(res.Items) == 0 {
-		return nil, fmt.Errorf("task_update returned no result for %s", patch.Key)
-	}
-	item := res.Items[0]
-	if !item.OK {
-		if item.Err != nil {
-			return nil, item.Err
-		}
-		return nil, fmt.Errorf("task_update rejected %s without an error", patch.Key)
-	}
-	if item.Task == nil {
-		return nil, fmt.Errorf("task_update accepted %s but returned no task", patch.Key)
-	}
-	return item.Task, nil
 }
 
 func runBackup(args []string) error {

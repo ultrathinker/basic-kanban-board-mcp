@@ -18,8 +18,10 @@ type taskRepo struct{ s *sqlStore }
 
 // Create inserts a new task. The caller must have assigned t.ID, t.Key
 // and t.ProjectID; the store stamps CreatedAt/UpdatedAt/ColumnEnteredAt
-// and Version. Metadata and Acceptance are JSON-encoded here so callers
-// see Go types.
+// and Version when the caller left them zero. Only a restore sets them: a
+// card brought back from an export keeps its own history, or its idle time
+// would restart at the moment of the import (KANB-70). Metadata and
+// Acceptance are JSON-encoded here so callers see Go types.
 func (r *taskRepo) Create(tx Tx, t *domain.Task) error {
 	if t == nil {
 		return errors.New("store: task.Create: nil task")
@@ -43,7 +45,9 @@ func (r *taskRepo) Create(tx Tx, t *domain.Task) error {
 	if t.CreatedAt.IsZero() {
 		t.CreatedAt = now
 	}
-	t.UpdatedAt = now
+	if t.UpdatedAt.IsZero() {
+		t.UpdatedAt = now
+	}
 	if t.ColumnEnteredAt.IsZero() {
 		t.ColumnEnteredAt = now
 	}
@@ -65,7 +69,9 @@ func (r *taskRepo) Create(tx Tx, t *domain.Task) error {
 	if t.CreatedBy == "" {
 		t.CreatedBy = "system"
 	}
-	t.UpdatedBy = t.CreatedBy
+	if t.UpdatedBy == "" {
+		t.UpdatedBy = t.CreatedBy
+	}
 	tw := tx.(*txWrap)
 	_, err = tw.tx.ExecContext(tw.ctx(), `
 		INSERT INTO tasks(

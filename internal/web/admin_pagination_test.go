@@ -621,3 +621,10 @@ func (adminPagerSvc) ProgressTrackDelete(context.Context, service.Actor, service
 func (adminPagerSvc) ProgressSet(context.Context, service.Actor, service.ProgressSetInput) (*service.ProgressSetResult, error) {
 	return nil, ErrServiceUnavailable
 }
+
+func (adminPagerSvc) Export(context.Context, service.Actor, service.ExportInput) (*service.ExportDocument, error) {
+	return nil, ErrServiceUnavailable
+}
+func (adminPagerSvc) Import(context.Context, service.Actor, *service.ExportDocument) (*service.ImportResult, error) {
+	return nil, ErrServiceUnavailable
+}

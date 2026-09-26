@@ -223,11 +223,9 @@ func (w *Web) handleAdminTokenRevoke(rw http.ResponseWriter, r *http.Request) {
 	http.Redirect(rw, r, "/admin", http.StatusSeeOther)
 }
 
-// handleAdminExport is "GET /admin/export": every accessible project, full
-// detail, as one JSON document. The body carries the same progress marks
-// and chat messages as `kanban export` does, so an operator can hand the
-// download to the CLI importer and the destination gets the append-only
-// streams too.
+// handleAdminExport is "/admin/export": every accessible project as one
+// backup document, built by Service.Export exactly as `kanban export` builds
+// it, so the download restores through `kanban import` with nothing lost.
 func (w *Web) handleAdminExport(rw http.ResponseWriter, r *http.Request) {
 	tok, ok := w.requireSessionPage(rw, r, domain.ScopeAdmin)
 	if !ok {
@@ -237,7 +235,7 @@ func (w *Web) handleAdminExport(rw http.ResponseWriter, r *http.Request) {
 		w.pageError(rw, r, err)
 		return
 	}
-	doc, err := buildWebExportDoc(r.Context(), w.d.Service, actorFor(tok), "")
+	doc, err := w.d.Service.Export(r.Context(), actorFor(tok), service.ExportInput{})
 	if err != nil {
 		apiError(rw, err)
 		return

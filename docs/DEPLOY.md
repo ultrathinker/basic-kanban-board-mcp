@@ -264,6 +264,20 @@ Wrote /var/backups/kanban/20260906-180000.db
 - The snapshot file is completely self-contained (checkpoints WAL into a single standard SQLite file).
 - Restore is as simple as stopping `kanban serve` and copying the backup file over `data/kanban.db`.
 
+### Moving projects (`kanban export` / `kanban import`)
+
+`kanban export [--project KEY] --out board.json` writes a JSON document with everything a project holds: every card (done and archived ones included) with its dates, version and history, the notes, the lifecycle journal, progress marks, the message feed with its commands, replies and acceptances, the focus and the coordinator. The **Export** buttons in the web UI (project page and admin page) produce the same document.
+
+`kanban import --in board.json --data ./data` restores it:
+
+- **All or nothing.** The whole document is written in one transaction. If anything fails, nothing is written.
+- **No merging.** If any project in the file already exists on the target board, the import stops before writing anything and lists those projects. Import into an empty data directory, or into a board that does not have those projects.
+- **Not idempotent.** Running the same import a second time is refused, because the projects now exist.
+- **Tokens are not part of the export.** A coordinator, a message author or a command acceptor is a token id. It is restored only if a token with that id exists on the target board. Otherwise the import still succeeds and prints a `warning:` line for each value it could not restore. A command keeps its addressee either way, so it can be accepted as soon as that token exists.
+- **Leases are not restored.** A claimed card comes back unclaimed, because the agent that held the lease belongs to the old board.
+
+Exports made by older versions still import (including those with per-column `wip_limit`, which is dropped with a warning).
+
 ---
 
 ## 7. Diagnostics & Maintenance

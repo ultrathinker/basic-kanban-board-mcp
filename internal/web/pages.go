@@ -107,8 +107,7 @@ const (
 
 // scopeChangeTruncatedNote is the sentence the items panels print when the
 // scope_change walk hit its page cap: the limit is named where the reader
-// sees the marks, the same honesty the CLI/web export gives its document
-// with the truncated field and its own warning (viewmap.go).
+// sees the marks, because a silent cap reads as "nothing was declared".
 func scopeChangeTruncatedNote() string {
 	return fmt.Sprintf(
 		"scope-change marks cover only the newest %d feed messages (the walk caps at %d pages of %d); older declarations are not drawn",
@@ -808,11 +807,10 @@ func (w *Web) handleActivity(rw http.ResponseWriter, r *http.Request) {
 	w.render(rw, r, http.StatusOK, "page-activity", page)
 }
 
-// handleProjectExport is "/p/{key}/export": a full JSON dump of one
-// project's board, built from board_get with every include on plus the
-// progress marks and chat messages that board_get alone never carried.
-// The document matches what `kanban export --project KEY` produces, so
-// the same import path serves both.
+// handleProjectExport is "/p/{key}/export": the full backup document of one
+// project, built by Service.Export — the same call `kanban export --project
+// KEY` makes, so the download is a document `kanban import` accepts and
+// restores to the same project (KANB-70).
 func (w *Web) handleProjectExport(rw http.ResponseWriter, r *http.Request) {
 	tok, ok := w.requireSessionPage(rw, r, domain.ScopeRead)
 	if !ok {
@@ -828,7 +826,7 @@ func (w *Web) handleProjectExport(rw http.ResponseWriter, r *http.Request) {
 		apiError(rw, err)
 		return
 	}
-	doc, err := buildWebExportDoc(r.Context(), w.d.Service, actorFor(tok), key)
+	doc, err := w.d.Service.Export(r.Context(), actorFor(tok), service.ExportInput{ProjectKey: key})
 	if err != nil {
 		apiError(rw, err)
 		return
