@@ -457,7 +457,7 @@ kanban serve   [--addr 127.0.0.1:8080] [--data ./data] [--base-url https://kanba
 kanban token   create --name claude@rog --scope write [--project BMB] | list | revoke <name> | rotate <name>
 kanban agent-config --client claude|codex|cursor|generic [--token <name>]   # prints paste-ready MCP config
 kanban agent-md                                                              # prints the recommended CLAUDE.md/AGENTS.md snippet
-kanban export [--project BMB] > board.json | kanban import board.json (idempotent by key)
+kanban export [--project BMB] > board.json | kanban import board.json (all or nothing; refuses if a project exists)
 kanban backup ./backups/          # VACUUM INTO, timestamped
 kanban task purge <key>…          # admin hard delete (never over MCP)
 kanban doctor                     # bind addr, base-url, TLS/auth status, db health, journal mode, wal size, redacted endpoint

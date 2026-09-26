@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/domain"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/store"
@@ -74,6 +75,7 @@ func (s *svc) Export(ctx context.Context, a Actor, in ExportInput) (*ExportDocum
 			if err != nil {
 				return fmt.Errorf("export tasks (project %s): %w", bp.Key, err)
 			}
+			sortByKeyNumber(all)
 			for _, t := range all {
 				if t.ArchivedAt != nil {
 					archivedKeys[bp.Key] = append(archivedKeys[bp.Key], t.Key)
@@ -294,4 +296,16 @@ func (s *svc) exportJournal(tx store.Tx, projectKey, projectID string, out *Expo
 		out.Journal = append(out.Journal, je)
 	}
 	return nil
+}
+
+// sortByKeyNumber orders cards by their number. The store lists them by
+// column id, a random UUID, so without this the per-card streams (notes,
+// progress) would come out in a different order on every board holding the
+// same cards, and two exports of one board could not be compared.
+func sortByKeyNumber(tasks []*domain.Task) {
+	num := func(t *domain.Task) int {
+		_, n, _ := domain.ParseTaskKey(t.Key)
+		return n
+	}
+	sort.SliceStable(tasks, func(i, j int) bool { return num(tasks[i]) < num(tasks[j]) })
 }
