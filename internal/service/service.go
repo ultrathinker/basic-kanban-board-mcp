@@ -215,6 +215,11 @@ type BoardGetInput struct {
 	DoneLimit  int
 	Filter     BoardFilter
 	Include    Includes
+
+	// withArchivedProjects lists archived projects too when ProjectKey is
+	// empty. Only Export sets it: a backup that drops an archived project
+	// loses it, while every live view keeps hiding them.
+	withArchivedProjects bool
 }
 
 type BoardFilter struct {

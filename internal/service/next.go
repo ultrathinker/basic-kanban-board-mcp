@@ -82,7 +82,7 @@ func NewNextProjection(include Includes, detail NextDetail) Projection {
 func (s *svc) taskNextPeek(ctx context.Context, a Actor, in TaskNextInput, limit int, proj Projection) (*NextResult, error) {
 	var result NextResult
 	err := s.store.Read(ctx, func(tx store.Tx) error {
-		projects, err := s.listProjectsForBoard(tx, a, in.ProjectKey)
+		projects, err := s.listProjectsForBoard(tx, a, in.ProjectKey, false)
 		if err != nil {
 			return err
 		}

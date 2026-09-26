@@ -28,7 +28,8 @@ const chatExportPage = 100
 // buttons, so the three can never disagree about what a backup contains.
 //
 // Done cards are exported without board_get's cap: a backup that silently
-// drops done cards past the cap is not a backup (KANB-62). The board part is
+// drops done cards past the cap is not a backup (KANB-62). Archived projects
+// are exported too, and import archives them again. The board part is
 // read through BoardGet, so the projects in the document are exactly those
 // the actor's token may see.
 func (s *svc) Export(ctx context.Context, a Actor, in ExportInput) (*ExportDocument, error) {
@@ -40,6 +41,8 @@ func (s *svc) Export(ctx context.Context, a Actor, in ExportInput) (*ExportDocum
 		View:       ViewTasks,
 		DoneLimit:  DoneLimitUnlimited,
 		Include:    exportIncludes,
+
+		withArchivedProjects: true,
 	})
 	if err != nil {
 		return nil, err

@@ -622,3 +622,46 @@ func TestExportImport_FocusCoordinatorDatesAndVersion(t *testing.T) {
 		t.Errorf("warnings = %q, want one naming the coordinator of GON that could not be restored", res.Warnings)
 	}
 }
+
+// An archived project is part of the board: the owner archives instead of
+// deleting precisely so it can come back. A full export used to list only
+// live projects, so a restore lost every archived one without a word.
+func TestExportImport_ArchivedProjectComesBackArchived(t *testing.T) {
+	dir1, dir2 := t.TempDir(), t.TempDir()
+	st, svc := kanb70Open(t, dir1)
+	kanb70Project(t, svc, "LIV", nil)
+	kanb70Project(t, svc, "ARC", nil)
+	kanb70Tasks(t, svc, "ARC", "Backlog", "kept in the archive")
+	yes, v := true, 1
+	if _, err := svc.ProjectUpsert(context.Background(), kanb70Admin, service.ProjectUpsertInput{
+		Mode: service.UpsertUpdate, Key: "ARC", Archived: &yes, IfVersion: &v,
+	}); err != nil {
+		t.Fatalf("archive ARC: %v", err)
+	}
+	st.Close()
+	file := filepath.Join(t.TempDir(), "export.json")
+	if err := runExport([]string{"--data", dir1, "--out", file}); err != nil {
+		t.Fatalf("runExport: %v", err)
+	}
+	if err := runImport([]string{"--data", dir2, "--in", file}); err != nil {
+		t.Fatalf("runImport: %v", err)
+	}
+	st2, _ := kanb70Open(t, dir2)
+	defer st2.Close()
+	var arc *domain.Project
+	var cards int
+	if err := st2.Read(context.Background(), func(tx store.Tx) error {
+		var err error
+		if arc, err = st2.Projects().GetByKey(tx, "ARC"); err != nil {
+			return err
+		}
+		all, err := st2.Tasks().List(tx, store.TaskFilter{ProjectIDs: []string{arc.ID}, IncludeArchived: true, IncludeDone: true})
+		cards = len(all)
+		return err
+	}); err != nil {
+		t.Fatalf("the archived project did not survive export and import: %v", err)
+	}
+	if arc.ArchivedAt == nil || cards != 1 {
+		t.Errorf("ARC restored with archived_at=%v and %d cards, want archived with its 1 card", arc.ArchivedAt, cards)
+	}
+}

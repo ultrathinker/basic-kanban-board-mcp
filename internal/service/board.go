@@ -32,7 +32,7 @@ func (s *svc) BoardGet(ctx context.Context, a Actor, in BoardGetInput) (*Board, 
 
 	var board Board
 	err := s.store.Read(ctx, func(tx store.Tx) error {
-		projects, err := s.listProjectsForBoard(tx, a, in.ProjectKey)
+		projects, err := s.listProjectsForBoard(tx, a, in.ProjectKey, in.withArchivedProjects)
 		if err != nil {
 			return err
 		}
@@ -196,7 +196,7 @@ func (ix *participantIndex) coordinator(p *domain.Project) *Participant {
 	return &Participant{TokenID: p.CoordinatorTokenID}
 }
 
-func (s *svc) listProjectsForBoard(tx store.Tx, a Actor, key string) ([]*domain.Project, error) {
+func (s *svc) listProjectsForBoard(tx store.Tx, a Actor, key string, withArchived bool) ([]*domain.Project, error) {
 	if key != "" {
 		p, err := s.resolveProject(tx, a, key)
 		if err != nil {
@@ -204,7 +204,7 @@ func (s *svc) listProjectsForBoard(tx store.Tx, a Actor, key string) ([]*domain.
 		}
 		return []*domain.Project{p}, nil
 	}
-	all, err := s.store.Projects().List(tx, false)
+	all, err := s.store.Projects().List(tx, withArchived)
 	if err != nil {
 		return nil, err
 	}
