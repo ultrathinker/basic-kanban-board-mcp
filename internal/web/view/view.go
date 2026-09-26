@@ -617,7 +617,6 @@ type FocusCard struct {
 type ColumnView struct {
 	Name   string
 	Kind   domain.Kind
-	WIP    *int // nil when no limit
 	Count  int
 	Tasks  []TaskCard
 	Hidden bool // done column hidden when board says so
@@ -917,7 +916,6 @@ func BuildBoard(project ProjectSummary, focus *FocusCard, columns []domain.Colum
 		cv := ColumnView{
 			Name:   c.Name,
 			Kind:   c.Kind,
-			WIP:    c.WIPLimit,
 			Count:  len(tasks),
 			Hidden: hideDone && c.Kind == domain.KindDone,
 		}
@@ -1034,13 +1032,6 @@ func priorityBadge(p domain.Priority) string {
 	default:
 		return ""
 	}
-}
-
-// wipFull reports whether a column is at or over its WIP limit — the state
-// the board must not let you miss, rendered as an inverted count block. A
-// nil limit means "no limit", which is never full.
-func wipFull(count int, limit *int) bool {
-	return limit != nil && count >= *limit
 }
 
 // formatEstimate renders an estimate as e.g. "2h", "30m" (no unit conversion

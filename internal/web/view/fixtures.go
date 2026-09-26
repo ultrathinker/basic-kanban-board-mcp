@@ -39,15 +39,13 @@ func SampleBoardModelFor(key string) (BoardModel, []domain.Column, []domain.Task
 }
 
 // sampleColumns is the board shape every board fixture shares. "Ready" is
-// deliberately empty and deliberately has no WIP limit: a template that only
-// renders against populated, limited columns is a template nobody has
-// tested — the WIP badge crash that shipped in the first cut was exactly
-// that gap.
+// deliberately empty: a template that only renders against populated
+// columns is a template nobody has tested.
 func sampleColumns() []domain.Column {
 	return []domain.Column{
 		{ID: "c-backlog", Name: "Backlog", Kind: domain.KindBacklog},
 		{ID: "c-ready", Name: "Ready", Kind: domain.KindActive},
-		{ID: "c-doing", Name: "Doing", Kind: domain.KindActive, WIPLimit: intPtr(3)},
+		{ID: "c-doing", Name: "Doing", Kind: domain.KindActive},
 		{ID: "c-review", Name: "Review", Kind: domain.KindActive},
 		{ID: "c-done", Name: "Done", Kind: domain.KindDone},
 	}
@@ -381,8 +379,6 @@ func SampleAdminModel() AdminModel {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-func intPtr(i int) *int { return &i }
 
 func ptrString(s string) *string { return &s }
 

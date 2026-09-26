@@ -58,7 +58,6 @@ func newProjectionOut(p service.Projection) *projectionOut {
 
 type nextReasonsOut struct {
 	BlockedDependency int `json:"blocked_dependency"`
-	WIPFull           int `json:"wip_full"`
 	ClaimedByOther    int `json:"claimed_by_other"`
 	ParentIncomplete  int `json:"parent_incomplete"`
 	NotLeaf           int `json:"not_leaf"`
@@ -96,7 +95,7 @@ func taskNextTool() *gomcp.Tool {
 
 	return &gomcp.Tool{
 		Name: opTaskNext,
-		Description: "Find, claim or start the next ready task. `peek` never takes anything (even when WIP is full); " +
+		Description: "Find, claim or start the next ready task. `peek` never takes anything; " +
 			"`claim` leases the top candidate without moving it; `start` leases it and moves it into the first active column atomically. " +
 			"Returns `data.tasks[]`: a flat list of task objects, best candidate first (task_get returns `data.items[]` instead, " +
 			"because it answers per requested key). `meta.reasons` counts why the rest were not offered.\n" +
@@ -169,12 +168,10 @@ func registerTaskNext(s *gomcp.Server, svc service.Service, readOnly bool) {
 			Meta: &toolMeta{
 				Count:      len(res.Tasks),
 				Projection: newProjectionOut(res.Projection),
-				WIPFull:    res.WIPFull,
 				ClaimedKey: res.ClaimedKey,
 				StartedKey: res.StartedKey,
 				Reasons: &nextReasonsOut{
 					BlockedDependency: res.Reasons.BlockedDependency,
-					WIPFull:           res.Reasons.WIPFull,
 					ClaimedByOther:    res.Reasons.ClaimedByOther,
 					ParentIncomplete:  res.Reasons.ParentIncomplete,
 					NotLeaf:           res.Reasons.NotLeaf,

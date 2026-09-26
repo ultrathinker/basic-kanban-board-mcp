@@ -39,13 +39,6 @@ const (
 	// returns everything up to this cap rather than nothing.
 	MaxProgressHistoryLimit = 200 // progress_history
 
-	// WIPExceededKeySample bounds how many occupying task keys a wip_exceeded
-	// error names. Mirrors NextBlockedTopSample's "small sample, not a full
-	// list" rule: a project may set a WIP limit far larger than a handful
-	// (nothing caps wip_limit itself beyond >0), and the error must not turn
-	// into a dump of the whole column.
-	WIPExceededKeySample = 10
-
 	MaxProjectKeyLen = 8
 	MinProjectKeyLen = 2
 	MaxColumnNameLen = 40
@@ -115,17 +108,16 @@ const (
 // matches the agent loop exactly — task_next(start) moves into the first active
 // column and task_update(column:"Done") finishes. A Review column earns no
 // default space (task_next never routes into it, strict_done triggers on the
-// done column, it carries no WIP or special semantics, and the reviewer field
+// done column, it carries no special semantics, and the reviewer field
 // is column-independent), so it is left to whoever wants it: project_upsert
 // takes arbitrary columns per project. Existing boards keep their own columns —
 // this is only the default for a NEW project created without a column list.
 var DefaultColumns = []struct {
-	Name     string
-	Kind     Kind
-	WIPLimit *int
+	Name string
+	Kind Kind
 }{
 	{Name: "Backlog", Kind: KindBacklog},
-	{Name: "Doing", Kind: KindActive, WIPLimit: intPtr(3)},
+	{Name: "Doing", Kind: KindActive},
 	{Name: "Done", Kind: KindDone},
 }
 

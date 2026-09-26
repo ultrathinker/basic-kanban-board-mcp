@@ -41,11 +41,10 @@ type boardGetInput struct {
 }
 
 type boardColumnOut struct {
-	Name     string      `json:"name"`
-	Kind     domain.Kind `json:"kind"`
-	WIPLimit *int        `json:"wip_limit,omitempty"`
-	Count    int         `json:"count"`
-	Tasks    []taskOut   `json:"tasks,omitempty"`
+	Name  string      `json:"name"`
+	Kind  domain.Kind `json:"kind"`
+	Count int         `json:"count"`
+	Tasks []taskOut   `json:"tasks,omitempty"`
 }
 
 // participantOut is one actor who may take part in the project's
@@ -320,11 +319,10 @@ func registerBoardGet(s *gomcp.Server, svc service.Service) {
 			for j := range p.Columns {
 				c := &p.Columns[j]
 				cols[j] = boardColumnOut{
-					Name:     c.Name,
-					Kind:     c.Kind,
-					WIPLimit: c.WIPLimit,
-					Count:    c.Count,
-					Tasks:    taskViewOutList(c.Tasks, proj),
+					Name:  c.Name,
+					Kind:  c.Kind,
+					Count: c.Count,
+					Tasks: taskViewOutList(c.Tasks, proj),
 				}
 				total += len(c.Tasks)
 			}

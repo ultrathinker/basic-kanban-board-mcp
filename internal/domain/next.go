@@ -7,8 +7,7 @@
 //
 // The algorithm never touches the database. The service layer is responsible
 // for collecting Candidates (unarchived tasks in backlog-kind columns),
-// computing ParentBlocked (the open blockers on each candidate's parent), and
-// reporting whether the first active column is at its WIP limit.
+// and computing ParentBlocked (the open blockers on each candidate's parent).
 //
 // Determinism is a contract. The service layer retries `task_next(action:
 // claim|start)` by walking the returned Ready list when a concurrent writer
@@ -26,13 +25,8 @@ import (
 // Reasons counts why candidates were excluded from the ready list. The field
 // names mirror service.NextReasons so the service layer can copy values
 // verbatim; they live in domain so the algorithm does not depend on service.
-//
-// WIPFull is the count of ready tasks that exist when the first active column
-// is at its WIP limit — peek returns them, start refuses them, and an agent
-// handed an empty peek result with a non-zero WIPFull has actionable context.
 type Reasons struct {
 	BlockedDependency int
-	WIPFull           int
 	ClaimedByOther    int
 	ParentIncomplete  int
 	NotLeaf           int
@@ -59,9 +53,6 @@ type NextInput struct {
 	// or parent not blocked". The service layer is the only thing that knows
 	// the parent task; this side channel keeps the algorithm pure.
 	ParentBlocked map[string][]string
-	// ActiveWIPFull is true when the first active column is at its WIP limit.
-	// peek still returns ready work when true; only start is refused.
-	ActiveWIPFull bool
 	// Limit caps the size of Ready. Values <= 0 default to 3 (the service's
 	// documented default).
 	Limit int
@@ -74,7 +65,6 @@ type NextOutput struct {
 	Ready      []TaskView
 	Reasons    Reasons
 	BlockedTop []BlockedSample
-	WIPFull    bool
 }
 
 // NextReady selects up to Limit ready tasks in the order mandated by PLAN §6.2
@@ -86,9 +76,7 @@ func NextReady(in NextInput) NextOutput {
 	if in.Limit <= 0 {
 		in.Limit = 3
 	}
-	out := NextOutput{
-		WIPFull: in.ActiveWIPFull,
-	}
+	out := NextOutput{}
 
 	var ready []TaskView
 	var depBlocked []BlockedSample
@@ -147,13 +135,6 @@ func NextReady(in NextInput) NextOutput {
 		depBlocked = depBlocked[:NextBlockedTopSample]
 	}
 	out.BlockedTop = depBlocked
-
-	// WIPFull in Reasons is the count of ready tasks that exist when WIP is
-	// full. peek returns them, start refuses them — having a non-zero count
-	// tells the agent there is work waiting once WIP frees up.
-	if out.WIPFull {
-		out.Reasons.WIPFull = len(ready)
-	}
 
 	return out
 }

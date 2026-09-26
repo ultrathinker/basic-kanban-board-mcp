@@ -52,12 +52,6 @@ func TestNewErrorEnvelope_PerCode(t *testing.T) {
 			},
 		},
 		{
-			code: domain.CodeWIPExceeded,
-			make: func() *domain.Error {
-				return domain.WIPExceeded("Doing", 3, []string{"BMB-1", "BMB-2", "BMB-3"})
-			},
-		},
-		{
 			code: domain.CodeClaimed,
 			make: func() *domain.Error {
 				return domain.Claimed("BMB-14", "claude@rog")

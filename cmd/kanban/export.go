@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/domain"
@@ -372,6 +374,13 @@ func collectJournal(tx store.Tx, st store.Store, bp service.BoardProject, projec
 // letting an agent forge a backdated mark, and the reason the import path
 // has to reach past them.
 func importBoard(ctx context.Context, svc service.Service, st store.Store, actor service.Actor, raw []byte) error {
+	raw, dropped, err := stripLegacyWIPLimits(raw)
+	if err != nil {
+		return fmt.Errorf("import parse: %w", err)
+	}
+	if dropped > 0 {
+		fmt.Fprintf(os.Stderr, "warning: %d column(s) in this export carry wip_limit; it was dropped on import because the board has no WIP limits since 26.09.2026\n", dropped)
+	}
 	doc, err := decodeExportDocument(raw)
 	if err != nil {
 		return err
@@ -398,6 +407,91 @@ func importBoard(ctx context.Context, svc service.Service, st store.Store, actor
 	// above, each of which wrote its own (import-time) journal entries as
 	// an unavoidable store-layer side effect.
 	return importJournal(ctx, st, doc)
+}
+
+// stripLegacyWIPLimits removes the retired per-column WIP limit from an
+// export made before 26.09.2026, when the board still had WIP limits
+// (KANB-59). decodeExportDocument refuses unknown fields — a typo must not
+// silently discard history — so without this every backup taken before the
+// removal would stop importing. Old exports spell the field the way
+// encoding/json wrote an untagged struct field ("WIPLimit", null on every
+// column without a limit); the match ignores case and underscores so
+// "wip_limit" is covered too, exactly as the decoder would have matched it.
+// The returned count is the columns that carried a real (non-null) limit —
+// those are reported on stderr, never dropped silently.
+func stripLegacyWIPLimits(raw []byte) ([]byte, int, error) {
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		// Not an object at all: let the strict decoder produce the error.
+		return raw, 0, nil
+	}
+	projKey, ok := foldKey(doc, "projects")
+	if !ok {
+		return raw, 0, nil
+	}
+	var projects []map[string]json.RawMessage
+	if json.Unmarshal(doc[projKey], &projects) != nil {
+		return raw, 0, nil
+	}
+	stripped, limited := 0, 0
+	for _, proj := range projects {
+		colKey, ok := foldKey(proj, "columns")
+		if !ok {
+			continue
+		}
+		var cols []map[string]json.RawMessage
+		if json.Unmarshal(proj[colKey], &cols) != nil {
+			continue
+		}
+		changed := false
+		for _, col := range cols {
+			for k, v := range col {
+				if strings.ReplaceAll(strings.ToLower(k), "_", "") != "wiplimit" {
+					continue
+				}
+				if s := strings.TrimSpace(string(v)); s != "" && s != "null" {
+					limited++
+				}
+				delete(col, k)
+				stripped++
+				changed = true
+			}
+		}
+		if changed {
+			b, err := json.Marshal(cols)
+			if err != nil {
+				return nil, 0, err
+			}
+			proj[colKey] = b
+		}
+	}
+	if stripped == 0 {
+		return raw, 0, nil
+	}
+	b, err := json.Marshal(projects)
+	if err != nil {
+		return nil, 0, err
+	}
+	doc[projKey] = b
+	out, err := json.Marshal(doc)
+	if err != nil {
+		return nil, 0, err
+	}
+	return out, limited, nil
+}
+
+// foldKey finds the key in m that encoding/json would match to name
+// (case-insensitively), the way the strict decoder resolves it.
+func foldKey(m map[string]json.RawMessage, name string) (string, bool) {
+	if _, ok := m[name]; ok {
+		return name, true
+	}
+	for k := range m {
+		if strings.EqualFold(k, name) {
+			return k, true
+		}
+	}
+	return "", false
 }
 
 // decodeExportDocument treats an export as a closed wire contract. Missing
@@ -461,9 +555,8 @@ func importProject(ctx context.Context, svc service.Service, actor service.Actor
 	cols := make([]service.ColumnSpec, len(bp.Columns))
 	for i, c := range bp.Columns {
 		cols[i] = service.ColumnSpec{
-			Name:     c.Name,
-			Kind:     c.Kind,
-			WIPLimit: c.WIPLimit,
+			Name: c.Name,
+			Kind: c.Kind,
 		}
 	}
 	desc := bp.Description

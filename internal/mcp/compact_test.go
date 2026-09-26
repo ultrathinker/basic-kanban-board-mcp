@@ -107,17 +107,11 @@ func withEnteredAt(t time.Time) func(*domain.TaskView) {
 }
 
 func mkColumn(name string, kind domain.Kind, count int, tasks ...domain.TaskView) service.BoardColumn {
-	wip := (*int)(nil)
-	if kind == domain.KindActive && name == "Doing" {
-		v := 3
-		wip = &v
-	}
 	return service.BoardColumn{
-		Name:     name,
-		Kind:     kind,
-		WIPLimit: wip,
-		Count:    count,
-		Tasks:    append([]domain.TaskView(nil), tasks...),
+		Name:  name,
+		Kind:  kind,
+		Count: count,
+		Tasks: append([]domain.TaskView(nil), tasks...),
 	}
 }
 
@@ -286,7 +280,7 @@ func TestRender_SummaryViewIsHeaderOnly(t *testing.T) {
 	}}}
 	got := Render(board, fixedNow)
 	want := "compact_version=1\n" +
-		"# BMB BeeMemoryBank · focus none · Backlog 6 · Doing 1/3 · Review 0 · Done 3 (hidden) · v4\n"
+		"# BMB BeeMemoryBank · focus none · Backlog 6 · Doing 1 · Review 0 · Done 3 (hidden) · v4\n"
 	if got != want {
 		t.Errorf("summary render:\n got %q\nwant %q", got, want)
 	}
@@ -296,8 +290,8 @@ func TestRoundTrip(t *testing.T) {
 	// The round-trip property is field-level, not byte-level. The grammar
 	// carries: KEY, [priority type], title, est, @assignee, lease actor+rem,
 	// sub, blocked-by, #tags, v. Age carries duration but is only present on
-	// active columns; an active-without-WIP column (Review) parses as backlog,
-	// so age is lost for tasks there — accepted, documented.
+	// active columns; the compact line does not carry Kind, so every non-done
+	// column parses as backlog and age is lost there — accepted, documented.
 	want := &service.Board{Projects: []service.BoardProject{{
 		Key:      "BMB",
 		Name:     "BeeMemoryBank",
@@ -627,7 +621,7 @@ func TestBudgetFixture_StaysUnderTokenBudget(t *testing.T) {
 		"DoneLimit ordering by most recent DoneAt descending",
 		"Lexicographic sort of #tags on every compact task line",
 		"Strict_done blocks move into Done with unchecked items",
-		"task_next peek returns work even when WIP is full",
+		"task_next peek never takes anything even with many ready",
 		"Deterministic ordering under identical priority/due",
 		"Append note must never bump task.Version optimistic field",
 		"Symbolic @ref inside task_create blocked_by array",
@@ -699,13 +693,11 @@ func TestBudgetFixture_StaysUnderTokenBudget(t *testing.T) {
 		tasks = append(tasks, tv)
 	}
 
-	wip := domain.CompactBudgetTasks
 	doing := service.BoardColumn{
-		Name:     "Doing",
-		Kind:     domain.KindActive,
-		WIPLimit: &wip,
-		Count:    len(tasks),
-		Tasks:    tasks,
+		Name:  "Doing",
+		Kind:  domain.KindActive,
+		Count: len(tasks),
+		Tasks: tasks,
 	}
 	board := &service.Board{Projects: []service.BoardProject{{
 		Key:       "BMB",

@@ -965,14 +965,6 @@ func (s *svc) prepareUpdate(tx store.Tx, a Actor, patch TaskPatch) (*prepared, e
 		if err != nil {
 			return nil, err
 		}
-		// OccupantKeys instead of CountTasks: a wip_exceeded refusal below
-		// needs to name what occupies the destination, and deriving the
-		// count from len() here means that costs no second read.
-		occupants, err := s.store.Columns().OccupantKeys(tx, dst.ID, task.ID)
-		if err != nil {
-			return nil, err
-		}
-		cnt := len(occupants)
 		openBlocks, err := s.store.Links().OpenBlockers(tx, task.ID)
 		if err != nil {
 			return nil, err
@@ -996,8 +988,6 @@ func (s *svc) prepareUpdate(tx store.Tx, a Actor, patch TaskPatch) (*prepared, e
 			From:                *fromCol,
 			To:                  *dst,
 			OpenBlocks:          openBlocks,
-			ToCount:             cnt,
-			Occupants:           occupants,
 			AcceptanceRemaining: acceptanceRemaining,
 			EnforceDependencies: proj.EnforceDependencies,
 			StrictDone:          proj.StrictDone,

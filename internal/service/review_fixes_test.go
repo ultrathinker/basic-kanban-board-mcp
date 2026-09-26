@@ -113,59 +113,6 @@ func TestTaskUpdate_StrictDone_CheckAndMoveInOnePatch(t *testing.T) {
 	}
 }
 
-// Bug 3: project_upsert must reject a non-positive WIP limit and a WIP limit on
-// a non-active column.
-func TestProjectUpsert_RejectsInvalidWIP(t *testing.T) {
-	env := openTestEnv(t)
-	neg := -1
-	three := 3
-	zero := 0
-
-	cases := []struct {
-		name string
-		cols []ColumnSpec
-	}{
-		{"negative WIP on active", []ColumnSpec{
-			{Name: "B", Kind: domain.KindBacklog},
-			{Name: "D", Kind: domain.KindActive, WIPLimit: &neg},
-			{Name: "Done", Kind: domain.KindDone},
-		}},
-		{"zero WIP on active", []ColumnSpec{
-			{Name: "B", Kind: domain.KindBacklog},
-			{Name: "D", Kind: domain.KindActive, WIPLimit: &zero},
-			{Name: "Done", Kind: domain.KindDone},
-		}},
-		{"WIP on backlog", []ColumnSpec{
-			{Name: "B", Kind: domain.KindBacklog, WIPLimit: &three},
-			{Name: "D", Kind: domain.KindActive},
-			{Name: "Done", Kind: domain.KindDone},
-		}},
-	}
-	for i, tc := range cases {
-		_, err := env.svc.ProjectUpsert(context.Background(), env.actor, ProjectUpsertInput{
-			Mode: UpsertCreate, Key: "WP" + string(rune('A'+i)), Name: tc.name, Columns: tc.cols,
-		})
-		if err == nil {
-			t.Errorf("%s: accepted, want validation error", tc.name)
-			continue
-		}
-		if de := domain.AsError(err); de == nil || de.Code != domain.CodeValidation {
-			t.Errorf("%s: error code = %v, want validation", tc.name, de)
-		}
-	}
-
-	// A positive WIP on an active column is still fine.
-	if _, err := env.svc.ProjectUpsert(context.Background(), env.actor, ProjectUpsertInput{
-		Mode: UpsertCreate, Key: "WPOK", Name: "ok", Columns: []ColumnSpec{
-			{Name: "B", Kind: domain.KindBacklog},
-			{Name: "D", Kind: domain.KindActive, WIPLimit: &three},
-			{Name: "Done", Kind: domain.KindDone},
-		},
-	}); err != nil {
-		t.Errorf("positive WIP on active column was rejected: %v", err)
-	}
-}
-
 // A non-nil empty Tags/Acceptance is a replacement with nothing — it clears the
 // stored collection and bumps the version, rather than silently doing nothing.
 func TestTaskUpdate_EmptyTagsAndAcceptanceClear(t *testing.T) {

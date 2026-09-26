@@ -16,9 +16,9 @@ import (
 //
 // The nearest existing neighbours cover one side each:
 // TestTaskNext_StartMovesAndClaimsAtomically has a single actor (no loser),
-// and TestTaskNext_ConcurrentStartExactlyOneWins races one shared actor
-// against a WIP-full column, where losers get a wip_exceeded error. Neither
-// proves "a second, different actor gets nothing".
+// and TestTaskNext_ConcurrentStartNeverTakesATaskTwice races one shared
+// actor over many candidates. Neither proves "a second, different actor gets
+// nothing".
 
 // TestAtomicClaim_SecondActorGetsNothing is the deterministic core: A starts
 // the only ready task, then B asks to start and must receive nothing.

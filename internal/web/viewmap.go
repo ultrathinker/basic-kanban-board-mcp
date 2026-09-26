@@ -252,7 +252,7 @@ var markdownRender = func() func(string) template.HTML {
 
 // taskCardFrom builds a view.TaskCard for one task via view.BuildBoard,
 // reusing its lease/estimate/age/priority rendering rules instead of
-// duplicating them. col only needs Name/Kind/WIPLimit; a synthetic id keeps
+// duplicating them. col only needs Name/Kind; a synthetic id keeps
 // BuildBoard's column-grouping happy for this single-task call.
 func taskCardFrom(projectKey string, col domain.Column, t domain.TaskView) view.TaskCard {
 	col.ID = "c"
@@ -281,11 +281,10 @@ func buildBoardModel(proj service.BoardProject, hideDone bool) view.BoardModel {
 		cv := view.ColumnView{
 			Name:   c.Name,
 			Kind:   c.Kind,
-			WIP:    c.WIPLimit,
 			Count:  c.Count,
 			Hidden: hideDone && c.Kind == domain.KindDone,
 		}
-		col := domain.Column{Name: c.Name, Kind: c.Kind, WIPLimit: c.WIPLimit}
+		col := domain.Column{Name: c.Name, Kind: c.Kind}
 		for _, t := range c.Tasks {
 			card := taskCardFrom(proj.Key, col, t)
 			cv.Tasks = append(cv.Tasks, card)

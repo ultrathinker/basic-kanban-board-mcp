@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -86,7 +85,6 @@ func seedTestProject(t *testing.T, env *testEnv) (*domain.Project, map[string]*d
 				Name:      def.Name,
 				Position:  i,
 				Kind:      def.Kind,
-				WIPLimit:  def.WIPLimit,
 			}
 			if err := env.Columns().Create(tx, c); err != nil {
 				return err
@@ -172,9 +170,6 @@ func TestTaskNext_PeekReturnsReady(t *testing.T) {
 	if len(res.Tasks) != 2 {
 		t.Fatalf("got %d tasks, want 2", len(res.Tasks))
 	}
-	if res.WIPFull {
-		t.Fatalf("WIPFull = true, want false (Doing is empty)")
-	}
 }
 
 func TestTaskNext_StartMovesAndClaimsAtomically(t *testing.T) {
@@ -211,64 +206,45 @@ func TestTaskNext_StartMovesAndClaimsAtomically(t *testing.T) {
 	}
 }
 
-func TestTaskNext_StartWIPFullRefuses(t *testing.T) {
+// TestTaskNext_StartNeverRefusedForOccupancy: the board has no WIP limits
+// since 26.09.2026 (KANB-59). Doing held three cards at most under the old
+// default; starting a fourth, fifth and sixth must simply work.
+func TestTaskNext_StartNeverRefusedForOccupancy(t *testing.T) {
 	env := openTestEnv(t)
-	// Seed 3 backlog tasks so we can fill Doing to WIP=3.
-	for i := 0; i < 3; i++ {
-		makeBacklogTask(t, env, "filler")
+	const n = 6
+	for i := 0; i < n; i++ {
+		makeBacklogTask(t, env, "work")
 	}
-	// Fill Doing to WIP=3.
-	for i := 0; i < 3; i++ {
-		if _, err := env.svc.TaskNext(context.Background(), env.actor, TaskNextInput{
+	for i := 0; i < n; i++ {
+		res, err := env.svc.TaskNext(context.Background(), env.actor, TaskNextInput{
 			ProjectKey: env.proj.Key, Action: NextStart, Limit: 1,
-		}); err != nil {
-			t.Fatalf("filler start %d: %v", i, err)
+		})
+		if err != nil {
+			t.Fatalf("start %d with %d cards already in Doing: %v", i+1, i, err)
+		}
+		if res.StartedKey == "" {
+			t.Fatalf("start %d took nothing", i+1)
 		}
 	}
-	// Now add one more in Backlog.
-	makeBacklogTask(t, env, "blocked")
-	peek, err := env.svc.TaskNext(context.Background(), env.actor, TaskNextInput{
-		ProjectKey: env.proj.Key, Action: NextPeek, Limit: 1,
-	})
-	if err != nil {
-		t.Fatalf("peek: %v", err)
-	}
-	if !peek.WIPFull {
-		t.Fatalf("peek.WIPFull = false, want true (Doing is full)")
-	}
-	if len(peek.Tasks) == 0 {
-		t.Fatalf("peek returned no tasks, but PLAN says peek still returns ready work")
-	}
-	_, err = env.svc.TaskNext(context.Background(), env.actor, TaskNextInput{
-		ProjectKey: env.proj.Key, Action: NextStart, Limit: 1,
-	})
-	if err == nil {
-		t.Fatalf("start succeeded with full WIP, want wip_exceeded")
-	}
-	de := domain.AsError(err)
-	if de == nil || de.Code != domain.CodeWIPExceeded {
-		t.Fatalf("start error code = %v, want wip_exceeded", de)
+	if got := env.countIn(t, env.cols["Doing"]); got != n {
+		t.Fatalf("Doing holds %d, want %d", got, n)
 	}
 }
 
-// TestTaskNext_ConcurrentStartExactlyOneWins is the headline concurrency
-// test: many goroutines call TaskNext(start) at once against a WIP=1
-// column, and exactly one wins.
-func TestTaskNext_ConcurrentStartExactlyOneWins(t *testing.T) {
+// TestTaskNext_ConcurrentStartNeverTakesATaskTwice is the headline
+// concurrency test: many goroutines call TaskNext(start) at once and no
+// task is started by two of them. With no WIP limit every candidate is
+// taken exactly once and the surplus goroutines find nothing.
+func TestTaskNext_ConcurrentStartNeverTakesATaskTwice(t *testing.T) {
 	env := openTestEnv(t)
-	if err := env.Write(context.Background(), func(tx store.Tx) error {
-		env.cols["Doing"].WIPLimit = intPtrLocal(1)
-		return env.Columns().Update(tx, env.cols["Doing"])
-	}); err != nil {
-		t.Fatalf("lower WIP: %v", err)
-	}
 	const N = 10
 	for i := 0; i < N; i++ {
 		makeBacklogTask(t, env, "candidate")
 	}
 
 	const goroutines = 20
-	var wins int64
+	var mu sync.Mutex
+	started := map[string]int{}
 	var wg sync.WaitGroup
 	start := make(chan struct{})
 	for i := 0; i < goroutines; i++ {
@@ -280,14 +256,21 @@ func TestTaskNext_ConcurrentStartExactlyOneWins(t *testing.T) {
 				ProjectKey: env.proj.Key, Action: NextStart, Limit: 1,
 			})
 			if err == nil && res.StartedKey != "" {
-				atomic.AddInt64(&wins, 1)
+				mu.Lock()
+				started[res.StartedKey]++
+				mu.Unlock()
 			}
 		}()
 	}
 	close(start)
 	wg.Wait()
-	if wins != 1 {
-		t.Fatalf("wins = %d, want exactly 1", wins)
+	for key, n := range started {
+		if n != 1 {
+			t.Errorf("%s was started %d times", key, n)
+		}
+	}
+	if len(started) != N {
+		t.Fatalf("%d distinct tasks started, want all %d", len(started), N)
 	}
 }
 
@@ -766,200 +749,64 @@ func (env *testEnv) countIn(t *testing.T, col *domain.Column) int {
 	return n
 }
 
-// TestTaskUpdate_BatchCannotOverfillWIP is the regression test for the
-// intra-batch WIP bypass: validating every patch against the pre-batch
-// occupancy let two moves share the one free slot, so a limit of 3 ended
-// up holding 4.
-func TestTaskUpdate_BatchCannotOverfillWIP(t *testing.T) {
+// TestTaskUpdate_MovesNeverRefusedForOccupancy replaces the WIP-overfill
+// regressions (KANB-59): a batch, an atomic batch and concurrent single
+// moves into one column all land, however many cards it already holds.
+func TestTaskUpdate_MovesNeverRefusedForOccupancy(t *testing.T) {
 	env := openTestEnv(t)
 	doing := env.cols["Doing"]
-	if doing.WIPLimit == nil || *doing.WIPLimit != 3 {
-		t.Fatalf("Doing WIP limit = %v, want 3", doing.WIPLimit)
-	}
-	tasks := make([]*domain.Task, 4)
+	tasks := make([]*domain.Task, 10)
 	for i := range tasks {
 		tasks[i] = makeBacklogTask(t, env, "task")
 	}
 
-	// Fill Doing to 2 of 3, one move per call, leaving a single slot.
-	for _, tk := range tasks[:2] {
-		res, err := env.svc.TaskUpdate(context.Background(), env.actor, TaskUpdateInput{
-			Patches: []TaskPatch{env.moveTo(t, tk.Key, "Doing")},
-		})
-		if err != nil {
-			t.Fatalf("seed move %s: %v", tk.Key, err)
-		}
-		if !res.Items[0].OK {
-			t.Fatalf("seed move %s refused: %v", tk.Key, res.Items[0].Err)
-		}
-	}
-	if got := env.countIn(t, doing); got != 2 {
-		t.Fatalf("Doing holds %d before the batch, want 2", got)
-	}
-
-	// One call, two moves, one free slot.
+	// A plain batch of four.
 	res, err := env.svc.TaskUpdate(context.Background(), env.actor, TaskUpdateInput{
 		Patches: []TaskPatch{
-			env.moveTo(t, tasks[2].Key, "Doing"),
-			env.moveTo(t, tasks[3].Key, "Doing"),
+			env.moveTo(t, tasks[0].Key, "Doing"), env.moveTo(t, tasks[1].Key, "Doing"),
+			env.moveTo(t, tasks[2].Key, "Doing"), env.moveTo(t, tasks[3].Key, "Doing"),
 		},
 	})
 	if err != nil {
-		t.Fatalf("batch update: %v", err)
+		t.Fatalf("batch: %v", err)
 	}
-	ok, refused := 0, 0
 	for _, it := range res.Items {
-		switch {
-		case it.OK:
-			ok++
-		case it.Err != nil && it.Err.Code == domain.CodeWIPExceeded:
-			refused++
-		default:
-			t.Fatalf("unexpected item %+v", it)
-		}
-	}
-	if ok != 1 || refused != 1 {
-		t.Fatalf("ok=%d wip_exceeded=%d, want 1/1", ok, refused)
-	}
-	if got := env.countIn(t, doing); got != 3 {
-		t.Fatalf("Doing holds %d after the batch, want 3 (the limit)", got)
-	}
-}
-
-// TestTaskUpdate_WIPExceeded_MessageNamesOccupants is the regression test for
-// KANB-28: the reporter's own words were "not a bug" — the limit and the
-// batch's per-item (non-atomic) semantics are exactly as designed — but the
-// refusal used to make the caller read the board separately to find out
-// what was occupying the full column. This is the exact shape of the
-// original complaint: a batch move dropped mid-batch by a full WIP column.
-func TestTaskUpdate_WIPExceeded_MessageNamesOccupants(t *testing.T) {
-	env := openTestEnv(t)
-	doing := env.cols["Doing"]
-	if doing.WIPLimit == nil || *doing.WIPLimit != 3 {
-		t.Fatalf("Doing WIP limit = %v, want 3", doing.WIPLimit)
-	}
-
-	occupying := make([]*domain.Task, 3)
-	for i := range occupying {
-		occupying[i] = makeBacklogTask(t, env, "occupant")
-		res, err := env.svc.TaskUpdate(context.Background(), env.actor, TaskUpdateInput{
-			Patches: []TaskPatch{env.moveTo(t, occupying[i].Key, "Doing")},
-		})
-		if err != nil || !res.Items[0].OK {
-			t.Fatalf("seed move %s: err=%v res=%+v", occupying[i].Key, err, res)
-		}
-	}
-	if got := env.countIn(t, doing); got != 3 {
-		t.Fatalf("Doing holds %d before the refused move, want 3", got)
-	}
-
-	extra := makeBacklogTask(t, env, "the one that gets dropped")
-	res, err := env.svc.TaskUpdate(context.Background(), env.actor, TaskUpdateInput{
-		Patches: []TaskPatch{env.moveTo(t, extra.Key, "Doing")},
-	})
-	if err != nil {
-		t.Fatalf("batch update: %v", err)
-	}
-	if res.Items[0].OK {
-		t.Fatalf("move into a full column succeeded")
-	}
-	got := res.Items[0].Err
-	if got == nil || got.Code != domain.CodeWIPExceeded {
-		t.Fatalf("error = %+v, want wip_exceeded", got)
-	}
-	for _, occ := range occupying {
-		if !strings.Contains(got.Message, occ.Key) {
-			t.Errorf("message %q does not name occupant %s — the caller still has to read the board separately", got.Message, occ.Key)
-		}
-	}
-	if strings.Contains(got.Message, extra.Key) {
-		t.Errorf("message %q names the task being moved as if it already occupied the column", got.Message)
-	}
-}
-
-// TestTaskUpdate_AtomicBatchOverfillingWIPLandsNothing is the atomic
-// counterpart: the whole call is refused instead of half-applied.
-func TestTaskUpdate_AtomicBatchOverfillingWIPLandsNothing(t *testing.T) {
-	env := openTestEnv(t)
-	doing := env.cols["Doing"]
-	tasks := make([]*domain.Task, 4)
-	for i := range tasks {
-		tasks[i] = makeBacklogTask(t, env, "task")
-	}
-	for _, tk := range tasks[:2] {
-		if _, err := env.svc.TaskUpdate(context.Background(), env.actor, TaskUpdateInput{
-			Patches: []TaskPatch{env.moveTo(t, tk.Key, "Doing")},
-		}); err != nil {
-			t.Fatalf("seed move %s: %v", tk.Key, err)
+		if !it.OK {
+			t.Fatalf("batch item %s refused: %+v", it.Key, it.Err)
 		}
 	}
 
-	_, err := env.svc.TaskUpdate(context.Background(), env.actor, TaskUpdateInput{
-		Atomic: true,
-		Patches: []TaskPatch{
-			env.moveTo(t, tasks[2].Key, "Doing"),
-			env.moveTo(t, tasks[3].Key, "Doing"),
-		},
-	})
-	if err == nil {
-		t.Fatalf("atomic batch overfilling WIP succeeded")
-	}
-	if de := domain.AsError(err); de == nil || de.Code != domain.CodeWIPExceeded {
-		t.Fatalf("code = %v, want wip_exceeded", de)
-	}
-	if got := env.countIn(t, doing); got != 2 {
-		t.Fatalf("Doing holds %d, want 2 — a refused atomic batch must land nothing", got)
-	}
-}
-
-// TestTaskUpdate_ConcurrentMovesRespectWIP is the same invariant across
-// requests rather than within one call: six real goroutines against the
-// real on-disk store, each moving its own task into a column with room
-// for three.
-func TestTaskUpdate_ConcurrentMovesRespectWIP(t *testing.T) {
-	env := openTestEnv(t)
-	doing := env.cols["Doing"]
-	const movers = 6
-	tasks := make([]*domain.Task, movers)
-	patches := make([]TaskPatch, movers)
-	for i := range tasks {
-		tasks[i] = makeBacklogTask(t, env, "task")
-	}
-	for i, tk := range tasks {
-		patches[i] = env.moveTo(t, tk.Key, "Doing")
+	// An atomic batch on top.
+	if _, err := env.svc.TaskUpdate(context.Background(), env.actor, TaskUpdateInput{
+		Atomic:  true,
+		Patches: []TaskPatch{env.moveTo(t, tasks[4].Key, "Doing"), env.moveTo(t, tasks[5].Key, "Doing")},
+	}); err != nil {
+		t.Fatalf("atomic batch refused: %v", err)
 	}
 
-	var wins, refusals atomic.Int64
-	var start sync.WaitGroup
-	var done sync.WaitGroup
-	start.Add(1)
-	for i := 0; i < movers; i++ {
-		done.Add(1)
-		go func(p TaskPatch) {
-			defer done.Done()
-			start.Wait()
-			res, err := env.svc.TaskUpdate(context.Background(), env.actor, TaskUpdateInput{
-				Patches: []TaskPatch{p},
-			})
-			if err != nil {
-				return
+	// Four concurrent single moves.
+	var wg sync.WaitGroup
+	var fails atomic.Int64
+	gate := make(chan struct{})
+	for _, tk := range tasks[6:] {
+		p := env.moveTo(t, tk.Key, "Doing")
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-gate
+			r, err := env.svc.TaskUpdate(context.Background(), env.actor, TaskUpdateInput{Patches: []TaskPatch{p}})
+			if err != nil || !r.Items[0].OK {
+				fails.Add(1)
 			}
-			switch {
-			case res.Items[0].OK:
-				wins.Add(1)
-			case res.Items[0].Err != nil && res.Items[0].Err.Code == domain.CodeWIPExceeded:
-				refusals.Add(1)
-			}
-		}(patches[i])
+		}()
 	}
-	start.Done()
-	done.Wait()
-
-	if wins.Load() != 3 || refusals.Load() != movers-3 {
-		t.Fatalf("wins=%d refusals=%d, want 3/%d", wins.Load(), refusals.Load(), movers-3)
+	close(gate)
+	wg.Wait()
+	if fails.Load() != 0 {
+		t.Fatalf("%d concurrent moves were refused", fails.Load())
 	}
-	if got := env.countIn(t, doing); got != 3 {
-		t.Fatalf("Doing holds %d, want 3 (the limit)", got)
+	if got := env.countIn(t, doing); got != len(tasks) {
+		t.Fatalf("Doing holds %d, want %d", got, len(tasks))
 	}
 }
 

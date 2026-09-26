@@ -273,12 +273,7 @@
          aria-label="Column {{.Column.Name}}">
   <header class="column-head">
     <span class="name caps">{{.Column.Name}}</span>
-    {{if .Column.WIP}}
-      <span class="wip {{if wipFull .Column.Count .Column.WIP}}full{{end}}"
-            title="{{.Column.Count}} of a WIP limit of {{.Column.WIP | int}}">{{.Column.Count}}/{{.Column.WIP | int}}</span>
-    {{else}}
-      <span class="wip">{{.Column.Count}}</span>
-    {{end}}
+    <span class="col-count">{{.Column.Count}}</span>
   </header>
   {{- if .Column.Hidden}}
   <p class="column-collapsed">{{.Column.Count}} hidden — <a href="?hide_done=0">show done</a></p>

@@ -3,7 +3,6 @@ package domain
 import (
 	"errors"
 	"fmt"
-	"strings"
 )
 
 // Code is the machine-readable error code carried in every tool envelope and
@@ -16,7 +15,6 @@ const (
 	CodeValidation          Code = "validation"
 	CodeConflict            Code = "conflict"
 	CodeBlocked             Code = "blocked"
-	CodeWIPExceeded         Code = "wip_exceeded"
 	CodeClaimed             Code = "claimed"
 	CodeForbidden           Code = "forbidden"
 	CodeCycle               Code = "cycle"
@@ -61,7 +59,6 @@ var (
 	ErrValidation          = &Error{Code: CodeValidation}
 	ErrConflict            = &Error{Code: CodeConflict}
 	ErrBlocked             = &Error{Code: CodeBlocked}
-	ErrWIPExceeded         = &Error{Code: CodeWIPExceeded}
 	ErrClaimed             = &Error{Code: CodeClaimed}
 	ErrForbidden           = &Error{Code: CodeForbidden}
 	ErrCycle               = &Error{Code: CodeCycle}
@@ -98,38 +95,6 @@ func Blocked(key string, blockers []string) *Error {
 		Message: fmt.Sprintf("%s is blocked by %v", key, blockers),
 		Remediation: fmt.Sprintf(
 			"Finish %v first, remove the link with task_link, or move with force:true and a reason (admin scope).", blockers),
-	}
-}
-
-// WIPExceeded reports a full column, naming what is occupying it so the
-// caller does not have to read the board separately to find out (LIVE
-// FINDINGS: a batch move refused mid-task_update with no clue which tasks
-// were in the way). occupants is the column's current unarchived tasks
-// (excluding the one being moved); nothing here re-queries for them — the
-// caller already had to touch the column's occupancy to know the limit was
-// hit, and passes that same result through.
-//
-// occupants is named up to WIPExceededKeySample: a project may set a WIP
-// limit far past a handful (nothing bounds wip_limit beyond >0), and this
-// message must stay a short pointer, never a dump of the whole column.
-func WIPExceeded(column string, limit int, occupants []string) *Error {
-	msg := fmt.Sprintf("column %q is at its WIP limit of %d", column, limit)
-	if len(occupants) > 0 {
-		shown := occupants
-		more := 0
-		if len(shown) > WIPExceededKeySample {
-			more = len(shown) - WIPExceededKeySample
-			shown = shown[:WIPExceededKeySample]
-		}
-		msg += fmt.Sprintf(", occupied by %s", strings.Join(shown, ", "))
-		if more > 0 {
-			msg += fmt.Sprintf(" and %d more", more)
-		}
-	}
-	return &Error{
-		Code:        CodeWIPExceeded,
-		Message:     msg,
-		Remediation: "Finish or move something out of that column first, or move with force:true and a reason (admin scope).",
 	}
 }
 

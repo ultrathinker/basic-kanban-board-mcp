@@ -410,9 +410,7 @@ select, .field input, .field textarea {
   border-bottom: 1px solid var(--ink);
 }
 .column-head .name { flex: 1 1 auto; min-width: 0; }
-.column-head .wip { font-family: var(--font-mono); font-size: var(--fs-1); color: var(--ink-muted); }
-/* A WIP limit that is full is state you must not miss — so it inverts. */
-.column-head .wip.full { background: var(--invert-bg); color: var(--invert-fg); padding: 0 0.3em; font-weight: 600; }
+.column-head .col-count { font-family: var(--font-mono); font-size: var(--fs-1); color: var(--ink-muted); }
 .column.is-done .column-head { border-bottom-color: var(--rule-strong); }
 .column.is-done .column-head .name { color: var(--ink-muted); }
 .column-list { display: flex; flex-direction: column; min-height: 2rem; }

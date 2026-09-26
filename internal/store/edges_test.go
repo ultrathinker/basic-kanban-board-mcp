@@ -449,7 +449,6 @@ func seedProjectKey(t *testing.T, s Store, key string) (*domain.Project, map[str
 				Name:      def.Name,
 				Position:  i,
 				Kind:      def.Kind,
-				WIPLimit:  def.WIPLimit,
 			}
 			if err := s.Columns().Create(tx, c); err != nil {
 				return err

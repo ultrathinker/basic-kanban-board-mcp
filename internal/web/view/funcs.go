@@ -28,7 +28,6 @@ func Funcs() template.FuncMap {
 		"priorityClass":  priorityCSS,
 		"priorityName":   priorityLabel,
 		"priorityBadge":  priorityBadge,
-		"wipFull":        wipFull,
 		"duration":       formatDuration,
 		"age":            formatAge,
 		"relTime":        relTime,

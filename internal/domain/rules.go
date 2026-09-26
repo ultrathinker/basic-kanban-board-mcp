@@ -298,15 +298,8 @@ type MoveCheck struct {
 	From       Column
 	To         Column
 	OpenBlocks []string // keys of blockers that are not done
-	// ToCount is how many unarchived tasks the destination already holds,
-	// excluding this task when it is already there.
-	ToCount int
-	// Occupants is the destination's occupying task keys, same scope as
-	// ToCount (unarchived, excluding this task) — named in a wip_exceeded
-	// refusal so the caller learns what to move without reading the board
-	// separately. Optional: a caller that has not fetched keys (only a
-	// count) simply leaves this nil, and the message names nothing extra.
-	Occupants           []string
+	// How full the destination is plays no part: a move is never refused
+	// for the number of cards already in a column (KANB-59).
 	AcceptanceRemaining int
 	EnforceDependencies bool
 	StrictDone          bool
@@ -316,8 +309,8 @@ type MoveCheck struct {
 }
 
 // CheckMove decides whether a task may enter a column. It returns a *Error with
-// the precise code the tool layer surfaces (blocked, wip_exceeded, validation,
-// forbidden) so every caller reports the same thing.
+// the precise code the tool layer surfaces (blocked, validation, forbidden) so
+// every caller reports the same thing.
 //
 // Force is deliberately admin-only with a mandatory reason: a bypass that any
 // write token can use is not a guard rail, it is a suggestion.
@@ -325,7 +318,7 @@ func CheckMove(c MoveCheck) error {
 	if c.Force {
 		if !c.ActorIsAdmin {
 			return Forbidden("force requires admin scope",
-				"Ask an admin, or satisfy the rule instead: finish the blockers, free WIP, or tick the acceptance items.")
+				"Ask an admin, or satisfy the rule instead: finish the blockers, or tick the acceptance items.")
 		}
 		if strings.TrimSpace(c.ForceReason) == "" {
 			return Invalid("reason", "force requires a reason", "Say why the rule is being bypassed; it is written to the event log.")
@@ -339,9 +332,6 @@ func CheckMove(c MoveCheck) error {
 	// without seeing the other sitting right next to it.
 	if c.EnforceDependencies && c.To.Kind != KindBacklog && c.To.Kind != KindWaiting && len(c.OpenBlocks) > 0 {
 		return Blocked(c.TaskKey, c.OpenBlocks)
-	}
-	if c.To.Kind == KindActive && c.To.WIPLimit != nil && c.ToCount >= *c.To.WIPLimit {
-		return WIPExceeded(c.To.Name, *c.To.WIPLimit, c.Occupants)
 	}
 	if c.StrictDone && c.To.Kind == KindDone && c.AcceptanceRemaining > 0 {
 		return Invalid("acceptance",

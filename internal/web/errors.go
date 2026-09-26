@@ -26,7 +26,7 @@ func httpStatusForCode(c domain.Code) int {
 		return http.StatusNotFound
 	case domain.CodeValidation:
 		return http.StatusBadRequest
-	case domain.CodeConflict, domain.CodeBlocked, domain.CodeWIPExceeded, domain.CodeClaimed, domain.CodeIdempotencyMismatch, domain.CodeCycle:
+	case domain.CodeConflict, domain.CodeBlocked, domain.CodeClaimed, domain.CodeIdempotencyMismatch, domain.CodeCycle:
 		return http.StatusConflict
 	case domain.CodeForbidden:
 		return http.StatusForbidden

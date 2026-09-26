@@ -14,9 +14,14 @@ import (
 const opProjectUpsert = "project_upsert"
 
 type columnSpecIn struct {
-	Name     string `json:"name" jsonschema:"unique within the project"`
-	Kind     string `json:"kind"`
-	WIPLimit *int   `json:"wip_limit,omitempty" jsonschema:"meaningful only for kind:active"`
+	Name string `json:"name" jsonschema:"unique within the project"`
+	Kind string `json:"kind"`
+	// WIPLimit is accepted only to be REFUSED with an explanation: limits were
+	// removed from the board on 26.09.2026 (KANB-59). Dropping the field from
+	// the schema would answer an old caller with the SDK's bare "unexpected
+	// property"; silently ignoring it would let the caller believe a limit is
+	// in force. Neither is acceptable, so it is a named, explained error.
+	WIPLimit *int `json:"wip_limit,omitempty" jsonschema:"REMOVED 26.09.2026: the board has no WIP limits; sending this is an error"`
 }
 
 type removeColumnIn struct {
@@ -120,17 +125,26 @@ var projectUpsertDescription = "Create or update one project: identity, columns 
 	"Not sure which one applies? Call board_get with no `project` first: every project you can reach comes back with its key and version."
 
 // defaultColumnSummary renders domain.DefaultColumns the way the tool
-// description quotes them, e.g. `Backlog, Doing (WIP 3), Done`.
+// description quotes them, e.g. `Backlog, Doing, Done`.
 func defaultColumnSummary() string {
 	parts := make([]string, 0, len(domain.DefaultColumns))
 	for _, c := range domain.DefaultColumns {
-		s := c.Name
-		if c.WIPLimit != nil {
-			s += fmt.Sprintf(" (WIP %d)", *c.WIPLimit)
-		}
-		parts = append(parts, s)
+		parts = append(parts, c.Name)
 	}
 	return strings.Join(parts, ", ")
+}
+
+// refuseWIPLimit turns a column that still carries wip_limit into a loud,
+// explained error (see columnSpecIn.WIPLimit).
+func refuseWIPLimit(cols []columnSpecIn) *domain.Error {
+	for _, c := range cols {
+		if c.WIPLimit != nil {
+			return domain.Invalid("wip_limit",
+				fmt.Sprintf("column %q carries wip_limit, but the board has no WIP limits since 26.09.2026", c.Name),
+				"Drop wip_limit from every column. Stuck cards are surfaced by idle time instead of by a column limit.")
+		}
+	}
+	return nil
 }
 
 func columnSpecsToService(cols []columnSpecIn) []service.ColumnSpec {
@@ -139,7 +153,7 @@ func columnSpecsToService(cols []columnSpecIn) []service.ColumnSpec {
 	}
 	out := make([]service.ColumnSpec, len(cols))
 	for i, c := range cols {
-		out[i] = service.ColumnSpec{Name: c.Name, Kind: domain.Kind(c.Kind), WIPLimit: c.WIPLimit}
+		out[i] = service.ColumnSpec{Name: c.Name, Kind: domain.Kind(c.Kind)}
 	}
 	return out
 }
@@ -174,6 +188,9 @@ func registerProjectUpsert(s *gomcp.Server, svc service.Service) {
 		actor, aerr := actorFromContext(ctx)
 		if aerr != nil {
 			return errorResult(opProjectUpsert, aerr), projectUpsertOutput{OK: false, Op: opProjectUpsert, Error: newErrorEnvelope(aerr)}, nil
+		}
+		if werr := refuseWIPLimit(in.Columns); werr != nil {
+			return errorResult(opProjectUpsert, werr), projectUpsertOutput{OK: false, Op: opProjectUpsert, Error: newErrorEnvelope(werr)}, nil
 		}
 
 		res, err := svc.ProjectUpsert(ctx, actor, service.ProjectUpsertInput{

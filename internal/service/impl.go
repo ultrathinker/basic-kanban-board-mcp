@@ -115,7 +115,7 @@ func requireForce(a Actor, force bool, reason string) error {
 	}
 	if !a.IsAdmin() {
 		return domain.Forbidden("force requires admin scope",
-			"Ask an admin, or satisfy the rule instead: finish the blockers, free WIP, or tick the acceptance items.")
+			"Ask an admin, or satisfy the rule instead: finish the blockers or tick the acceptance items.")
 	}
 	if strings.TrimSpace(reason) == "" {
 		return domain.Invalid("reason", "force requires a reason",

@@ -750,9 +750,8 @@ func TestRoundTrip_TaskNext_Success(t *testing.T) {
 		Tasks:      []domain.TaskView{fixedTask("BMB-1")},
 		ClaimedKey: "BMB-1",
 		StartedKey: "BMB-1",
-		WIPFull:    true,
 		Reasons: service.NextReasons{
-			BlockedDependency: 2, WIPFull: 1, ClaimedByOther: 0,
+			BlockedDependency: 2, ClaimedByOther: 0,
 			ParentIncomplete: 0, NotLeaf: 0,
 		},
 		BlockedTop: []service.BlockedSample{{Key: "BMB-9", BlockedBy: []string{"BMB-1"}}},
@@ -763,8 +762,8 @@ func TestRoundTrip_TaskNext_Success(t *testing.T) {
 	})
 	expectOK(t, sc, "task_next")
 	meta := sc["meta"].(map[string]any)
-	if meta["wip_full"] != true {
-		t.Errorf("wip_full = %v, want true", meta["wip_full"])
+	if _, has := meta["wip_full"]; has {
+		t.Errorf("meta still carries wip_full; the board has no WIP limits (KANB-59)")
 	}
 	if meta["claimed_key"] != "BMB-1" {
 		t.Errorf("claimed_key = %v", meta["claimed_key"])

@@ -161,7 +161,7 @@ func TestTaskUpdate_MoveWithinActiveColumnsKeepsLease(t *testing.T) {
 		Mode: UpsertUpdate, Key: env.proj.Key, IfVersion: intPtrLocal(projectVersion(t, env)),
 		Columns: []ColumnSpec{
 			{Name: "Backlog", Kind: domain.KindBacklog},
-			{Name: "Doing", Kind: domain.KindActive, WIPLimit: intPtrLocal(3)},
+			{Name: "Doing", Kind: domain.KindActive},
 			{Name: "Review", Kind: domain.KindActive},
 			{Name: "Done", Kind: domain.KindDone},
 		},
@@ -328,14 +328,14 @@ func projectVersion(t *testing.T, env *testEnv) int {
 }
 
 // specsKeeping builds the full desired column list, minus the column being
-// removed, preserving each column's kind and WIP limit.
+// removed, preserving each column's kind.
 func specsKeeping(removed string) []ColumnSpec {
 	var out []ColumnSpec
 	for _, def := range domain.DefaultColumns {
 		if def.Name == removed {
 			continue
 		}
-		out = append(out, ColumnSpec{Name: def.Name, Kind: def.Kind, WIPLimit: def.WIPLimit})
+		out = append(out, ColumnSpec{Name: def.Name, Kind: def.Kind})
 	}
 	return out
 }

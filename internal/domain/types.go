@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// Kind classifies a column and drives WIP checks, "done" semantics and the
+// Kind classifies a column and drives task_next candidacy, "done" semantics and the
 // hide-done toggle in the UI.
 type Kind string
 
@@ -19,8 +19,7 @@ const (
 	KindActive  Kind = "active"
 	KindDone    Kind = "done"
 	// KindWaiting marks a column as parked rather than active work (KANB-52):
-	// visible and counted as open, but not a task_next candidate, not part
-	// of any active column's WIP, and not a source of "done" for anything
+	// visible and counted as open, but not a task_next candidate, and not a source of "done" for anything
 	// it blocks. It exists so a project can name that state explicitly
 	// instead of overloading an active column for it (the workaround this
 	// card replaces). No project gets one by default, and no existing
@@ -220,7 +219,12 @@ type Column struct {
 	Name      string
 	Position  int
 	Kind      Kind
-	WIPLimit  *int // meaningful only for KindActive
+	// There is no WIP limit: the owner removed limits from the board on
+	// 26.09.2026 (KANB-59). A limit only ever caught "the board is lying"
+	// for AI agents, and a hard refusal blocked an honest move to protest
+	// OTHER, stale cards — idle time does that job now. The wip_limit column
+	// is still in the database, unread: dropping it would mean rebuilding the
+	// table on a live board for nothing.
 }
 
 // AcceptanceItem is one checkbox on a task.

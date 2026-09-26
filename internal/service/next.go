@@ -11,9 +11,8 @@ import (
 
 // TaskNext implements peek/claim/start (PLAN §6.2). peek is read-only and may
 // scan every accessible project; claim and start require a concrete project
-// because "the first active column" and its WIP limit are project-scoped —
-// domain.NextInput carries a single ActiveWIPFull flag, so a mutating call
-// needs one unambiguous column to check and move into.
+// because "the first active column" is project-scoped — a mutating call
+// needs one unambiguous column to move into.
 func (s *svc) TaskNext(ctx context.Context, a Actor, in TaskNextInput) (*NextResult, error) {
 	if err := requireRead(a); err != nil {
 		return nil, err
@@ -116,7 +115,6 @@ func (s *svc) taskNextPeek(ctx context.Context, a Actor, in TaskNextInput, limit
 		result = NextResult{
 			Tasks:      views,
 			Projection: proj,
-			WIPFull:    merged.WIPFull,
 			Reasons:    NextReasons(merged.Reasons),
 			BlockedTop: toServiceBlocked(merged.BlockedTop),
 		}
@@ -214,7 +212,6 @@ func (s *svc) taskNextMutate(ctx context.Context, a Actor, in TaskNextInput, act
 		result = NextResult{
 			Tasks:      views,
 			Projection: proj,
-			WIPFull:    out.WIPFull,
 			Reasons:    NextReasons(out.Reasons),
 			BlockedTop: toServiceBlocked(out.BlockedTop),
 		}
@@ -245,16 +242,6 @@ func (s *svc) startClaimedTask(tx store.Tx, p *domain.Project, cc *columnCache, 
 	if err != nil {
 		return nil, err
 	}
-	// OccupantKeys instead of CountTasks, for the same reason prepareUpdate
-	// uses it: a wip_exceeded refusal on this path has to name what occupies
-	// the destination, or the agent has to issue a second board read to find
-	// out what to move — which is the round trip the message was changed to
-	// remove. Deriving the count from len() keeps that at one read.
-	occupants, err := s.store.Columns().OccupantKeys(tx, toCol.ID, t.ID)
-	if err != nil {
-		return nil, err
-	}
-	cnt := len(occupants)
 	openBlocks, err := s.store.Links().OpenBlockers(tx, t.ID)
 	if err != nil {
 		return nil, err
@@ -264,8 +251,6 @@ func (s *svc) startClaimedTask(tx store.Tx, p *domain.Project, cc *columnCache, 
 		From:                *fromCol,
 		To:                  *toCol,
 		OpenBlocks:          openBlocks,
-		ToCount:             cnt,
-		Occupants:           occupants,
 		EnforceDependencies: p.EnforceDependencies,
 		StrictDone:          p.StrictDone,
 	}); err != nil {
@@ -309,26 +294,14 @@ func (s *svc) nextForProject(tx store.Tx, cc *columnCache, pc *projectCache, p *
 		return domain.NextOutput{}, err
 	}
 	var backlogIDs []string
-	wipFull := false
-	activeSeen := false
 	for _, c := range cols {
 		cc.prime(c)
 		if c.Kind == domain.KindBacklog {
 			backlogIDs = append(backlogIDs, c.ID)
 		}
-		if c.Kind == domain.KindActive && !activeSeen {
-			activeSeen = true
-			if c.WIPLimit != nil {
-				cnt, err := s.store.Columns().CountTasks(tx, c.ID, "")
-				if err != nil {
-					return domain.NextOutput{}, err
-				}
-				wipFull = cnt >= *c.WIPLimit
-			}
-		}
 	}
 	if len(backlogIDs) == 0 {
-		return domain.NextOutput{WIPFull: wipFull}, nil
+		return domain.NextOutput{}, nil
 	}
 
 	tasks, err := s.store.Tasks().List(tx, store.TaskFilter{
@@ -368,7 +341,6 @@ func (s *svc) nextForProject(tx store.Tx, cc *columnCache, pc *projectCache, p *
 		Actor:         actor,
 		Candidates:    views,
 		ParentBlocked: parentBlocked,
-		ActiveWIPFull: wipFull,
 		Limit:         limit,
 	}), nil
 }
@@ -410,11 +382,9 @@ func mergeNextOutputs(acc *domain.NextOutput, out domain.NextOutput, first bool)
 	acc.Ready = append(acc.Ready, out.Ready...)
 	acc.BlockedTop = append(acc.BlockedTop, out.BlockedTop...)
 	acc.Reasons.BlockedDependency += out.Reasons.BlockedDependency
-	acc.Reasons.WIPFull += out.Reasons.WIPFull
 	acc.Reasons.ClaimedByOther += out.Reasons.ClaimedByOther
 	acc.Reasons.ParentIncomplete += out.Reasons.ParentIncomplete
 	acc.Reasons.NotLeaf += out.Reasons.NotLeaf
-	acc.WIPFull = acc.WIPFull || out.WIPFull
 }
 
 // resortMerged re-applies task_next's ordering (PLAN §6.2) across the

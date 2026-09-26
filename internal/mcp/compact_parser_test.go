@@ -25,12 +25,11 @@ import (
 // the same reference. Callers that need full preservation (round-trip tests,
 // callers re-rendering with the same wall clock) should use ParseCompactAt.
 //
-// The parser recovers the column Kind from the grammar: a `count/wip`
-// segment means active, a bare count means backlog, the trailing `Done …`
-// segment is the done column. An active column without a WIP limit (the
-// default `Review` column) parses as backlog — that lossiness is accepted
-// because Kind is renderer-side state that no consuming agent reads from
-// the compact line. The Done column is also recovered from the trailing
+// The compact line does not carry a column's Kind: every non-done column
+// parses as backlog, and the trailing `Done …` segment is the done column.
+// That lossiness is accepted because Kind is renderer-side state that no
+// consuming agent reads from the compact line (the `count/wip` form that used
+// to mark active columns went away with WIP limits, KANB-59). The Done column is also recovered from the trailing
 // segment when its `## Done` section appears with task lines.
 func ParseCompact(s string) (*service.Board, error) {
 	return ParseCompactAt(s, time.Time{})
@@ -185,7 +184,7 @@ func parseProjectHeader(line string) (*service.BoardProject, error) {
 }
 
 var (
-	columnSegmentRe  = regexp.MustCompile(`^(.+) (\d+)(?:/(\d+))?$`)
+	columnSegmentRe  = regexp.MustCompile(`^(.+) (\d+)$`)
 	doneSegmentRe    = regexp.MustCompile(`^Done (\d+) \((?:(\d+) shown|hidden)\)$`)
 	projectVersionRe = regexp.MustCompile(`^v\d+$`)
 )
@@ -195,19 +194,12 @@ func parseColumnSegment(s string) (*service.BoardColumn, error) {
 	if m == nil {
 		return nil, fmt.Errorf("malformed column segment")
 	}
-	col := &service.BoardColumn{
+	// Default kind; the Done column is special-cased at the section header.
+	return &service.BoardColumn{
 		Name:  m[1],
+		Kind:  domain.KindBacklog,
 		Count: atoiSafe(m[2]),
-	}
-	if m[3] != "" {
-		w := atoiSafe(m[3])
-		col.WIPLimit = &w
-		col.Kind = domain.KindActive
-	} else {
-		// Default kind; the Done column is special-cased at the section header.
-		col.Kind = domain.KindBacklog
-	}
-	return col, nil
+	}, nil
 }
 
 func parseDoneSegment(s string, p *service.BoardProject) error {

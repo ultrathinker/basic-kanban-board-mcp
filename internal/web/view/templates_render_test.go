@@ -51,7 +51,7 @@ type renderCase struct {
 	template string
 	data     any
 	// wants are substrings that must appear. They are deliberately about
-	// behaviour (a WIP badge, a CSRF field, a version attribute), not about
+	// behaviour (a column count, a CSRF field, a version attribute), not about
 	// styling — a class rename must not fail this suite, a missing hidden
 	// input must.
 	wants []string
@@ -77,11 +77,9 @@ func renderCases() []renderCase {
 			template: "page-board",
 			data:     boardPage(),
 			wants: []string{
-				// The WIP badge: "Doing" has a limit of 3 and three tasks, so
-				// this is both the count/limit rendering and the "full" state.
-				// `index .Column.WIP 0` crashed exactly here.
-				"3/3",
-				`class="wip full"`,
+				// The column count: "Doing" holds three tasks. It is a plain
+				// count — the board has no WIP limits (KANB-59).
+				`<span class="col-count">3</span>`,
 				// The empty "Ready" column still renders its header.
 				"Ready",
 				"No tasks",
@@ -683,11 +681,11 @@ func renderCases() []renderCase {
 			notWants: []string{"data-move-menu", "<no value>"},
 		},
 		{
-			name:     "fragment/column-wip-full",
+			name:     "fragment/column-count",
 			template: "column",
 			data:     map[string]any{"Column": columnNamed(board, "Doing"), "CSRF": "t", "Columns": board.Columns},
-			wants:    []string{"3/3", "full"},
-			notWants: []string{"<no value>"},
+			wants:    []string{`<span class="col-count">3</span>`},
+			notWants: []string{"<no value>", "3/3", "wip"},
 		},
 		{
 			name:     "fragment/column-empty",
@@ -922,7 +920,7 @@ func TestNewParsesEmbeddedTemplates(t *testing.T) {
 
 // TestRenderEveryNamedTemplate executes each named template against a
 // fixture. A template that only renders under empty data is untested, so
-// the cases above deliberately include a WIP-limited column that is full,
+// the cases above deliberately include a populated column,
 // an empty column, a collapsed done column, a drawer with acceptance items,
 // a focused task, a task with blockers and every empty-state counterpart.
 func TestRenderEveryNamedTemplate(t *testing.T) {

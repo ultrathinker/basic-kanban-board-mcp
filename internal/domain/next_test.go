@@ -182,29 +182,6 @@ func TestNextReady_ExpiredLeaseIsCandidate(t *testing.T) {
 	}
 }
 
-func TestNextReady_PeekReturnsWorkEvenWhenWIPFull(t *testing.T) {
-	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	in := NextInput{
-		Now: now, Actor: "agent",
-		Candidates: []TaskView{
-			tv("BMB-1"),
-			tv("BMB-2"),
-		},
-		ActiveWIPFull: true,
-		Limit:         10,
-	}
-	out := NextReady(in)
-	if len(out.Ready) != 2 {
-		t.Fatalf("peek with WIP full must still return ready work, got %d", len(out.Ready))
-	}
-	if !out.WIPFull {
-		t.Errorf("WIPFull must be true in output")
-	}
-	if out.Reasons.WIPFull != 2 {
-		t.Errorf("Reasons.WIPFull=%d want 2 (count of ready tasks)", out.Reasons.WIPFull)
-	}
-}
-
 func TestNextReady_LimitDefaultsToThree(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	in := NextInput{
@@ -344,9 +321,6 @@ func TestNextReady_EmptyCandidates(t *testing.T) {
 	if len(out.Ready) != 0 || len(out.BlockedTop) != 0 {
 		t.Fatalf("empty input must produce empty output: %+v", out)
 	}
-	if out.WIPFull {
-		t.Errorf("WIPFull must default to false")
-	}
 }
 
 // TestNextReady_ContractShape is a guard for the public field names. A future
@@ -356,12 +330,11 @@ func TestNextReady_ContractShape(t *testing.T) {
 	r := Reasons{}
 	fields := map[string]int{
 		"BlockedDependency": r.BlockedDependency,
-		"WIPFull":           r.WIPFull,
 		"ClaimedByOther":    r.ClaimedByOther,
 		"ParentIncomplete":  r.ParentIncomplete,
 		"NotLeaf":           r.NotLeaf,
 	}
-	if len(fields) != 5 {
+	if len(fields) != 4 {
 		t.Fatalf("Reasons has wrong number of fields: %v", fields)
 	}
 }

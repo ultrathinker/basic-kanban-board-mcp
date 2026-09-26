@@ -16,14 +16,13 @@ import (
 // not touched by the call (KANB-52's "existing projects unaffected").
 func addWaitingColumn(t *testing.T, env *testEnv) *domain.Column {
 	t.Helper()
-	wipLimit := 3
 	res, err := env.svc.ProjectUpsert(context.Background(), env.actor, ProjectUpsertInput{
 		Mode:      UpsertUpdate,
 		Key:       env.proj.Key,
 		IfVersion: &env.proj.Version,
 		Columns: []ColumnSpec{
 			{Name: "Backlog", Kind: domain.KindBacklog},
-			{Name: "Doing", Kind: domain.KindActive, WIPLimit: &wipLimit},
+			{Name: "Doing", Kind: domain.KindActive},
 			{Name: "Done", Kind: domain.KindDone},
 			{Name: "Waiting", Kind: domain.KindWaiting},
 		},
@@ -217,13 +216,9 @@ func TestWaitingColumn_DoesNotUnblockDependents(t *testing.T) {
 	}
 }
 
-// TestWaitingColumn_DoesNotOccupyActiveWIP is KANB-52 criterion 1's WIP
-// half: a task parked in Waiting must not count against Doing's WIP limit.
-// Doing's limit here is 3 (see addWaitingColumn); three tasks fill it, and a
-// fourth parked in Waiting alongside them must not stop a later task from
-// entering Doing once room frees up — this test only needs to show Doing's
-// own occupant count is unaffected by what sits in Waiting.
-func TestWaitingColumn_DoesNotOccupyActiveWIP(t *testing.T) {
+// TestWaitingColumn_DoesNotOccupyActive is KANB-52 criterion 1: a task
+// parked in Waiting is not counted as sitting in Doing.
+func TestWaitingColumn_DoesNotOccupyActive(t *testing.T) {
 	env := openTestEnv(t)
 	addWaitingColumn(t, env)
 
@@ -248,6 +243,6 @@ func TestWaitingColumn_DoesNotOccupyActiveWIP(t *testing.T) {
 		t.Fatalf("count Doing: %v", err)
 	}
 	if count != 0 {
-		t.Fatalf("Doing occupant count = %d after parking a task in Waiting, want 0 (Waiting must not occupy active WIP)", count)
+		t.Fatalf("Doing occupant count = %d after parking a task in Waiting, want 0 (Waiting must not count as active)", count)
 	}
 }

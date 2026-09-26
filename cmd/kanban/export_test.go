@@ -51,7 +51,7 @@ func seedBoardWithProgressAndChat(t *testing.T, dataDir string) (exportedProgres
 		Description: &desc,
 		Columns: []service.ColumnSpec{
 			{Name: "Backlog", Kind: domain.KindBacklog},
-			{Name: "Doing", Kind: domain.KindActive, WIPLimit: intPtrLocal(3)},
+			{Name: "Doing", Kind: domain.KindActive},
 			{Name: "Done", Kind: domain.KindDone},
 		},
 		Settings: &service.ProjectSettings{
@@ -417,6 +417,69 @@ func TestDecodeExportDocument_RejectsUnknownHistoryKey(t *testing.T) {
 	}
 }
 
+// TestImport_LegacyWIPLimitIsDroppedWithAWarning: every backup taken before
+// 26.09.2026 carries columns[].wip_limit. The strict decoder refuses unknown
+// fields, so without stripLegacyWIPLimits none of those backups would import
+// after KANB-59 removed limits. The field is dropped, counted on stderr, and
+// a real typo next to it is still refused.
+func TestImport_LegacyWIPLimitIsDroppedWithAWarning(t *testing.T) {
+	source, destination := t.TempDir(), t.TempDir()
+	seedBoardWithProgressAndChat(t, source)
+	exportFile := filepath.Join(t.TempDir(), "export.json")
+	if err := runExport([]string{"--data", source, "--out", exportFile}); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(exportFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	cols := doc["projects"].([]any)[0].(map[string]any)["Columns"].([]any)
+	for _, c := range cols {
+		c.(map[string]any)["WIPLimit"] = 3
+	}
+	legacy, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyFile := filepath.Join(t.TempDir(), "legacy-wip.json")
+	if err := os.WriteFile(legacyFile, legacy, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stderr, err := captureStderr(t, func() error {
+		return runImport([]string{"--data", destination, "--in", legacyFile})
+	})
+	if err != nil {
+		t.Fatalf("import of a pre-26.09.2026 export with wip_limit failed: %v", err)
+	}
+	if want := fmt.Sprintf("%d column(s) in this export carry wip_limit", len(cols)); !strings.Contains(stderr, want) {
+		t.Errorf("stderr = %q, want a warning containing %q", stderr, want)
+	}
+
+	// Only wip_limit is forgiven: a typo beside it still fails loudly.
+	cols[0].(map[string]any)["kindd"] = "active"
+	typo, _ := json.Marshal(doc)
+	stripped, dropped, err := stripLegacyWIPLimits(typo)
+	if err != nil || dropped != len(cols) {
+		t.Fatalf("strip: dropped=%d err=%v", dropped, err)
+	}
+	if _, err := decodeExportDocument(stripped); err == nil || !strings.Contains(err.Error(), "kindd") {
+		t.Fatalf("typo next to wip_limit: err = %v, want it named", err)
+	}
+
+	// A column that never had a limit was exported as "WIPLimit":null. It is
+	// stripped too, but it is not worth a warning.
+	nullOnly := []byte(`{"projects":[{"Columns":[{"Name":"A","WIPLimit":null}]}]}`)
+	out, dropped, err := stripLegacyWIPLimits(nullOnly)
+	if err != nil || dropped != 0 || strings.Contains(string(out), "WIPLimit") {
+		t.Fatalf("null-only strip: dropped=%d err=%v out=%s", dropped, err, out)
+	}
+}
+
 // mustOpenStore is a thin helper that wraps openStore and fails the test
 // on error — used in tests that need a store handle inline without the
 // full deferred Close dance.
@@ -608,7 +671,7 @@ func TestExportImport_RoundTripWithJournal(t *testing.T) {
 			Mode: service.UpsertCreate, Key: "RKJR", Name: "Journal round-trip",
 			Columns: []service.ColumnSpec{
 				{Name: "Backlog", Kind: domain.KindBacklog},
-				{Name: "Doing", Kind: domain.KindActive, WIPLimit: intPtrLocal(5)},
+				{Name: "Doing", Kind: domain.KindActive},
 				{Name: "Done", Kind: domain.KindDone},
 			},
 		}); err != nil {

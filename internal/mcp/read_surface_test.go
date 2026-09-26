@@ -32,7 +32,7 @@ func configuredBoard() *service.Board {
 		Columns: []service.BoardColumn{
 			{Name: "Backlog", Kind: domain.KindBacklog, Count: 1,
 				Tasks: []domain.TaskView{withEstimateOn(fixedTask("BMB-1"), 3)}},
-			{Name: "Doing", Kind: domain.KindActive, WIPLimit: intPtr(3), Count: 0},
+			{Name: "Doing", Kind: domain.KindActive, Count: 0},
 		},
 		DoneTotal: 12,
 	}}}
@@ -87,8 +87,11 @@ func TestBoardGet_PublishesProjectVersionAndSettings(t *testing.T) {
 		t.Fatalf("columns = %d, want 2", len(cols))
 	}
 	doing := cols[1].(map[string]any)
-	if doing["kind"] != string(domain.KindActive) || doing["wip_limit"] != float64(3) {
-		t.Errorf("second column = %v, want the active column with its WIP limit", doing)
+	if doing["kind"] != string(domain.KindActive) {
+		t.Errorf("second column = %v, want the active column", doing)
+	}
+	if _, has := doing["wip_limit"]; has {
+		t.Errorf("second column = %v still carries wip_limit; the board has no WIP limits (KANB-59)", doing)
 	}
 }
 

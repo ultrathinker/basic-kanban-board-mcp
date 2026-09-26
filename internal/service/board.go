@@ -181,7 +181,7 @@ func (s *svc) buildBoardProject(
 
 	for _, c := range cols {
 		cc.prime(c)
-		bc := BoardColumn{Name: c.Name, Kind: c.Kind, WIPLimit: c.WIPLimit}
+		bc := BoardColumn{Name: c.Name, Kind: c.Kind}
 
 		if !columnAllowed(filter, c.Name) {
 			bp.Columns = append(bp.Columns, bc)

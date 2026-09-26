@@ -76,7 +76,7 @@ type taskPatchIn struct {
 	TagsAdd    []string `json:"tags_add,omitempty"`
 	TagsRemove []string `json:"tags_remove,omitempty"`
 
-	Column string  `json:"column,omitempty" jsonschema:"move to this column; validated (dependencies, WIP, strict_done) inside the transaction"`
+	Column string  `json:"column,omitempty" jsonschema:"move to this column; validated (dependencies, strict_done) inside the transaction"`
 	Rank   string  `json:"rank,omitempty" jsonschema:"reposition within the destination column"`
 	Parent *string `json:"parent,omitempty" jsonschema:"reparent to this task key, or send null to clear; \"parent\" alone is a normal field, not the three-state trick — use JSON null to clear"`
 
@@ -88,7 +88,7 @@ type taskPatchIn struct {
 	Focus         *bool          `json:"focus,omitempty" jsonschema:"true sets this task as the project's focus; false clears it only if this task holds it"`
 	MetadataMerge map[string]any `json:"metadata_merge,omitempty" jsonschema:"shallow-merged; a null value deletes that key"`
 
-	Force  bool   `json:"force,omitempty" jsonschema:"admin scope only: bypass a blocked/wip_exceeded/strict_done refusal"`
+	Force  bool   `json:"force,omitempty" jsonschema:"admin scope only: bypass a blocked/strict_done refusal"`
 	Reason string `json:"reason,omitempty" jsonschema:"required with force:true; written to the event log"`
 }
 
@@ -261,7 +261,7 @@ func triParentField(raw map[string]json.RawMessage, val *string) (service.FieldS
 
 // taskPatchToService converts one wire patch into service.TaskPatch. It
 // validates request *shape* only (key format, enum values, mutually
-// exclusive fields) — every business rule (if_version requirement, WIP,
+// exclusive fields) — every business rule (if_version requirement,
 // dependencies, cycles) is the service's job per AGENTS.md house style.
 func taskPatchToService(idx int, in taskPatchIn, raw map[string]json.RawMessage) (service.TaskPatch, *domain.Error) {
 	nk, err := domain.NormalizeTaskKey(in.Key)

@@ -89,7 +89,6 @@ func seedProject(t *testing.T, s Store) (*domain.Project, map[string]*domain.Col
 				Name:      def.Name,
 				Position:  i,
 				Kind:      def.Kind,
-				WIPLimit:  def.WIPLimit,
 			}
 			if err := s.Columns().Create(tx, c); err != nil {
 				return err

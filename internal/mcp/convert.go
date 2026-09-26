@@ -204,9 +204,8 @@ func taskViewOutList(tvs []domain.TaskView, proj service.Projection) []taskOut {
 
 // columnOut is the wire form of one domain.Column.
 type columnOut struct {
-	Name     string      `json:"name"`
-	Kind     domain.Kind `json:"kind"`
-	WIPLimit *int        `json:"wip_limit,omitempty"`
+	Name string      `json:"name"`
+	Kind domain.Kind `json:"kind"`
 }
 
 func columnOutList(cols []domain.Column) []columnOut {
@@ -215,7 +214,7 @@ func columnOutList(cols []domain.Column) []columnOut {
 	}
 	out := make([]columnOut, len(cols))
 	for i, c := range cols {
-		out[i] = columnOut{Name: c.Name, Kind: c.Kind, WIPLimit: c.WIPLimit}
+		out[i] = columnOut{Name: c.Name, Kind: c.Kind}
 	}
 	return out
 }

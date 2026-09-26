@@ -16,7 +16,7 @@ func (r *columnRepo) ListByProject(tx Tx, projectID string) ([]*domain.Column, e
 	}
 	tw := tx.(*txWrap)
 	rows, err := tw.tx.QueryContext(tw.ctx(), `
-		SELECT id, project_id, name, position, kind, wip_limit
+		SELECT id, project_id, name, position, kind
 		FROM columns WHERE project_id = ?
 		ORDER BY position ASC, name ASC`, projectID)
 	if err != nil {
@@ -40,7 +40,7 @@ func (r *columnRepo) GetByName(tx Tx, projectID, name string) (*domain.Column, e
 	}
 	tw := tx.(*txWrap)
 	row := tw.tx.QueryRowContext(tw.ctx(), `
-		SELECT id, project_id, name, position, kind, wip_limit
+		SELECT id, project_id, name, position, kind
 		FROM columns WHERE project_id = ? AND name = ? COLLATE NOCASE`, projectID, name)
 	c, err := scanColumnRow(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -55,7 +55,7 @@ func (r *columnRepo) GetByID(tx Tx, id string) (*domain.Column, error) {
 	}
 	tw := tx.(*txWrap)
 	row := tw.tx.QueryRowContext(tw.ctx(), `
-		SELECT id, project_id, name, position, kind, wip_limit
+		SELECT id, project_id, name, position, kind
 		FROM columns WHERE id = ?`, id)
 	c, err := scanColumnRow(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -74,9 +74,9 @@ func (r *columnRepo) Create(tx Tx, c *domain.Column) error {
 	}
 	tw := tx.(*txWrap)
 	_, err := tw.tx.ExecContext(tw.ctx(), `
-		INSERT INTO columns(id, project_id, name, position, kind, wip_limit)
-		VALUES (?,?,?,?,?,?)`,
-		c.ID, c.ProjectID, c.Name, c.Position, string(c.Kind), nullableIntPtr(c.WIPLimit),
+		INSERT INTO columns(id, project_id, name, position, kind)
+		VALUES (?,?,?,?,?)`,
+		c.ID, c.ProjectID, c.Name, c.Position, string(c.Kind),
 	)
 	if err != nil {
 		if IsUniqueViolation(err) {
@@ -112,9 +112,9 @@ func (r *columnRepo) Update(tx Tx, c *domain.Column) error {
 		return fmt.Errorf("store: read column kind: %w", err)
 	}
 	res, err := tw.tx.ExecContext(tw.ctx(), `
-		UPDATE columns SET name=?, position=?, kind=?, wip_limit=?
+		UPDATE columns SET name=?, position=?, kind=?, wip_limit=NULL
 		WHERE id=?`,
-		c.Name, c.Position, string(c.Kind), nullableIntPtr(c.WIPLimit), c.ID,
+		c.Name, c.Position, string(c.Kind), c.ID,
 	)
 	if err != nil {
 		return fmt.Errorf("store: update column: %w", err)
@@ -229,13 +229,8 @@ func (r *columnRepo) OccupantKeys(tx Tx, columnID string, excludeTaskID string) 
 // scanColumnRow handles *sql.Row.Scan; ErrNoRows becomes a domain.NotFound.
 func scanColumnRow(row *sql.Row) (*domain.Column, error) {
 	var c domain.Column
-	var wip sql.NullInt64
-	if err := row.Scan(&c.ID, &c.ProjectID, &c.Name, &c.Position, &c.Kind, &wip); err != nil {
+	if err := row.Scan(&c.ID, &c.ProjectID, &c.Name, &c.Position, &c.Kind); err != nil {
 		return nil, err
-	}
-	if wip.Valid {
-		v := int(wip.Int64)
-		c.WIPLimit = &v
 	}
 	return &c, nil
 }
@@ -243,13 +238,8 @@ func scanColumnRow(row *sql.Row) (*domain.Column, error) {
 // scanColumn is the *sql.Rows variant.
 func scanColumn(rows *sql.Rows) (*domain.Column, error) {
 	var c domain.Column
-	var wip sql.NullInt64
-	if err := rows.Scan(&c.ID, &c.ProjectID, &c.Name, &c.Position, &c.Kind, &wip); err != nil {
+	if err := rows.Scan(&c.ID, &c.ProjectID, &c.Name, &c.Position, &c.Kind); err != nil {
 		return nil, fmt.Errorf("store: scan column: %w", err)
-	}
-	if wip.Valid {
-		v := int(wip.Int64)
-		c.WIPLimit = &v
 	}
 	return &c, nil
 }

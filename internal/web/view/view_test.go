@@ -312,7 +312,7 @@ func TestBuildBoardAssignsColumnsAndHidesDone(t *testing.T) {
 	now := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
 	columns := []domain.Column{
 		{ID: "c-b", Name: "Backlog", Kind: domain.KindBacklog},
-		{ID: "c-d", Name: "Doing", Kind: domain.KindActive, WIPLimit: intPtr(3)},
+		{ID: "c-d", Name: "Doing", Kind: domain.KindActive},
 		{ID: "c-o", Name: "Done", Kind: domain.KindDone},
 	}
 	t1 := domain.TaskView{ProjectKey: "BMB"}
@@ -482,7 +482,7 @@ func TestFuncs(t *testing.T) {
 	// error in isolation — it takes down template parsing for the whole
 	// engine, which is how the UI once shipped unable to render any page.
 	for _, name := range []string{
-		"priorityClass", "priorityName", "priorityBadge", "wipFull",
+		"priorityClass", "priorityName", "priorityBadge",
 		"duration", "age", "relTime", "relTimeFuture", "markdown", "truncate",
 		"joinTags", "commaKeys", "dict", "int", "hasAny", "moveTargets",
 		"boardURL", "taskURL", "drawerURL", "activityURL", "loginURL",
@@ -514,28 +514,6 @@ func TestPriorityBadgeOnlyLabelsTheTopTwo(t *testing.T) {
 	for _, tc := range cases {
 		if got := priorityBadge(tc.p); got != tc.want {
 			t.Errorf("priorityBadge(%v) = %q, want %q", tc.p, got, tc.want)
-		}
-	}
-}
-
-func TestWIPFull(t *testing.T) {
-	t.Parallel()
-	three := 3
-	cases := []struct {
-		name  string
-		count int
-		limit *int
-		want  bool
-	}{
-		{"no limit is never full", 99, nil, false},
-		{"under the limit", 2, &three, false},
-		{"at the limit", 3, &three, true},
-		{"over the limit", 4, &three, true},
-		{"empty limited column", 0, &three, false},
-	}
-	for _, tc := range cases {
-		if got := wipFull(tc.count, tc.limit); got != tc.want {
-			t.Errorf("%s: wipFull(%d, %v) = %v, want %v", tc.name, tc.count, tc.limit, got, tc.want)
 		}
 	}
 }
@@ -628,13 +606,13 @@ func TestViewCardCarriesColumnVersionAndDueState(t *testing.T) {
 // shrink, the template render suite quietly stops proving anything.
 // ---------------------------------------------------------------------------
 
-func TestSampleBoardHasAFullWIPColumnAndAnEmptyOne(t *testing.T) {
+func TestSampleBoardHasAPopulatedColumnAndAnEmptyOne(t *testing.T) {
 	t.Parallel()
 	m, _, _ := SampleBoardModel()
-	var sawFullWIP, sawEmpty, sawBlocked, sawLease bool
+	var sawPopulated, sawEmpty, sawBlocked, sawLease bool
 	for _, c := range m.Columns {
-		if wipFull(c.Count, c.WIP) {
-			sawFullWIP = true
+		if c.Count >= 3 {
+			sawPopulated = true
 		}
 		if len(c.Tasks) == 0 {
 			sawEmpty = true
@@ -648,8 +626,8 @@ func TestSampleBoardHasAFullWIPColumnAndAnEmptyOne(t *testing.T) {
 			}
 		}
 	}
-	if !sawFullWIP {
-		t.Error("fixture has no column at its WIP limit — the badge that crashed is untested")
+	if !sawPopulated {
+		t.Error("fixture has no column with three or more tasks")
 	}
 	if !sawEmpty {
 		t.Error("fixture has no empty column")

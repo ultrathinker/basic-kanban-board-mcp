@@ -1,7 +1,7 @@
 // Package mcp adapts internal/service.Service onto the Model Context
 // Protocol: the tool registry in registry.go, mounted over streamable HTTP, plus a read-only
 // variant and the initialize instructions. This package holds no business
-// logic — every rule it seems to enforce (WIP, dependencies, versions,
+// logic — every rule it seems to enforce (dependencies, versions,
 // cycles) actually lives in internal/domain and internal/service; this
 // layer only translates MCP requests into service calls and service
 // results back into the {ok, op, data, meta} / {ok:false, op, error}

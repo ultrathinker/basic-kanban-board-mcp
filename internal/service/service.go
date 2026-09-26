@@ -254,11 +254,10 @@ type Participant struct {
 }
 
 type BoardColumn struct {
-	Name     string
-	Kind     domain.Kind
-	WIPLimit *int
-	Count    int
-	Tasks    []domain.TaskView // empty in ViewSummary
+	Name  string
+	Kind  domain.Kind
+	Count int
+	Tasks []domain.TaskView // empty in ViewSummary
 }
 
 // ---------------------------------------------------------------------------
@@ -328,7 +327,6 @@ type NextResult struct {
 	// ClaimedKey / StartedKey name the task actually taken, if any.
 	ClaimedKey string
 	StartedKey string
-	WIPFull    bool
 	// Reasons explains why the remaining candidates are not ready. An agent
 	// that gets an empty list must never have to guess.
 	Reasons NextReasons
@@ -339,7 +337,6 @@ type NextResult struct {
 
 type NextReasons struct {
 	BlockedDependency int
-	WIPFull           int
 	ClaimedByOther    int
 	ParentIncomplete  int
 	NotLeaf           int
@@ -634,9 +631,8 @@ type ProjectUpsertInput struct {
 }
 
 type ColumnSpec struct {
-	Name     string
-	Kind     domain.Kind
-	WIPLimit *int
+	Name string
+	Kind domain.Kind
 }
 
 // RemoveColumn forces the caller to say where the orphans go; dropping a

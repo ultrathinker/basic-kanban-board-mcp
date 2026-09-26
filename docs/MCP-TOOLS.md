@@ -107,8 +107,8 @@ The default output format for `board_get` is compact text (`format: "compact"`).
 ### Grammar Rules
 
 1. **Version header:** Line 1 must be `compact_version=1`.
-2. **Project header:** `# KEY Name -- focus KEY|none -- Col1 count[/wip] -- Col2 count -- Done total (shown shown|hidden) -- v<version>`
-   - Each non-done column is formatted as `Name count` or `Name count/wip` if a WIP limit is configured.
+2. **Project header:** `# KEY Name -- focus KEY|none -- Col1 count -- Col2 count -- Done total (shown shown|hidden) -- v<version>`
+   - Each non-done column is formatted as `Name count`. The board has no WIP limits.
    - The done segment reports total archived/done tasks and whether any are currently rendered.
    - `v<version>` is the **project** configuration version and always comes last.
 3. **Column header:** `## ColumnName` (the Done section is omitted when `done_limit=0`).
@@ -172,7 +172,7 @@ board_get({ "after": <value> })
 
 ### 2. `task_next`
 
-Find, claim or start the next ready task. `peek` never takes anything (even when WIP is full); `claim` leases the top candidate without moving it; `start` leases it and moves it into the first active column atomically. Returns `data.tasks[]`: a flat list of task objects, best candidate first (task_get returns `data.items[]` instead, because it answers per requested key). `meta.reasons` counts why the rest were not offered.
+Find, claim or start the next ready task. `peek` never takes anything; `claim` leases the top candidate without moving it; `start` leases it and moves it into the first active column atomically. Returns `data.tasks[]`: a flat list of task objects, best candidate first (task_get returns `data.items[]` instead, because it answers per requested key). `meta.reasons` counts why the rest were not offered.
 This is a chooser, so it answers cheaply: bodies come back as a 256-byte excerpt ending in "… +N chars" and acceptance as the first 2 items with `acceptance_total` when there are more. `detail:"full"` widens that to 2048 bytes and 10 items; `meta.projection` always states which bounds were applied. Once you have chosen, task_get returns the whole card.
 
 #### Parameters
@@ -320,7 +320,7 @@ task_remove({ "items": <value> })
 ### 9. `project_upsert`
 
 Create or update one project: identity, columns and settings. `mode` is REQUIRED and has no default — despite the name this tool never guesses create-vs-update, because a typo in a project key must not silently fork the board into a second project.
-Create: {"mode":"create","key":"TEST","name":"Smoke Test"} — `name` is required; omitting `columns` gives the default set (Backlog, Doing (WIP 3), Done).
+Create: {"mode":"create","key":"TEST","name":"Smoke Test"} — `name` is required; omitting `columns` gives the default set (Backlog, Doing, Done).
 Update: {"mode":"update","key":"TEST","if_version":3,"name":"New name"} — `if_version` is required and is the version your last read of the project returned.
 Not sure which one applies? Call board_get with no `project` first: every project you can reach comes back with its key and version.
 
@@ -446,7 +446,6 @@ All failures return `{ok: false, error: {code, message, remediation}}` with `isE
 | `validation` | An input field failed validation (type, format, length, enum). | See the `message`; the named field is the offender. |
 | `conflict` | `if_version` does not match the current version, or another writer raced. | Merge your change into `error.current` and retry with `if_version=N+1`. |
 | `blocked` | An open `blocks` dependency prevents the operation. | Finish or remove the open blocker and retry. |
-| `wip_exceeded` | The destination column has no WIP slot. | Finish another task in that column, or wait for a lease to expire. |
 | `claimed` | Another actor holds a live lease. | Wait for the lease to expire, or use `task_claim force: true` if you are admin. |
 | `forbidden` | Token lacks the required scope, project access, or admin role. | Use a token with the right scope or project_keys. |
 | `cycle` | The proposed link or parent chain would create a cycle. | Restructure the chain so it is acyclic. |

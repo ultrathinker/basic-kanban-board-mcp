@@ -128,10 +128,6 @@ func renderProject(sb *strings.Builder, p *service.BoardProject, now time.Time) 
 }
 
 func writeColumnHeader(sb *strings.Builder, col *service.BoardColumn) {
-	if col.WIPLimit != nil {
-		fmt.Fprintf(sb, "%s %d/%d", col.Name, col.Count, *col.WIPLimit)
-		return
-	}
 	fmt.Fprintf(sb, "%s %d", col.Name, col.Count)
 }
 
