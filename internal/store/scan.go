@@ -483,16 +483,38 @@ func makeInClause(ids []string) (string, []any) {
 // repository case where the schema has a NULL int column.
 func intPtr(i int) *int { return &i }
 
-// wrapf returns a clone of e with its Message extended by formatted args.
-// We cannot define methods on a non-local type (*domain.Error), so the
-// constructor lives in this package and the domain type stays clean.
-func wrapf(e *domain.Error, format string, args ...any) *domain.Error {
-	if e == nil {
-		return nil
+// isUniqueOnID reports a UNIQUE violation on table's primary key, as
+// opposed to one on a secondary unique index of the same table (for
+// chat_messages that is the per-sender idempotency key, whose column name
+// also starts with "id").
+func isUniqueOnID(err error, table string) bool {
+	if !IsUniqueViolation(err) {
+		return false
 	}
-	clone := *e
-	clone.Message = e.Message + ": " + fmt.Sprintf(format, args...)
-	return &clone
+	msg := err.Error()
+	return strings.Contains(msg, table+".id (") || strings.HasSuffix(msg, table+".id")
+}
+
+// duplicateRow is the error for a row whose id is already stored. Through
+// the tools an id is always freshly minted, so in practice this is
+// `kanban import` into a board that already holds the row — which used to
+// surface as a bare "store: insert ...: constraint failed" with no code and
+// no way forward (review of 14.09, section 7.2).
+func duplicateRow(what, id string) *domain.Error {
+	return &domain.Error{
+		Code:        domain.CodeConflict,
+		Message:     fmt.Sprintf("%s %s already exists", what, id),
+		Remediation: "The row is already on this board. Import into an empty data directory (kanban import --data <new dir>), or leave the existing row as it is.",
+	}
+}
+
+// alreadyExists is the error for a UNIQUE violation on a natural key. It
+// replaced wrapf(domain.Conflict(nil, 0, 0), ...), which prefixed every such
+// message with "version mismatch: you sent if_version=0, current is 0" and
+// advised retrying with if_version=0 — nonsense for a name that is taken
+// (review D7).
+func alreadyExists(msg, remediation string) *domain.Error {
+	return &domain.Error{Code: domain.CodeConflict, Message: msg, Remediation: remediation}
 }
 
 // missingRef builds a CodeNotFound error for a foreign-key violation, where

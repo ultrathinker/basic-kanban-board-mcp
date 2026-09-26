@@ -532,5 +532,3 @@ func (r *linkRepo) ListForTasks(tx Tx, taskIDs []string) (map[string][]domain.Li
 	}
 	return out, rows.Err()
 }
-
-// (wrapf now lives in scan.go.)

@@ -57,8 +57,20 @@ func (r *chatRepo) Add(tx Tx, m *domain.ChatMessage) error {
 		if IsForeignKeyViolation(err) {
 			return domain.NotFound("project", m.ProjectID)
 		}
+		if isUniqueOnID(err, "chat_messages") {
+			return duplicateRow("chat message", m.ID)
+		}
 		if IsUniqueViolation(err) {
-			return wrapf(domain.Conflict(nil, 0, 0), "idempotency key %q was already used by this sender", m.IdempotencyKey)
+			// Not a version conflict: the old wrapf(domain.Conflict(nil,0,0))
+			// told the caller "you sent if_version=0, current is 0" (review
+			// D7). The service answers a repeated key with the original
+			// message before it gets here, so reaching this means two posts
+			// raced on one key.
+			return &domain.Error{
+				Code:        domain.CodeIdempotencyMismatch,
+				Message:     fmt.Sprintf("idempotency key %q was already used by this sender for another message", m.IdempotencyKey),
+				Remediation: "Use a fresh idempotency_key for a new message. Resending the same message with the same key returns the original.",
+			}
 		}
 		return fmt.Errorf("store: insert chat message: %w", err)
 	}

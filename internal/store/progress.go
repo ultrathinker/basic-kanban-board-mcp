@@ -63,6 +63,9 @@ func (r *progressRepo) Add(tx Tx, m *domain.ProgressMark) error {
 				fmt.Sprintf("progress percent %d is outside 0..100", m.Percent),
 				"Send a percent between 0 and 100.")
 		}
+		if isUniqueOnID(err, "progress_marks") {
+			return duplicateRow("progress mark", m.ID)
+		}
 		return fmt.Errorf("store: insert progress mark: %w", err)
 	}
 	return nil

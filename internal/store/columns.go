@@ -80,7 +80,7 @@ func (r *columnRepo) Create(tx Tx, c *domain.Column) error {
 	)
 	if err != nil {
 		if IsUniqueViolation(err) {
-			return wrapf(domain.Conflict(nil, 0, 0), "column name %q already exists in project", c.Name)
+			return alreadyExists(fmt.Sprintf("column name %q already exists in project", c.Name), "Column names are unique within a project; pick another name.")
 		}
 		return fmt.Errorf("store: insert column: %w", err)
 	}

@@ -35,6 +35,9 @@ func (r *noteRepo) Add(tx Tx, n *domain.Note) error {
 		if IsForeignKeyViolation(err) {
 			return domain.NotFound("task", n.TaskID)
 		}
+		if isUniqueOnID(err, "notes") {
+			return duplicateRow("note", n.ID)
+		}
 		return fmt.Errorf("store: insert note: %w", err)
 	}
 	return nil

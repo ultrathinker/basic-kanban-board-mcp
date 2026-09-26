@@ -54,7 +54,7 @@ func (r *projectRepo) Create(tx Tx, p *domain.Project) error {
 	)
 	if err != nil {
 		if IsUniqueViolation(err) {
-			return wrapf(domain.Conflict(nil, 0, 0), "project key %q already exists", p.Key)
+			return alreadyExists(fmt.Sprintf("project key %q already exists", p.Key), "Use project_upsert with mode:\"update\" to change that project, or choose another key.")
 		}
 		return fmt.Errorf("store: insert project: %w", err)
 	}

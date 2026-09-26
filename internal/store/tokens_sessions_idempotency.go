@@ -110,7 +110,7 @@ func (r *tokenRepo) Create(tx Tx, t *domain.Token) error {
 	)
 	if err != nil {
 		if IsUniqueViolation(err) {
-			return wrapf(domain.Conflict(nil, 0, 0), "token name %q already exists", t.Name)
+			return alreadyExists(fmt.Sprintf("token name %q already exists", t.Name), "Token names are unique; choose another name. An expired executor key is reissued by executor_key_issue under the same name.")
 		}
 		return fmt.Errorf("store: insert token: %w", err)
 	}

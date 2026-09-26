@@ -89,7 +89,7 @@ func (r *taskRepo) Create(tx Tx, t *domain.Task) error {
 			return crossProjectEdge("parent")
 		}
 		if IsUniqueViolation(err) {
-			return wrapf(domain.Conflict(nil, 0, 0), "task key %q already exists", t.Key)
+			return alreadyExists(fmt.Sprintf("task key %q already exists", t.Key), "A card with this key is already on the board. kanban import restores into an empty data directory only.")
 		}
 		if IsCheckViolation(err) {
 			return domain.Invalid("task", "task fields failed a CHECK constraint",

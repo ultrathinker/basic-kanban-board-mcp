@@ -93,7 +93,15 @@ func (r *commandAcceptanceRepo) Put(tx Tx, a *domain.CommandAcceptance) error {
 	)
 	if err != nil {
 		if IsUniqueViolation(err) {
-			return wrapf(domain.Conflict(nil, 0, 0), "command message %s was already accepted", a.MessageID)
+			// Not a version conflict (review D7): the command has an
+			// acceptance record already. The service replays that record
+			// before it gets here, so reaching this means two acceptances
+			// raced.
+			return &domain.Error{
+				Code:        domain.CodeConflict,
+				Message:     fmt.Sprintf("command message %s was already accepted", a.MessageID),
+				Remediation: "Do not accept it again: repeat the same task_create with this source_message to get the task keys the first acceptance created (meta.already_accepted).",
+			}
 		}
 		return fmt.Errorf("store: insert acceptance: %w", err)
 	}
