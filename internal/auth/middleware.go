@@ -94,7 +94,7 @@ func (m *Manager) ClientIP(r *http.Request) string {
 	if r == nil {
 		return ""
 	}
-	remote := remoteAddrIP(r.RemoteAddr)
+	remote := parseIP(r.RemoteAddr)
 	if remote == nil {
 		return ""
 	}
@@ -110,7 +110,7 @@ func (m *Manager) ClientIP(r *http.Request) string {
 	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
 		parts := strings.Split(xff, ",")
 		for i := len(parts) - 1; i >= 0; i-- {
-			ip := parseForwardedIP(parts[i])
+			ip := parseIP(parts[i])
 			if ip == nil {
 				continue
 			}
@@ -121,7 +121,7 @@ func (m *Manager) ClientIP(r *http.Request) string {
 		}
 	}
 	if rip := r.Header.Get("X-Real-IP"); rip != "" {
-		if ip := parseForwardedIP(rip); ip != nil && !CIDRContains(m.Trusted, ip.String()) {
+		if ip := parseIP(rip); ip != nil && !CIDRContains(m.Trusted, ip.String()) {
 			return ip.String()
 		}
 	}
@@ -136,7 +136,7 @@ func (m *Manager) ForwardedProto(r *http.Request) string {
 	if r == nil || len(m.Trusted) == 0 {
 		return ""
 	}
-	remote := remoteAddrIP(r.RemoteAddr)
+	remote := parseIP(r.RemoteAddr)
 	if remote == nil || !CIDRContains(m.Trusted, remote.String()) {
 		return ""
 	}
@@ -148,36 +148,27 @@ func (m *Manager) ForwardedProto(r *http.Request) string {
 	return ""
 }
 
-func remoteAddrIP(s string) net.IP {
+// parseIP returns the IP in a peer address or forwarded-header hop: a bare
+// IPv4 or IPv6 literal, either with a port, and IPv6 with or without
+// brackets. Splitting on the first colon, as this once did, cut every IPv6
+// address to its first group, so a trusted IPv6 proxy was never recognised.
+// Returns nil when s holds no IP, so callers can use it as a filter.
+func parseIP(s string) net.IP {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return nil
 	}
-	if h, _, ok := strings.Cut(s, ":"); ok {
+	if h, _, err := net.SplitHostPort(s); err == nil {
 		s = h
 	}
-	s = strings.TrimPrefix(s, "[")
-	s = strings.TrimSuffix(s, "]")
-	return net.ParseIP(s)
-}
-
-func parseForwardedIP(s string) net.IP {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return nil
-	}
-	if h, _, ok := strings.Cut(s, ":"); ok {
-		s = h
-	}
-	s = strings.TrimPrefix(s, "[")
-	s = strings.TrimSuffix(s, "]")
+	s = strings.TrimSuffix(strings.TrimPrefix(s, "["), "]")
 	return net.ParseIP(s)
 }
 
 // CIDRContains is re-exported so the middleware package does not need to
 // import net itself.
 func CIDRContains(cidrs []*net.IPNet, addr string) bool {
-	ip := parseForwardedIP(addr)
+	ip := parseIP(addr)
 	if ip == nil {
 		return false
 	}
