@@ -113,6 +113,9 @@ type ScopeChangeNote struct {
 	At time.Time
 	// Author is the message's display signature.
 	Author string
+	// Via is the posting token's name when it differs from Author
+	// (service.AuthorVia); the tooltip names both, as the feed does.
+	Via string
 	// Body is the message's full text; the tooltip carries an excerpt cut by
 	// the same rune rule as the feed's reply quotes.
 	Body string
@@ -131,11 +134,15 @@ func ScopeChangeMarks(notes []ScopeChangeNote) []ChartAxisMark {
 	}
 	marks := make([]ChartAxisMark, 0, len(notes))
 	for _, n := range notes {
+		by := n.Author
+		if n.Via != "" {
+			by += " · via " + n.Via
+		}
 		marks = append(marks, ChartAxisMark{
 			At:    n.At,
 			Label: scopeChangeMarkLabel,
 			Note: fmt.Sprintf("scope change declared here by %s: %q — a declared change of plan, not a proof of what moved the curve at this instant",
-				n.Author, chatQuoteExcerpt(n.Body)),
+				by, chatQuoteExcerpt(n.Body)),
 			Href: n.Href,
 		})
 	}

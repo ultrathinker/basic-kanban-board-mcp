@@ -822,8 +822,11 @@ type ChatListResult struct {
 type ChatListEntryMeta struct {
 	RecipientName string              // display name of Recipient, "" for unset/"all"
 	ExecutorName  string              // display name of ResolvedExecutor, "" when none
+	AuthorVia     string              // see AuthorVia
 	Parent        *domain.ChatMessage // the message this one replies to
-	Acceptance    *domain.CommandAcceptance
+	// ParentAuthorVia is AuthorVia for Parent.
+	ParentAuthorVia string
+	Acceptance      *domain.CommandAcceptance
 }
 
 type ChatMessageListResult = ChatListResult
@@ -851,6 +854,7 @@ type ChatFeedMessage struct {
 	Message              domain.ChatMessage
 	RecipientName        string // "" when the recipient is unset or "all"
 	ResolvedExecutorName string // "" when no single executor was fixed
+	AuthorVia            string // see AuthorVia
 	// TaskKeys are the tasks created by accepting this command (KANB-47).
 	// Empty for every other message and for an unaccepted command.
 	TaskKeys []string

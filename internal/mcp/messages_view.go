@@ -25,6 +25,7 @@ type feedMessageOut struct {
 	// client never chooses. The two can differ and the id is the truth.
 	Author      string   `json:"author"`
 	AuthorToken string   `json:"author_token_id,omitempty"`
+	AuthorVia   string   `json:"author_via,omitempty" jsonschema:"name of the token that posted, present only when it differs from the author signature"`
 	Kind        string   `json:"kind" jsonschema:"update | scope_change | question | command"`
 	Recipient   string   `json:"recipient,omitempty" jsonschema:"tokens.id the sender addressed, or \"all\"; empty = the coordinator default"`
 	RecipientNm string   `json:"recipient_name,omitempty"`
@@ -58,6 +59,7 @@ func feedMessagesOut(res *service.ChatFeedResult) []feedMessageOut {
 			CreatedAt:   formatTime(fm.Message.CreatedAt),
 			Author:      fm.Message.Author,
 			AuthorToken: fm.Message.AuthorTokenID,
+			AuthorVia:   fm.AuthorVia,
 			Kind:        string(fm.Message.Kind),
 			Recipient:   fm.Message.Recipient,
 			RecipientNm: fm.RecipientName,
@@ -87,7 +89,12 @@ func renderMessagesFeed(d *boardMessagesData) string {
 	fmt.Fprintf(&sb, "# %s messages %d%s\n", d.Project, len(d.Messages), tail)
 	for i := range d.Messages {
 		m := &d.Messages[i]
-		fmt.Fprintf(&sb, "- %s %s %s: %s", m.CreatedAt, m.Kind, m.Author, feedBodyExcerpt(m.Body))
+		author := m.Author
+		if m.AuthorVia != "" {
+			// The signature is free text; the token that posted is not.
+			author += " (via " + m.AuthorVia + ")"
+		}
+		fmt.Fprintf(&sb, "- %s %s %s: %s", m.CreatedAt, m.Kind, author, feedBodyExcerpt(m.Body))
 		if m.Recipient != "" {
 			label := m.Recipient
 			if m.RecipientNm != "" {

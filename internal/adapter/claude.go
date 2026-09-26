@@ -27,12 +27,23 @@ func (r ClaudeRunner) Deliver(ctx context.Context, sessionID string, msg QueuedM
 	if executable == "" {
 		executable = "claude"
 	}
-	prompt := fmt.Sprintf("Board message %s from %s (%s):\n\n%s", msg.ID, msg.Author, msg.Kind, msg.Body)
-	cmd := exec.CommandContext(ctx, executable, "--print", "--output-format", "json", "--resume", sessionID, prompt)
+	cmd := exec.CommandContext(ctx, executable, "--print", "--output-format", "json", "--resume", sessionID, deliveryPrompt(msg))
 	cmd.Dir = r.WorkDir
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("Claude Code did not acknowledge the turn: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+// deliveryPrompt is the turn a delivered message becomes. The author is a
+// free signature, so the posting token rides next to it whenever the two
+// differ: a worker must not take "owner" for the owner when another key
+// wrote it.
+func deliveryPrompt(msg QueuedMessage) string {
+	from := msg.Author
+	if msg.AuthorVia != "" {
+		from += " (via " + msg.AuthorVia + ")"
+	}
+	return fmt.Sprintf("Board message %s from %s (%s):\n\n%s", msg.ID, from, msg.Kind, msg.Body)
 }

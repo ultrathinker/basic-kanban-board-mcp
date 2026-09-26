@@ -516,6 +516,7 @@ func (s *svc) ChatFeed(ctx context.Context, a Actor, in ChatFeedInput) (*ChatFee
 			if m.ResolvedExecutor != "" {
 				fm.ResolvedExecutorName = names[m.ResolvedExecutor]
 			}
+			fm.AuthorVia = AuthorVia(m, names)
 			result.Messages = append(result.Messages, fm)
 		}
 		return nil
@@ -524,6 +525,25 @@ func (s *svc) ChatFeed(ctx context.Context, a Actor, in ChatFeedInput) (*ChatFee
 		return nil, err
 	}
 	return &result, nil
+}
+
+// AuthorVia is the name of the token that posted m when it differs from the
+// signature m.Author, and "" otherwise. The signature is free text a sender
+// chooses — an orchestrator relaying the owner's words legitimately signs as
+// the owner — so every surface that shows it shows this next to it: a reader
+// must never take "admin" for the admin when some other key wrote it. ""
+// also covers a row that predates token attribution and a token that no
+// longer resolves, where there is nothing true to add. names maps tokens.id
+// to the token's name. Case alone is not a difference worth flagging.
+func AuthorVia(m domain.ChatMessage, names map[string]string) string {
+	if m.AuthorTokenID == "" {
+		return ""
+	}
+	name := names[m.AuthorTokenID]
+	if name == "" || strings.EqualFold(strings.TrimSpace(name), strings.TrimSpace(m.Author)) {
+		return ""
+	}
+	return name
 }
 
 // ChatMessageAdd is an alias for ChatAdd.
@@ -591,7 +611,11 @@ func (s *svc) resolveChatListMeta(tx store.Tx, msgs []domain.ChatMessage) map[st
 		if m.ResolvedExecutor != "" {
 			e.ExecutorName = names[m.ResolvedExecutor]
 		}
+		e.AuthorVia = AuthorVia(m, names)
 		e.Parent = parents[m.ReplyToID]
+		if e.Parent != nil {
+			e.ParentAuthorVia = AuthorVia(*e.Parent, names)
+		}
 		if a, ok := acceptances[m.ID]; ok {
 			acc := a
 			e.Acceptance = &acc

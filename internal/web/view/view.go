@@ -216,6 +216,11 @@ type ChatEntry struct {
 	// display name, or "all" for a broadcast. Empty when the message
 	// addresses nobody (the ordinary room-wide update).
 	Recipient string
+	// AuthorVia is the name of the token that posted the message, set only
+	// when it differs from the Author signature (service.AuthorVia). The
+	// signature is the sender's free choice, so the entry shows who really
+	// wrote it next to it: "owner · via opus-x3".
+	AuthorVia string
 	// AuthorTokenID is the authorized sender of the message (tokens.id). The
 	// reply affordance carries it so "reply" can preselect the right
 	// addressee in the composer; it is never rendered as text.
@@ -223,8 +228,9 @@ type ChatEntry struct {
 	// ReplyAuthor / ReplyText are the short quote a reply shows of the
 	// message it answers: who wrote it and the first chatQuoteMaxRunes of
 	// the body. Empty when the message is not a reply.
-	ReplyAuthor string
-	ReplyText   string
+	ReplyAuthor    string
+	ReplyAuthorVia string
+	ReplyText      string
 	// Accepted marks a command whose acceptance exists (KANB-47): the
 	// "accepted" state of the three the UI distinguishes. AwaitingAccept is
 	// a command WITHOUT one — merely delivered. Both false for every other
@@ -267,12 +273,14 @@ func chatQuoteExcerpt(s string) string {
 // data it is given and fetches none of its own. Zero value is a plain
 // update: no named recipient, no quote, no acceptance.
 type ChatEntryMeta struct {
-	RecipientName string // display name of the addressed participant; "" = none/"all"
-	ExecutorName  string // the command's fixed executor; "" when none
-	ParentAuthor  string // the quoted message's author, for a reply
-	ParentBody    string // the quoted message's body, verbatim; excerpt cut here
-	Accepted      bool
-	Tasks         []ChatEntryTask
+	RecipientName   string // display name of the addressed participant; "" = none/"all"
+	ExecutorName    string // the command's fixed executor; "" when none
+	AuthorVia       string // the posting token's name when it differs from the signature
+	ParentAuthor    string // the quoted message's author, for a reply
+	ParentAuthorVia string // AuthorVia of the quoted message
+	ParentBody      string // the quoted message's body, verbatim; excerpt cut here
+	Accepted        bool
+	Tasks           []ChatEntryTask
 }
 
 // ChatComposerView is the feed's composer: whether the current session may
@@ -444,8 +452,10 @@ func ChatEntriesNewestFirst(msgs []domain.ChatMessage, now time.Time, knownKeys 
 			if mt.ExecutorName != "" {
 				e.Recipient = mt.ExecutorName
 			}
+			e.AuthorVia = mt.AuthorVia
 			if mt.ParentAuthor != "" || mt.ParentBody != "" {
 				e.ReplyAuthor = mt.ParentAuthor
+				e.ReplyAuthorVia = mt.ParentAuthorVia
 				e.ReplyText = chatQuoteExcerpt(mt.ParentBody)
 			}
 			e.Accepted = mt.Accepted

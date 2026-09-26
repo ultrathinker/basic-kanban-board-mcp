@@ -31,6 +31,7 @@ type FeedMessage struct {
 	ID               string `json:"id"`
 	CreatedAt        string `json:"created_at"`
 	Author           string `json:"author"`
+	AuthorVia        string `json:"author_via,omitempty"`
 	Kind             string `json:"kind"`
 	Recipient        string `json:"recipient,omitempty"`
 	ResolvedExecutor string `json:"resolved_executor,omitempty"`

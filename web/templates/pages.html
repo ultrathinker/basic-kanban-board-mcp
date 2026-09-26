@@ -343,8 +343,8 @@
      inside a [data-can-post] section, because whether one may post is the
      session's property, not the message's. */ -}}
 {{define "chat-entry"}}<li class="chat-entry" id="chat-{{.ID}}" data-chat-id="{{.ID}}"{{if .AuthorTokenID}} data-author-token="{{.AuthorTokenID}}"{{end}}>
-  <div class="chat-head"><span class="chat-author {{.AuthorColor}}">{{.Author}}</span>{{if or (eq .Kind "command") (eq .Kind "question")}} <span class="chat-kind">{{.Kind}}</span>{{end}} <span class="text-subtle text-xs" title="{{.FullTime}}">{{.When}}</span></div>
-  {{- if .ReplyAuthor}}<div class="chat-reply-quote text-subtle text-xs" data-chat-quote>&#8627; {{.ReplyAuthor}}: &#8220;{{.ReplyText}}&#8221;</div>{{end}}
+  <div class="chat-head"><span class="chat-author {{.AuthorColor}}">{{.Author}}</span>{{if .AuthorVia}} <span class="chat-via text-subtle text-xs" title="signed {{.Author}}, posted with the key {{.AuthorVia}}">&#183; via {{.AuthorVia}}</span>{{end}}{{if or (eq .Kind "command") (eq .Kind "question")}} <span class="chat-kind">{{.Kind}}</span>{{end}} <span class="text-subtle text-xs" title="{{.FullTime}}">{{.When}}</span></div>
+  {{- if .ReplyAuthor}}<div class="chat-reply-quote text-subtle text-xs" data-chat-quote>&#8627; {{.ReplyAuthor}}{{if .ReplyAuthorVia}} &#183; via {{.ReplyAuthorVia}}{{end}}: &#8220;{{.ReplyText}}&#8221;</div>{{end}}
   <div class="chat-text">{{.TextHTML}}</div>
   {{- if .Recipient}}<div class="chat-addr text-subtle text-xs">&rarr; {{.Recipient}}</div>{{end}}
   {{- if or .Accepted .AwaitingAccept}}<div class="chat-accept{{if .AwaitingAccept}} chat-accept-waiting{{end}}" data-chat-accept>{{if .Accepted}}accepted{{range .Tasks}} &#8594; <a href="/t/{{.Key}}">{{.Key}}</a>{{if .Done}} (done){{end}}{{end}}{{else}}awaiting acceptance{{end}}</div>{{end}}

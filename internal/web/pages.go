@@ -147,6 +147,7 @@ func scopeChangeNotes(ctx context.Context, svc service.Service, a service.Actor,
 			notes = append(notes, view.ScopeChangeNote{
 				At:     m.Message.CreatedAt,
 				Author: m.Message.Author,
+				Via:    m.AuthorVia,
 				Body:   m.Message.Body,
 				Href:   "/p/" + projectKey + "#chat-" + m.Message.ID,
 			})
@@ -172,9 +173,11 @@ func chatEntryMetaView(chat *service.ChatListResult, done map[string]bool) map[s
 		vm := view.ChatEntryMeta{
 			RecipientName: m.RecipientName,
 			ExecutorName:  m.ExecutorName,
+			AuthorVia:     m.AuthorVia,
 		}
 		if m.Parent != nil {
 			vm.ParentAuthor = m.Parent.Author
+			vm.ParentAuthorVia = m.ParentAuthorVia
 			vm.ParentBody = m.Parent.Body
 		}
 		if m.Acceptance != nil {
