@@ -50,14 +50,24 @@ func rawJSON(v any) json.RawMessage {
 	return b
 }
 
-func setDefault(s *jsonschema.Schema, v any)       { s.Default = rawJSON(v) }
-func setEnum(s *jsonschema.Schema, vals ...string) { s.Enum = enumOf(vals) }
-func setMax(s *jsonschema.Schema, n float64)       { s.Maximum = jsonschema.Ptr(n) }
-func setMin(s *jsonschema.Schema, n float64)       { s.Minimum = jsonschema.Ptr(n) }
-func setMaxLen(s *jsonschema.Schema, n int)        { s.MaxLength = jsonschema.Ptr(n) }
-func setMinLen(s *jsonschema.Schema, n int)        { s.MinLength = jsonschema.Ptr(n) }
-func setMaxItems(s *jsonschema.Schema, n int)      { s.MaxItems = jsonschema.Ptr(n) }
-func setMinItems(s *jsonschema.Schema, n int)      { s.MinItems = jsonschema.Ptr(n) }
+func setDefault(s *jsonschema.Schema, v any) { s.Default = rawJSON(v) }
+
+// setEnum restricts a property to vals. On an array property the enum goes
+// on the ITEMS: an enum on the array itself compares the whole array to each
+// string and refuses every call — which is how filter.types was unusable
+// through MCP until KANB-59 caught it live on filter.column_kinds.
+func setEnum(s *jsonschema.Schema, vals ...string) {
+	if s.Items != nil {
+		s = s.Items
+	}
+	s.Enum = enumOf(vals)
+}
+func setMax(s *jsonschema.Schema, n float64)  { s.Maximum = jsonschema.Ptr(n) }
+func setMin(s *jsonschema.Schema, n float64)  { s.Minimum = jsonschema.Ptr(n) }
+func setMaxLen(s *jsonschema.Schema, n int)   { s.MaxLength = jsonschema.Ptr(n) }
+func setMinLen(s *jsonschema.Schema, n int)   { s.MinLength = jsonschema.Ptr(n) }
+func setMaxItems(s *jsonschema.Schema, n int) { s.MaxItems = jsonschema.Ptr(n) }
+func setMinItems(s *jsonschema.Schema, n int) { s.MinItems = jsonschema.Ptr(n) }
 
 // setEcho publishes a write tool's `echo` argument: short acknowledgement by
 // default, the whole task on request (KANB-58).
