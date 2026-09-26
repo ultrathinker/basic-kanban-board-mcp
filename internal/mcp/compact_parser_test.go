@@ -62,6 +62,19 @@ func ParseCompactAt(s string, now time.Time) (*service.Board, error) {
 			currentCol = nil
 			continue
 		}
+		// The attention line belongs directly under its project header: one
+		// anywhere else is a renderer bug, not something to tolerate.
+		if strings.HasPrefix(line, "attention ") {
+			if currentProj == nil || !strings.HasPrefix(lines[i-1], "# ") || currentProj.Attention != nil {
+				return nil, fmt.Errorf("line %d: attention line not directly under a project header", i+1)
+			}
+			a, err := parseAttention(line)
+			if err != nil {
+				return nil, fmt.Errorf("line %d: %w", i+1, err)
+			}
+			currentProj.Attention = a
+			continue
+		}
 		switch {
 		case strings.HasPrefix(line, "# ") && !strings.HasPrefix(line, "## "):
 			proj, err := parseProjectHeader(line)
@@ -96,17 +109,64 @@ func ParseCompactAt(s string, now time.Time) (*service.Board, error) {
 			if currentCol == nil {
 				return nil, fmt.Errorf("line %d: task line outside any column section", i+1)
 			}
-			tv, err := parseTaskLine(line, now)
+			tv, act, err := parseTaskLine(line, now)
 			if err != nil {
 				return nil, fmt.Errorf("line %d: %w", i+1, err)
 			}
 			currentCol.Tasks = append(currentCol.Tasks, *tv)
+			if act != nil {
+				if currentProj.Activity == nil {
+					currentProj.Activity = map[string]service.TaskActivity{}
+				}
+				currentProj.Activity[tv.Key] = *act
+			}
 		default:
 			return nil, fmt.Errorf("line %d: unrecognised prefix in %q", i+1, line)
 		}
 	}
 
 	return &board, nil
+}
+
+var (
+	attentionRe     = regexp.MustCompile(`^attention (\d+): (.+)$`)
+	attentionItemRe = regexp.MustCompile(`^([A-Z][A-Z0-9]{1,7}-\d+) idle (\d+[smhd])$`)
+	attentionMoreRe = regexp.MustCompile(`^and (\d+) more$`)
+)
+
+// parseAttention reads `attention N: KEY idle D, ..., and M more`. The count
+// must equal the named keys plus M, and M appears only when positive —
+// exactly what writeAttention produces.
+func parseAttention(line string) (*service.Attention, error) {
+	m := attentionRe.FindStringSubmatch(line)
+	if m == nil {
+		return nil, fmt.Errorf("malformed attention line %q", line)
+	}
+	a := &service.Attention{Count: atoiSafe(m[1])}
+	items := strings.Split(m[2], ", ")
+	more := 0
+	if mm := attentionMoreRe.FindStringSubmatch(items[len(items)-1]); mm != nil {
+		more = atoiSafe(mm[1])
+		if more <= 0 {
+			return nil, fmt.Errorf("attention: %q must name a positive count", items[len(items)-1])
+		}
+		items = items[:len(items)-1]
+	}
+	for _, it := range items {
+		im := attentionItemRe.FindStringSubmatch(it)
+		if im == nil {
+			return nil, fmt.Errorf("attention: malformed item %q", it)
+		}
+		d, err := parseDuration(im[2])
+		if err != nil {
+			return nil, err
+		}
+		a.Sample = append(a.Sample, service.IdleTask{Key: im[1], Idle: d})
+	}
+	if a.Count != len(a.Sample)+more {
+		return nil, fmt.Errorf("attention: count %d, but %d named and %d more", a.Count, len(a.Sample), more)
+	}
+	return a, nil
 }
 
 func findColumnByName(p *service.BoardProject, name string) *service.BoardColumn {
@@ -218,12 +278,12 @@ func parseDoneSegment(s string, p *service.BoardProject) error {
 // space, so the next character after the match is the bracket or the title.
 var taskKeyRe = regexp.MustCompile(`^([A-Z][A-Z0-9]{1,7}-\d+) (.+)$`)
 
-func parseTaskLine(line string, now time.Time) (*domain.TaskView, error) {
+func parseTaskLine(line string, now time.Time) (*domain.TaskView, *service.TaskActivity, error) {
 	// Caller has already verified the `- ` prefix; strip it for the regex.
 	body := strings.TrimPrefix(line, "- ")
 	m := taskKeyRe.FindStringSubmatch(body)
 	if m == nil {
-		return nil, fmt.Errorf("missing or malformed task key")
+		return nil, nil, fmt.Errorf("missing or malformed task key")
 	}
 	tv := &domain.TaskView{Task: domain.Task{Key: m[1]}}
 	rest := m[2]
@@ -232,7 +292,7 @@ func parseTaskLine(line string, now time.Time) (*domain.TaskView, error) {
 	if strings.HasPrefix(rest, "[") {
 		end := strings.Index(rest, "]")
 		if end < 0 {
-			return nil, fmt.Errorf("unclosed bracket in %q", rest)
+			return nil, nil, fmt.Errorf("unclosed bracket in %q", rest)
 		}
 		bracket := rest[1:end]
 		inner := strings.TrimSpace(bracket)
@@ -241,20 +301,20 @@ func parseTaskLine(line string, now time.Time) (*domain.TaskView, error) {
 		case 1:
 			tv.Type = domain.Type(bparts[0])
 			if !tv.Type.Valid() {
-				return nil, fmt.Errorf("invalid type %q", bparts[0])
+				return nil, nil, fmt.Errorf("invalid type %q", bparts[0])
 			}
 		case 2:
 			pri, ok := domain.ParsePriority(bparts[0])
 			if !ok {
-				return nil, fmt.Errorf("invalid priority %q", bparts[0])
+				return nil, nil, fmt.Errorf("invalid priority %q", bparts[0])
 			}
 			tv.Priority = pri
 			tv.Type = domain.Type(bparts[1])
 			if !tv.Type.Valid() {
-				return nil, fmt.Errorf("invalid type %q", bparts[1])
+				return nil, nil, fmt.Errorf("invalid type %q", bparts[1])
 			}
 		default:
-			return nil, fmt.Errorf("malformed bracket %q", bracket)
+			return nil, nil, fmt.Errorf("malformed bracket %q", bracket)
 		}
 		rest = strings.TrimPrefix(rest[end+1:], " ")
 	}
@@ -264,22 +324,27 @@ func parseTaskLine(line string, now time.Time) (*domain.TaskView, error) {
 	sep := " · "
 	parts := strings.Split(rest, sep)
 	if parts[0] == "" {
-		return nil, fmt.Errorf("empty title")
+		return nil, nil, fmt.Errorf("empty title")
 	}
 	tv.Title = parts[0]
 	suffixes := parts[1:]
 
-	if err := parseSuffixes(tv, suffixes, now); err != nil {
-		return nil, err
+	act, err := parseSuffixes(tv, suffixes, now)
+	if err != nil {
+		return nil, nil, err
 	}
-	return tv, nil
+	return tv, act, nil
 }
 
 // parseSuffixes walks the suffix list in the fixed order, parsing each
 // matching prefix and bailing if anything is malformed. The order matters:
 // the renderer emits them in this order, so any deviation is a renderer
 // bug, not a parser tolerance.
-func parseSuffixes(tv *domain.TaskView, suffixes []string, now time.Time) error {
+//
+// The include:["progress"] segments (acc, pct, idle) come back as a
+// TaskActivity, nil when the line carries none; idle is mandatory whenever
+// acc or pct is present, because the renderer always writes it with them.
+func parseSuffixes(tv *domain.TaskView, suffixes []string, now time.Time) (*service.TaskActivity, error) {
 	idx := 0
 
 	// est <float><unit>
@@ -287,7 +352,7 @@ func parseSuffixes(tv *domain.TaskView, suffixes []string, now time.Time) error 
 		body := strings.TrimPrefix(suffixes[idx], "est ")
 		n, unit, ok := splitEstimate(body)
 		if !ok {
-			return fmt.Errorf("malformed estimate %q", suffixes[idx])
+			return nil, fmt.Errorf("malformed estimate %q", suffixes[idx])
 		}
 		tv.Estimate = &n
 		_ = unit // unit is per-project; the renderer side-channel carries it
@@ -298,7 +363,7 @@ func parseSuffixes(tv *domain.TaskView, suffixes []string, now time.Time) error 
 	if idx < len(suffixes) && strings.HasPrefix(suffixes[idx], "@") {
 		a := strings.TrimPrefix(suffixes[idx], "@")
 		if a == "" {
-			return fmt.Errorf("empty assignee")
+			return nil, fmt.Errorf("empty assignee")
 		}
 		tv.Assignee = &a
 		idx++
@@ -309,7 +374,7 @@ func parseSuffixes(tv *domain.TaskView, suffixes []string, now time.Time) error 
 		body := strings.TrimPrefix(suffixes[idx], "lease ")
 		actor, rem, expired, err := parseLease(body)
 		if err != nil {
-			return fmt.Errorf("malformed lease %q: %w", suffixes[idx], err)
+			return nil, fmt.Errorf("malformed lease %q: %w", suffixes[idx], err)
 		}
 		tv.ClaimedBy = &actor
 		if expired {
@@ -335,7 +400,7 @@ func parseSuffixes(tv *domain.TaskView, suffixes []string, now time.Time) error 
 		body := strings.TrimPrefix(suffixes[idx], "sub ")
 		dp := strings.SplitN(body, "/", 2)
 		if len(dp) != 2 {
-			return fmt.Errorf("malformed sub %q", suffixes[idx])
+			return nil, fmt.Errorf("malformed sub %q", suffixes[idx])
 		}
 		tv.SubDone = atoiSafe(dp[0])
 		tv.SubTotal = atoiSafe(dp[1])
@@ -348,7 +413,7 @@ func parseSuffixes(tv *domain.TaskView, suffixes []string, now time.Time) error 
 		keys := strings.Split(body, ",")
 		for _, k := range keys {
 			if _, _, err := domain.ParseTaskKey(k); err != nil {
-				return fmt.Errorf("bad blocker key %q: %w", k, err)
+				return nil, fmt.Errorf("bad blocker key %q: %w", k, err)
 			}
 		}
 		tv.BlockedBy = append([]string(nil), keys...)
@@ -363,11 +428,11 @@ func parseSuffixes(tv *domain.TaskView, suffixes []string, now time.Time) error 
 		var tags []string
 		for _, raw := range strings.Fields(suffixes[idx]) {
 			if !strings.HasPrefix(raw, "#") {
-				return fmt.Errorf("malformed tag %q in %q", raw, suffixes[idx])
+				return nil, fmt.Errorf("malformed tag %q in %q", raw, suffixes[idx])
 			}
 			tag := strings.TrimPrefix(raw, "#")
 			if tag == "" {
-				return fmt.Errorf("empty tag in %q", suffixes[idx])
+				return nil, fmt.Errorf("empty tag in %q", suffixes[idx])
 			}
 			tags = append(tags, tag)
 		}
@@ -377,25 +442,22 @@ func parseSuffixes(tv *domain.TaskView, suffixes []string, now time.Time) error 
 
 	// v<version> is required.
 	if idx >= len(suffixes) || !strings.HasPrefix(suffixes[idx], "v") {
-		return fmt.Errorf("missing required v<version>")
+		return nil, fmt.Errorf("missing required v<version>")
 	}
 	body := strings.TrimPrefix(suffixes[idx], "v")
 	if !allDigits(body) {
-		return fmt.Errorf("malformed version %q", suffixes[idx])
+		return nil, fmt.Errorf("malformed version %q", suffixes[idx])
 	}
 	tv.Version = atoiSafe(body)
 	idx++
 
 	// age <duration> (active columns only; not strictly required, but
 	// anything after v must be age).
-	if idx < len(suffixes) {
-		if !strings.HasPrefix(suffixes[idx], "age ") {
-			return fmt.Errorf("unexpected trailing suffix %q", suffixes[idx])
-		}
+	if idx < len(suffixes) && strings.HasPrefix(suffixes[idx], "age ") {
 		body := strings.TrimPrefix(suffixes[idx], "age ")
 		age, err := parseDuration(body)
 		if err != nil {
-			return fmt.Errorf("malformed age %q: %w", suffixes[idx], err)
+			return nil, fmt.Errorf("malformed age %q: %w", suffixes[idx], err)
 		}
 		// Anchor ColumnEnteredAt to the reference time so a re-render with
 		// the same reference computes the same age.
@@ -403,10 +465,49 @@ func parseSuffixes(tv *domain.TaskView, suffixes []string, now time.Time) error 
 		tv.ColumnEnteredAt = entered
 		idx++
 	}
-	if idx != len(suffixes) {
-		return fmt.Errorf("trailing content after parsed suffixes")
+
+	// acc <done>/<total> · pct <n> · idle <duration>
+	var act service.TaskActivity
+	seen := false
+	if idx < len(suffixes) && strings.HasPrefix(suffixes[idx], "acc ") {
+		dp := strings.SplitN(strings.TrimPrefix(suffixes[idx], "acc "), "/", 2)
+		if len(dp) != 2 || !allDigits(dp[0]) || !allDigits(dp[1]) || atoiSafe(dp[1]) == 0 {
+			return nil, fmt.Errorf("malformed acc %q", suffixes[idx])
+		}
+		act.AcceptanceDone, act.AcceptanceTotal = atoiSafe(dp[0]), atoiSafe(dp[1])
+		seen = true
+		idx++
 	}
-	return nil
+	if idx < len(suffixes) && strings.HasPrefix(suffixes[idx], "pct ") {
+		body := strings.TrimPrefix(suffixes[idx], "pct ")
+		if !allDigits(body) || atoiSafe(body) > 100 {
+			return nil, fmt.Errorf("malformed pct %q", suffixes[idx])
+		}
+		pct := atoiSafe(body)
+		act.Percent = &pct
+		seen = true
+		idx++
+	}
+	if idx < len(suffixes) && strings.HasPrefix(suffixes[idx], "idle ") {
+		d, err := parseDuration(strings.TrimPrefix(suffixes[idx], "idle "))
+		if err != nil {
+			return nil, fmt.Errorf("malformed idle %q: %w", suffixes[idx], err)
+		}
+		act.Idle = d
+		act.LastActivityAt = now.Add(-d)
+		idx++
+	} else if seen {
+		return nil, fmt.Errorf("acc/pct without the idle segment that always follows them")
+	} else {
+		if idx != len(suffixes) {
+			return nil, fmt.Errorf("unexpected trailing suffix %q", suffixes[idx])
+		}
+		return nil, nil
+	}
+	if idx != len(suffixes) {
+		return nil, fmt.Errorf("trailing content after parsed suffixes")
+	}
+	return &act, nil
 }
 
 var (

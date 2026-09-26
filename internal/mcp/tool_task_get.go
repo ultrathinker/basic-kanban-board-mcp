@@ -62,7 +62,9 @@ func taskGetTool() *gomcp.Tool {
 			"in request order — a key that does not exist is reported in place with ok:false, never silently dropped. " +
 			"(task_next and task_create return a flat `data.tasks[]` instead, because neither answers per requested key.)\n" +
 			"Notes are opt-in via include and come newest-first, " + strconv.Itoa(domain.MaxNotesPerRead) + " at a time; " +
-			"when a task has older ones the result carries `notes_next_before` — send it back as `notes_before` to read the next page.",
+			"when a task has older ones the result carries `notes_next_before` — send it back as `notes_before` to read the next page.\n" +
+			"A parent task carries `subtasks: {backlog, active, waiting, done}` — its live subtasks counted by the kind of column each sits in, " +
+			"the epic summary behind board_get's `sub <done>/<total>`; the field is absent on a task without subtasks.",
 		InputSchema: s,
 	}
 }
@@ -131,6 +133,9 @@ func registerTaskGet(s *gomcp.Server, svc service.Service) {
 					out := taskViewOut(tv, proj)
 					if cursor, more := res.NotesNext[tv.Key]; more {
 						out.NotesNextBefore = formatTimePtr(&cursor)
+					}
+					if k, ok := res.Subtasks[tv.Key]; ok {
+						out.Subtasks = &subtaskKindsOut{Backlog: k.Backlog, Active: k.Active, Waiting: k.Waiting, Done: k.Done}
 					}
 					items[i].OK = true
 					items[i].Task = &out

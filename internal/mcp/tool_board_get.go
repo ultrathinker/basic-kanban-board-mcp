@@ -2,7 +2,9 @@ package mcp
 
 import (
 	"context"
+	"strconv"
 	"strings"
+	"time"
 
 	gomcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -30,7 +32,7 @@ type boardGetInput struct {
 	View      string         `json:"view,omitempty" jsonschema:"tasks = full board, summary = counts only, messages = the communication feed read forward from the beginning; default depends on whether project is set"`
 	DoneLimit int            `json:"done_limit,omitempty" jsonschema:"how many done tasks to include, most recently done first"`
 	Filter    *boardFilterIn `json:"filter,omitempty"`
-	Include   []string       `json:"include,omitempty" jsonschema:"widen what is returned: per-task fields, and description for the project's own description (omitted by default)"`
+	Include   []string       `json:"include,omitempty" jsonschema:"widen what is returned: per-task fields, description for the project's own description (omitted by default), progress for acceptance, assessed percent and idle time on every card in an active column (view:tasks only)"`
 	Format    string         `json:"format,omitempty" jsonschema:"compact = the token-cheap text grammar, json = the same board as compact JSON text"`
 	// After pages the messages view FORWARD: it is the opaque next_cursor a
 	// previous page returned. Without it the feed starts at the OLDEST
@@ -100,6 +102,33 @@ type boardProjectOut struct {
 	Columns      []boardColumnOut `json:"columns"`
 	DoneTotal    int              `json:"done_total"`
 	DoneShown    int              `json:"done_shown"`
+	// Attention is absent when no card is idle, so a healthy board's JSON
+	// does not grow either (KANB-61).
+	Attention *attentionOut `json:"attention,omitempty"`
+}
+
+// attentionOut is the JSON form of service.Attention: how many cards in
+// active columns went longer than claim_ttl_seconds without movement, and
+// the most idle of them.
+type attentionOut struct {
+	Count  int             `json:"count"`
+	Sample []idleSampleOut `json:"sample"`
+}
+
+type idleSampleOut struct {
+	Key         string `json:"key"`
+	IdleSeconds int    `json:"idle_seconds"`
+}
+
+func attentionOutFor(a *service.Attention) *attentionOut {
+	if a == nil || a.Count == 0 {
+		return nil
+	}
+	out := &attentionOut{Count: a.Count, Sample: make([]idleSampleOut, len(a.Sample))}
+	for i, it := range a.Sample {
+		out.Sample[i] = idleSampleOut{Key: it.Key, IdleSeconds: int(it.Idle / time.Second)}
+	}
+	return out
 }
 
 type boardGetData struct {
@@ -125,7 +154,7 @@ func boardGetTool() *gomcp.Tool {
 	setMin(prop(s, "done_limit"), 0)
 	setMax(prop(s, "done_limit"), float64(domain.MaxDoneLimit))
 	inc := prop(s, "include")
-	setEnum(inc.Items, append(append([]string{}, includeEnumValues...), includeDescription)...)
+	setEnum(inc.Items, append(append([]string{}, includeEnumValues...), includeDescription, string(service.IncludeProgress))...)
 	setDefault(inc, []string{})
 	setEnum(prop(s, "format"), "compact", "json")
 	setDefault(prop(s, "format"), "compact")
@@ -144,6 +173,8 @@ func boardGetTool() *gomcp.Tool {
 		Name: opBoardGet,
 		Description: "Read the board. Compact text by default — about 1,000 tokens for 30 active tasks, roughly 90% smaller than the same board as JSON, so it is cheap enough to call at the start of every session. `format:\"json\"` returns the same board as JSON text instead. The project's description — its rulebook — is NOT returned unless asked for: add `include:[\"description\"]` once per session, or again after your context was compacted.\n" +
 			"`view:\"messages\"` reads one project's communication feed forward through history instead of the board: `messages[]` in chronological order (each with `id`, `created_at`, `author`, `author_token_id` — the authorized source, which the caller never chooses — `kind`, `recipient`/`recipient_name`, `resolved_executor`/`resolved_executor_name`, `reply_to`, `body`, and the `task_keys` created by accepting that command), plus `next_cursor` and `has_more`. The board itself and task bodies are NOT part of that response. Chat history is never pruned, so a cursor never goes stale; a cursor from another project, a cursor naming a message that does not exist, or an unparseable cursor is refused with an actionable error rather than a silent empty page.\n" +
+			"A project whose active columns hold a card with no movement (column entry, edit, claim or renewal, note, progress mark) for longer than its `claim_ttl_seconds` carries an attention line right under its header — `attention 3: KANB-12 idle 5h, KANB-9 idle 2h, KANB-15 idle 1h`, the " + strconv.Itoa(service.AttentionSampleSize) + " most idle then `and N more`; in JSON `projects[].attention: {count, sample:[{key, idle_seconds}]}`. It is absent when nothing is idle, and waiting columns never count. " +
+			"`include:[\"progress\"]` (view tasks) adds to every card in an active column its acceptance count, assessed percent and idle time: `acc 2/5 · pct 40 · idle 12m` on the compact line, `progress: {acceptance_done, acceptance_total, percent, last_activity_at, idle_seconds}` in JSON — a progress report in one read.\n" +
 			"Feed participants and the project's coordinator are published by `view:\"summary\"` as `projects[].participants[]` and `projects[].coordinator` — token ids and display names only, never secrets.",
 		InputSchema: s,
 	}
@@ -324,6 +355,11 @@ func registerBoardGet(s *gomcp.Server, svc service.Service) {
 					Count: c.Count,
 					Tasks: taskViewOutList(c.Tasks, proj),
 				}
+				for k := range cols[j].Tasks {
+					if a, ok := p.Activity[cols[j].Tasks[k].Key]; ok {
+						cols[j].Tasks[k].Progress = taskProgressOutFor(a)
+					}
+				}
 				total += len(c.Tasks)
 			}
 			data.Projects[i] = boardProjectOut{
@@ -342,6 +378,7 @@ func registerBoardGet(s *gomcp.Server, svc service.Service) {
 				Columns:             cols,
 				DoneTotal:           p.DoneTotal,
 				DoneShown:           p.DoneShown,
+				Attention:           attentionOutFor(p.Attention),
 			}
 		}
 
