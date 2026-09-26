@@ -37,15 +37,6 @@ func TestNewErrorEnvelope_PerCode(t *testing.T) {
 			wantField: true,
 		},
 		{
-			code: domain.CodeConflict,
-			make: func() *domain.Error {
-				cur := &domain.TaskView{ProjectKey: "BMB"}
-				return domain.Conflict(cur, 3, 4)
-			},
-			wantCurrent:    true,
-			wantCurrentVal: &domain.TaskView{ProjectKey: "BMB"},
-		},
-		{
 			code: domain.CodeBlocked,
 			make: func() *domain.Error {
 				return domain.Blocked("BMB-14", []string{"BMB-9", "BMB-12"})
@@ -219,5 +210,43 @@ func TestErrorEnvelope_JSONMatchesContract(t *testing.T) {
 	}
 	if got["code"] != "conflict" {
 		t.Errorf("code = %v, want \"conflict\"", got["code"])
+	}
+}
+
+// TestNewErrorEnvelope_ConflictCurrentIsShaped: a version conflict used to
+// hand back the raw Go struct — PascalCase keys and the whole body, conclusion
+// and checklist. It now carries the version to retry with and the short
+// fields in the API's own snake_case, and says where the rest is.
+func TestNewErrorEnvelope_ConflictCurrentIsShaped(t *testing.T) {
+	t.Parallel()
+	assignee := "opus"
+	cur := &domain.TaskView{
+		Task: domain.Task{
+			Key: "BMB-7", Version: 4, Title: "Fix the race", Type: domain.TypeBug, Priority: domain.PriorityHigh,
+			Assignee: &assignee, UpdatedBy: "glm-flash",
+			Body:       strings.Repeat("long brief ", 300),
+			Conclusion: "a verdict the merge does not need",
+			Acceptance: []domain.AcceptanceItem{{Text: "criterion one", Done: true}, {Text: "criterion two"}},
+		},
+		ProjectKey: "BMB", ColumnName: "Doing",
+	}
+	env := newErrorEnvelope(domain.Conflict(cur, 3, 4))
+	raw, _ := json.Marshal(env)
+	s := string(raw)
+	for _, want := range []string{`"key":"BMB-7"`, `"version":4`, `"column":"Doing"`, `"updated_by":"glm-flash"`, `"assignee":"opus"`, `"acceptance":{"done":1,"total":2}`, `"priority":"high"`} {
+		if !strings.Contains(s, want) {
+			t.Errorf("shaped current lacks %s: %s", want, s)
+		}
+	}
+	for _, leak := range []string{"long brief", "a verdict", "criterion one", "ProjectID", "LeaseRemain"} {
+		if strings.Contains(s, leak) {
+			t.Errorf("conflict envelope still carries %q", leak)
+		}
+	}
+	if !strings.Contains(env.Remediation, "if_version=4") || !strings.Contains(env.Remediation, "task_get") {
+		t.Errorf("remediation %q must give the version to retry with and where the rest is", env.Remediation)
+	}
+	if len(s) > 700 {
+		t.Errorf("conflict envelope is %d characters; the point is to be small", len(s))
 	}
 }

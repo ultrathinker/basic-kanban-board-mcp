@@ -336,6 +336,7 @@ Create: {"mode":"create","key":"TEST","name":"Smoke Test"} — `name` is require
 Update: {"mode":"update","key":"TEST","if_version":3,"name":"New name"} — `if_version` is required and is the version your last read of the project returned.
 `settings.idle_after_seconds` sets how long a card in an active column may sit without movement before board_get's attention line names it (e.g. 172800 for a review cycle measured in days); unset or 0, the threshold is `claim_ttl_seconds`. How long a lease lasts and when a card looks abandoned are separate settings.
 Not sure which one applies? Call board_get with no `project` first: every project you can reach comes back with its key and version.
+Returns the project with its settings and columns but WITHOUT the description (its length is in `description_length`) — the description is the project's rulebook, often thousands of characters, and an update rarely needs it echoed. Send `echo:"full"` to get it back.
 
 #### Parameters
 
@@ -345,6 +346,7 @@ Not sure which one applies? Call board_get with no `project` first: every projec
 | `columns` | any | Optional | the full desired column list, in order, when provided |
 | `description` | any | Optional |  |
 | `description_append` | any | Optional | append this text to the description instead of replacing it; mutually exclusive with description |
+| `echo` | string | Optional | ack (default) = key, version and column per task — the version is the AFTER-value, chain your next if_version from it; full = the whole task, body and checklist included |
 | `if_version` | any | Optional | required when mode:update — the project version your last read returned |
 | `key` | string | Required | project key, case-insensitive |
 | `mode` | string | Required | REQUIRED, no default. "create" makes a new project (name is then required too); "update" edits an existing one (if_version is then required too). There is deliberately no upsert-by-guess: a mistyped key would silently fork the board into a second project. |

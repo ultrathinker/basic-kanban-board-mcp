@@ -259,9 +259,12 @@ func columnOutList(cols []domain.Column) []columnOut {
 // service method to resolve one to the other from this call, surfacing the
 // ID would break the "keys not UUIDs" contract (PLAN §6 principles).
 type projectOut struct {
-	Key                 string `json:"key"`
-	Name                string `json:"name"`
-	Description         string `json:"description,omitempty"`
+	Key         string `json:"key"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	// DescriptionLength replaces Description in project_upsert's default
+	// answer (characters, not bytes): enough to confirm a write or an append.
+	DescriptionLength   int    `json:"description_length,omitempty"`
 	Version             int    `json:"version"`
 	EstimateUnit        string `json:"estimate_unit"`
 	EnforceDependencies bool   `json:"enforce_dependencies"`

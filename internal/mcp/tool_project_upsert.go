@@ -52,6 +52,7 @@ type projectUpsertInput struct {
 	RemoveColumns     []removeColumnIn   `json:"remove_columns,omitempty" jsonschema:"required for every existing column absent from columns"`
 	Settings          *projectSettingsIn `json:"settings,omitempty"`
 	Archived          *bool              `json:"archived,omitempty"`
+	Echo              string             `json:"echo,omitempty"`
 }
 
 type projectUpsertOutput struct {
@@ -90,6 +91,8 @@ func projectUpsertTool() *gomcp.Tool {
 	idle.Description += fmt.Sprintf("; otherwise %d (%d minutes) to %d (%d days) — out of range is refused, not clamped",
 		int(domain.IdleAfterMin.Seconds()), int(domain.IdleAfterMin.Minutes()),
 		int(domain.IdleAfterMax.Seconds()), int(domain.IdleAfterMax.Hours()/24))
+
+	setEcho(s)
 
 	return &gomcp.Tool{
 		Name:        opProjectUpsert,
@@ -131,7 +134,8 @@ var projectUpsertDescription = "Create or update one project: identity, columns 
 	"and is the version your last read of the project returned.\n" +
 	"`settings.idle_after_seconds` sets how long a card in an active column may sit without movement before board_get's attention line names it " +
 	"(e.g. 172800 for a review cycle measured in days); unset or 0, the threshold is `claim_ttl_seconds`. How long a lease lasts and when a card looks abandoned are separate settings.\n" +
-	"Not sure which one applies? Call board_get with no `project` first: every project you can reach comes back with its key and version."
+	"Not sure which one applies? Call board_get with no `project` first: every project you can reach comes back with its key and version.\n" +
+	"Returns the project with its settings and columns but WITHOUT the description (its length is in `description_length`) — the description is the project's rulebook, often thousands of characters, and an update rarely needs it echoed. Send `echo:\"full\"` to get it back."
 
 // defaultColumnSummary renders domain.DefaultColumns the way the tool
 // description quotes them, e.g. `Backlog, Doing, Done`.
@@ -205,6 +209,13 @@ func registerProjectUpsert(s *gomcp.Server, svc service.Service) {
 		}
 
 		data := projectOutFrom(res.Project, res.Columns)
+		// The description is the project's rulebook; echoing it on every
+		// update cost thousands of characters to confirm a settings change
+		// (follow-up to KANB-58). Its length still confirms what was stored.
+		if in.Echo != echoFull {
+			data.DescriptionLength = len([]rune(data.Description))
+			data.Description = ""
+		}
 		out := projectUpsertOutput{OK: true, Op: opProjectUpsert, Data: &data, Meta: &toolMeta{Count: len(res.Columns)}}
 		return &gomcp.CallToolResult{Content: []gomcp.Content{&gomcp.TextContent{Text: jsonText(out)}}}, out, nil
 	})

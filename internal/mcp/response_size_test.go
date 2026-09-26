@@ -165,3 +165,36 @@ func TestResponseSize_CreatingABatchAnswersShort(t *testing.T) {
 		t.Errorf(`echo:"full" did not return the whole task on task_create`)
 	}
 }
+
+// project_upsert used to echo the whole project — description included, the
+// rulebook, thousands of characters — to confirm a settings change. The
+// default answer now carries the settings and columns and only the
+// description's length; echo:"full" brings it back.
+func TestResponseSize_ProjectUpsertAnswersWithoutTheRulebook(t *testing.T) {
+	t.Parallel()
+	cs, svc := roundtripServer(t, NewServer)
+	svc.DefaultProjectUpsert = &service.ProjectUpsertResult{
+		Project: domain.Project{Key: "BMB", Name: "BeeMemoryBank", Version: 4, Description: rulebook, EstimateUnit: "h", ClaimTTLSeconds: 3600},
+		Columns: []domain.Column{{Name: "Backlog", Kind: domain.KindBacklog}, {Name: "Doing", Kind: domain.KindActive}, {Name: "Done", Kind: domain.KindDone}},
+	}
+	args := map[string]any{"mode": "update", "key": "BMB", "if_version": 3, "settings": map[string]any{"claim_ttl_seconds": 7200}}
+
+	ack := resultText(callToolRaw(t, cs, "project_upsert", args))
+	const budget = 600
+	if len(ack) > budget {
+		t.Errorf("project_upsert answered with %d characters, budget %d\n%.300s", len(ack), budget, ack)
+	}
+	if strings.Contains(ack, "Project rule:") {
+		t.Errorf("the default answer still echoes the description")
+	}
+	for _, want := range []string{`"version":4`, `"description_length":`, `"columns":`} {
+		if !strings.Contains(ack, want) {
+			t.Errorf("the short answer lost %s:\n%.300s", want, ack)
+		}
+	}
+
+	args["echo"] = "full"
+	if full := resultText(callToolRaw(t, cs, "project_upsert", args)); !strings.Contains(full, "Project rule:") {
+		t.Errorf(`echo:"full" did not return the description`)
+	}
+}

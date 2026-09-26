@@ -1,13 +1,18 @@
 package mcp
 
-import "github.com/ultrathinker/basic-kanban-board-mcp/internal/domain"
+import (
+	"fmt"
+	"time"
+
+	"github.com/ultrathinker/basic-kanban-board-mcp/internal/domain"
+)
 
 // errorEnvelope is the wire shape of a domain error inside the
 // {ok:false, op, error:{...}} envelope (PLAN §6). Every field maps straight
 // through from *domain.Error unchanged: code, message, remediation and the
 // conflicting `current` state are the caller's only way to recover without a
-// human, so nothing here may be summarised or dropped (AGENTS.md "Fail
-// loud").
+// human, so none of them may be dropped (AGENTS.md "Fail loud"). `current`
+// is the one field that is SHAPED: see conflictCurrent.
 type errorEnvelope struct {
 	Code        string `json:"code"`
 	Message     string `json:"message"`
@@ -25,13 +30,101 @@ func newErrorEnvelope(e *domain.Error) *errorEnvelope {
 	if e == nil {
 		return nil
 	}
-	return &errorEnvelope{
+	env := &errorEnvelope{
 		Code:        string(e.Code),
 		Message:     e.Message,
 		Remediation: e.Remediation,
 		Current:     e.Current,
 		Field:       e.Field,
 	}
+	if cur, version, ok := conflictCurrent(e.Current); ok {
+		env.Current = cur
+		env.Remediation = fmt.Sprintf(
+			"`current` carries the version and the short fields as the server has them now; merge your change and retry with if_version=%d. Body, conclusion and checklist are left out — read them with task_get only if your change touches them.", version)
+	}
+	return env
+}
+
+// conflictTask is `current` for a task conflict. The envelope used to carry
+// the raw Go struct: PascalCase keys (ProjectID, LeaseRemain in nanoseconds)
+// unlike every other response, and the whole body, conclusion and checklist
+// — thousands of characters to tell an agent "the version moved". It now
+// carries what a merge decision needs: the version to retry with, who moved
+// it and when, and the short fields a patch usually touches (found live,
+// 26.09.2026, follow-up to KANB-58).
+type conflictTask struct {
+	Key        string           `json:"key"`
+	Version    int              `json:"version"`
+	Column     string           `json:"column,omitempty"`
+	UpdatedAt  time.Time        `json:"updated_at"`
+	UpdatedBy  string           `json:"updated_by,omitempty"`
+	Title      string           `json:"title"`
+	Type       domain.Type      `json:"type"`
+	Priority   string           `json:"priority"`
+	Assignee   *string          `json:"assignee,omitempty"`
+	Reviewer   *string          `json:"reviewer,omitempty"`
+	Tags       []string         `json:"tags,omitempty"`
+	Estimate   *float64         `json:"estimate,omitempty"`
+	Outcome    domain.Outcome   `json:"outcome,omitempty"`
+	ClaimedBy  *string          `json:"claimed_by,omitempty"`
+	Acceptance *acceptanceTally `json:"acceptance,omitempty"`
+}
+
+type acceptanceTally struct {
+	Done  int `json:"done"`
+	Total int `json:"total"`
+}
+
+// conflictProject is `current` for a project conflict (project_upsert).
+type conflictProject struct {
+	Key       string    `json:"key"`
+	Version   int       `json:"version"`
+	Name      string    `json:"name"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// conflictCurrent shapes a conflict's `current`; ok is false for anything it
+// does not know, which then passes through unchanged.
+func conflictCurrent(cur any) (any, int, bool) {
+	switch c := cur.(type) {
+	case *domain.TaskView:
+		if c == nil {
+			return nil, 0, false
+		}
+		out := conflictTaskOf(&c.Task)
+		out.Column = c.ColumnName
+		return out, c.Version, true
+	case *domain.Task:
+		if c == nil {
+			return nil, 0, false
+		}
+		return conflictTaskOf(c), c.Version, true
+	case *domain.Project:
+		if c == nil {
+			return nil, 0, false
+		}
+		return conflictProject{Key: c.Key, Version: c.Version, Name: c.Name, UpdatedAt: c.UpdatedAt}, c.Version, true
+	}
+	return nil, 0, false
+}
+
+func conflictTaskOf(t *domain.Task) conflictTask {
+	out := conflictTask{
+		Key: t.Key, Version: t.Version, UpdatedAt: t.UpdatedAt, UpdatedBy: t.UpdatedBy,
+		Title: t.Title, Type: t.Type, Priority: t.Priority.String(),
+		Assignee: t.Assignee, Reviewer: t.Reviewer, Tags: t.Tags, Estimate: t.Estimate,
+		Outcome: t.Outcome, ClaimedBy: t.ClaimedBy,
+	}
+	if n := len(t.Acceptance); n > 0 {
+		done := 0
+		for _, a := range t.Acceptance {
+			if a.Done {
+				done++
+			}
+		}
+		out.Acceptance = &acceptanceTally{Done: done, Total: n}
+	}
+	return out
 }
 
 // asDomainError extracts a *domain.Error from err. The service contract is
