@@ -911,10 +911,9 @@ func TestExportImport_RoundTripWithJournal(t *testing.T) {
 }
 
 // captureStderr redirects os.Stderr for the duration of fn, returning
-// whatever it wrote. Mirrors captureStdout in main_test.go — export's
-// truncation warning deliberately goes to stderr rather than stdout, since
-// stdout carries the document itself and has to stay pipeable straight into
-// `kanban import`.
+// whatever it wrote. Mirrors captureStdout in main_test.go — import's
+// legacy-field warnings deliberately go to stderr rather than stdout, since
+// stdout carries the document/board output itself and has to stay pipeable.
 func captureStderr(t *testing.T, fn func() error) (string, error) {
 	t.Helper()
 	orig := os.Stderr
@@ -1082,17 +1081,20 @@ func TestExportImport_CLIChatPagingBeyondOnePage(t *testing.T) {
 	}
 }
 
-// TestExportBoard_DoneColumnTruncationIsNamed is KANB-29 defect #2: a done
-// column with more live tasks than domain.MaxDoneLimit (200) must not
-// export short in silence. board_get's own cap is a deliberate,
-// service-layer invariant this command does not try to bypass — but the gap
-// has to be named, both in the document (`truncated`) and on the command's
-// stderr, so an operator moving a big board to another machine finds out
-// about the loss instead of discovering it later as a shorter history than
-// they remember.
-func TestExportBoard_DoneColumnTruncationIsNamed(t *testing.T) {
+// TestExportImport_DoneOverflowRoundTrips is KANB-62: a done column with
+// more live tasks than domain.MaxDoneLimit (200) must export and import
+// back in full. board_get's own cap exists to keep a compact board read
+// cheap every session; export is a backup, not a session read, and a
+// backup that silently drops cards past that cap is not a backup. The
+// progress mark below is planted on the LAST task created — under the
+// stable, nil-DoneAt ordering board_get's cap sorts by, that is exactly
+// the task a 200-task cap would have cut, and exactly the kind of
+// reference ("import resolve task RKDN-xxx: not_found") that used to make
+// the resulting export unimportable.
+func TestExportImport_DoneOverflowRoundTrips(t *testing.T) {
 	doneCount := domain.MaxDoneLimit + 5
 	dir1 := t.TempDir()
+	dir2 := t.TempDir()
 	ctx := context.Background()
 
 	st, err := openStore(ctx, dir1)
@@ -1115,6 +1117,7 @@ func TestExportBoard_DoneColumnTruncationIsNamed(t *testing.T) {
 		t.Fatalf("ProjectUpsert: %v", err)
 	}
 
+	var lastKey, lastID string
 	created := 0
 	for created < doneCount {
 		batch := doneCount - created
@@ -1129,66 +1132,91 @@ func TestExportBoard_DoneColumnTruncationIsNamed(t *testing.T) {
 				Type:  domain.TypeTask,
 			}
 		}
-		if _, err := svc.TaskCreate(ctx, actor, service.TaskCreateInput{Tasks: tasks}); err != nil {
+		res, err := svc.TaskCreate(ctx, actor, service.TaskCreateInput{Tasks: tasks})
+		if err != nil {
 			t.Fatalf("TaskCreate batch at %d: %v", created, err)
 		}
+		last := res.Tasks[len(res.Tasks)-1]
+		lastKey, lastID = last.Key, last.ID
 		created += batch
+	}
+
+	if err := st.Write(ctx, func(tx store.Tx) error {
+		p, err := st.Projects().GetByKey(tx, "RKDN")
+		if err != nil {
+			return err
+		}
+		return st.Progress().Add(tx, &domain.ProgressMark{
+			ID:        "mark-tail",
+			ProjectID: p.ID,
+			TaskID:    &lastID,
+			Assessor:  "tester",
+			Percent:   100,
+			CreatedAt: time.Now().UTC(),
+		})
+	}); err != nil {
+		t.Fatalf("seed progress mark on %s: %v", lastKey, err)
 	}
 	st.Close()
 
-	var doc *exportDocument
-	stderr, err := captureStderr(t, func() error {
-		st, err := openStore(ctx, dir1)
-		if err != nil {
-			return err
+	exportFile := filepath.Join(t.TempDir(), "export.json")
+	if err := runExport([]string{"--data", dir1, "--out", exportFile}); err != nil {
+		t.Fatalf("runExport: %v", err)
+	}
+	raw, err := os.ReadFile(exportFile)
+	if err != nil {
+		t.Fatalf("read export: %v", err)
+	}
+	var doc exportDocument
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parse export: %v", err)
+	}
+
+	gotDone := 0
+	for _, bp := range doc.Projects {
+		for _, col := range bp.Columns {
+			if col.Kind == domain.KindDone {
+				gotDone += len(col.Tasks)
+			}
 		}
-		defer st.Close()
-		doc, err = exportBoard(ctx, service.New(st, nil), st, actor, "RKDN")
-		if err != nil {
-			return err
+	}
+	if gotDone != doneCount {
+		t.Fatalf("export has %d done tasks, want all %d — a backup that drops done cards is not a backup", gotDone, doneCount)
+	}
+
+	foundMark := false
+	for _, m := range doc.ProgressMarks {
+		if m.Task == lastKey {
+			foundMark = true
 		}
-		for _, tn := range doc.Truncated {
-			fmt.Fprintf(os.Stderr, "warning: project %s exports only %d of %d done tasks\n", tn.Project, tn.Included, tn.Total)
-		}
-		return nil
+	}
+	if !foundMark {
+		t.Fatalf("export dropped the progress mark on %s (the last task created)", lastKey)
+	}
+
+	if err := runImport([]string{"--data", dir2, "--in", exportFile}); err != nil {
+		t.Fatalf("runImport: %v — an export must always be importable", err)
+	}
+
+	st2, err := openStore(ctx, dir2)
+	if err != nil {
+		t.Fatalf("openStore dir2: %v", err)
+	}
+	defer st2.Close()
+
+	board2, err := service.New(st2, nil).BoardGet(ctx, actor, service.BoardGetInput{
+		ProjectKey: "RKDN", View: service.ViewTasks, DoneLimit: service.DoneLimitUnlimited,
 	})
 	if err != nil {
-		t.Fatalf("exportBoard: %v", err)
+		t.Fatalf("BoardGet after import: %v", err)
 	}
-
-	if len(doc.Truncated) != 1 {
-		t.Fatalf("truncated notices = %d, want 1 (RKDN/Done); doc.Truncated = %+v", len(doc.Truncated), doc.Truncated)
+	importedDone := 0
+	for _, col := range board2.Projects[0].Columns {
+		if col.Kind == domain.KindDone {
+			importedDone += len(col.Tasks)
+		}
 	}
-	tn := doc.Truncated[0]
-	if tn.Project != "RKDN" {
-		t.Errorf("truncation notice = %+v, want project RKDN", tn)
-	}
-	if tn.Total != doneCount {
-		t.Errorf("truncation total = %d, want %d (the true unarchived count)", tn.Total, doneCount)
-	}
-	if tn.Included != domain.MaxDoneLimit {
-		t.Errorf("truncation included = %d, want %d (board_get's own cap)", tn.Included, domain.MaxDoneLimit)
-	}
-	if tn.Included >= tn.Total {
-		t.Errorf("truncation notice claims included (%d) >= total (%d); that is not a truncation", tn.Included, tn.Total)
-	}
-
-	if !bytes.Contains([]byte(stderr), []byte("RKDN")) {
-		t.Errorf("stderr did not name the truncated project; got %q", stderr)
-	}
-	wantFrag := fmt.Sprintf("%d of %d", domain.MaxDoneLimit, doneCount)
-	if !bytes.Contains([]byte(stderr), []byte(wantFrag)) {
-		t.Errorf("stderr does not name the numbers involved (%q); got %q", wantFrag, stderr)
-	}
-
-	// The document itself must carry the same fact — not only the command's
-	// stderr — so a document handed to `kanban import` on its own (stderr
-	// discarded, e.g. by a shell pipeline) still lets an operator find out.
-	raw, err := json.Marshal(doc)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if !bytes.Contains(raw, []byte(`"truncated"`)) {
-		t.Errorf("export document has no \"truncated\" field: %s", raw)
+	if importedDone != doneCount {
+		t.Fatalf("imported board has %d done tasks, want %d", importedDone, doneCount)
 	}
 }

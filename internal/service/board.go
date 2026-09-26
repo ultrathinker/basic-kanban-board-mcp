@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -10,6 +11,15 @@ import (
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/domain"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/store"
 )
+
+// DoneLimitUnlimited passed as BoardGetInput.DoneLimit turns off the done
+// column cap entirely. The MCP tool schema for board_get never allows a
+// caller to send it (done_limit is bounded to [0, domain.MaxDoneLimit]
+// there): the cap exists so that surface stays cheap to call every session.
+// The CLI export path is the one caller that needs every done task a
+// project has — a backup that silently drops cards is not a backup — and
+// it is a direct service.BoardGet caller, not a schema-bound one.
+const DoneLimitUnlimited = -1
 
 // BoardGet is a single read transaction: PLAN §6.1's compact-by-default
 // contract only holds if every field on the resulting Board came from one
@@ -36,10 +46,12 @@ func (s *svc) BoardGet(ctx context.Context, a Actor, in BoardGetInput) (*Board, 
 			}
 		}
 		doneLimit := in.DoneLimit
-		if doneLimit < 0 {
+		switch {
+		case doneLimit == DoneLimitUnlimited:
+			doneLimit = math.MaxInt
+		case doneLimit < 0:
 			doneLimit = 0
-		}
-		if doneLimit > domain.MaxDoneLimit {
+		case doneLimit > domain.MaxDoneLimit:
 			doneLimit = domain.MaxDoneLimit
 		}
 
