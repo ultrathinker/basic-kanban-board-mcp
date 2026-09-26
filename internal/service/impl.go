@@ -3,6 +3,7 @@ package service
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -24,6 +25,9 @@ type EventPublisher interface {
 type svc struct {
 	store store.Store
 	pub   EventPublisher
+	// clock overrides the database clock for reads that measure elapsed
+	// time (see now). nil in production.
+	clock func(store.Tx) (time.Time, error)
 }
 
 var _ Service = (*svc)(nil)

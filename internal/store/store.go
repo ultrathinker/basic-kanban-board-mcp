@@ -229,6 +229,10 @@ type NoteRepo interface {
 	Add(tx Tx, n *domain.Note) error
 	ListByTask(tx Tx, taskID string, limit int, before *time.Time) ([]domain.Note, error)
 	CountByTasks(tx Tx, taskIDs []string) (map[string]int, error)
+	// LatestByTasks returns when each task last received a note, in one
+	// grouped read over the notes_task_created index — the board's idle-time
+	// check must not cost a query per card. Tasks without notes are absent.
+	LatestByTasks(tx Tx, taskIDs []string) (map[string]time.Time, error)
 }
 
 // ProgressRepo appends and reads progress estimates. The history is

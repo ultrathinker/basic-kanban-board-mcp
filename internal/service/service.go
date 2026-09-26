@@ -61,6 +61,12 @@ const (
 	IncludeNotes      Include = "notes"
 	IncludeLinks      Include = "links"
 	IncludeMetadata   Include = "metadata"
+	// IncludeProgress is board_get-only (KANB-61): it annotates every card in
+	// an active column with its acceptance count, its assessed percent and
+	// how long it has been idle, so a progress report is one read instead of
+	// a scripted walk over task_get. It is not a task field, so task_get and
+	// task_next do not publish it.
+	IncludeProgress Include = "progress"
 )
 
 type Includes []Include
@@ -243,6 +249,45 @@ type BoardProject struct {
 	Columns   []BoardColumn
 	DoneTotal int
 	DoneShown int
+
+	// Attention names the cards in active columns that have not moved for
+	// longer than ClaimTTLSeconds (KANB-61) — the signal that replaced WIP
+	// limits. nil when no card qualifies, so a healthy board pays nothing.
+	// It follows the board filter, like the column counts do.
+	Attention *Attention
+	// Activity is keyed by task key and populated only for
+	// include:["progress"], for the cards in active columns.
+	Activity map[string]TaskActivity
+}
+
+// Attention is the bounded "look at these" list of a project: Count is the
+// number of idle cards, Sample the AttentionSampleSize most idle of them,
+// most idle first.
+type Attention struct {
+	Count  int
+	Sample []IdleTask
+}
+
+// IdleTask is one card of an Attention sample.
+type IdleTask struct {
+	Key  string
+	Idle time.Duration
+}
+
+// TaskActivity is the per-card progress line of include:["progress"].
+//
+// AcceptanceDone/AcceptanceTotal are the "X of N": acceptance criteria are
+// the only countable, checkable progress a card stores — a progress mark is
+// a free percentage, one per assessor, with no N behind it. Percent is that
+// assessed mean when anyone assessed the card (nil otherwise, never 0).
+// LastActivityAt is the card's last movement by anyone — the same instant
+// the idle check measures from.
+type TaskActivity struct {
+	AcceptanceDone  int
+	AcceptanceTotal int
+	Percent         *int
+	LastActivityAt  time.Time
+	Idle            time.Duration
 }
 
 // Participant names one actor who may take part in a project's
@@ -372,6 +417,18 @@ type TaskGetResult struct {
 	// older notes — the cursor is per task because each task's history ends at
 	// a different point.
 	NotesNext map[string]time.Time
+	// Subtasks breaks a parent's live subtasks down by the kind of column
+	// each sits in (KANB-61), keyed by task key. A key is absent for a task
+	// without subtasks.
+	Subtasks map[string]SubtaskKinds
+}
+
+// SubtaskKinds counts a parent's live (unarchived) subtasks per column kind.
+type SubtaskKinds struct {
+	Backlog int
+	Active  int
+	Waiting int
+	Done    int
 }
 
 // ---------------------------------------------------------------------------
