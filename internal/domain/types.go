@@ -154,17 +154,25 @@ const LinkBlocks LinkType = "blocks"
 func (l LinkType) Valid() bool { return l == LinkBlocks }
 
 // Scope is a token capability. write implies read; admin implies both.
+//
+// executor sits between read and write (KANB-60): it reads everything read
+// does, but writes only to the cards assigned to the token's own name, and
+// never across the done boundary. It exists so an orchestrator can hand each
+// agent it launches a key of its own without handing it the power to accept
+// its own work — the reviewer closes, not the executor. write implies it:
+// every executor capability is a write capability narrowed to one's own cards.
 type Scope string
 
 const (
-	ScopeRead  Scope = "read"
-	ScopeWrite Scope = "write"
-	ScopeAdmin Scope = "admin"
+	ScopeRead     Scope = "read"
+	ScopeExecutor Scope = "executor"
+	ScopeWrite    Scope = "write"
+	ScopeAdmin    Scope = "admin"
 )
 
 func (s Scope) Valid() bool {
 	switch s {
-	case ScopeRead, ScopeWrite, ScopeAdmin:
+	case ScopeRead, ScopeExecutor, ScopeWrite, ScopeAdmin:
 		return true
 	}
 	return false
@@ -181,11 +189,21 @@ func (ss Scopes) Has(want Scope) bool {
 		if s == ScopeAdmin {
 			return true // admin implies everything
 		}
-		if s == ScopeWrite && want == ScopeRead {
-			return true // write implies read
+		if s == ScopeWrite && (want == ScopeRead || want == ScopeExecutor) {
+			return true // write implies read and every executor capability
+		}
+		if s == ScopeExecutor && want == ScopeRead {
+			return true // executor implies read
 		}
 	}
 	return false
+}
+
+// OwnCardsOnly reports whether the set confines writes to the caller's own
+// cards: it carries the executor capability but nothing wider. A token that
+// also holds write is a writer, not an executor.
+func (ss Scopes) OwnCardsOnly() bool {
+	return ss.Has(ScopeExecutor) && !ss.Has(ScopeWrite)
 }
 
 // Project settings and identity. Key is immutable: task keys derive from it.
@@ -565,6 +583,12 @@ const (
 	// body is never carried in the payload: the event is a change signal,
 	// the chat_messages table is the only source of truth for what was said.
 	EventChatPosted EventType = "chat.posted"
+	// EventExecutorKeyIssued fires once per project an executor key was
+	// issued (or re-issued) for (KANB-60): the project's participant list
+	// just changed, and every open board has to learn it. The payload names
+	// the key and its expiry only — the secret exists in exactly one place,
+	// the issuing response, and an event is replayed to every subscriber.
+	EventExecutorKeyIssued EventType = "executor_key.issued"
 )
 
 // Event is append-only. It feeds SSE, the activity view and any future audit.
@@ -589,9 +613,27 @@ type Token struct {
 	CreatedAt   time.Time
 	LastUsedAt  *time.Time
 	RevokedAt   *time.Time
+	// ExpiresAt ends the token's life without anyone having to revoke it
+	// (KANB-60). nil means the token never expires, which is every token
+	// minted before migration 0010 and every token the CLI creates. Executor
+	// keys always carry one, so a forgotten key stops working on its own.
+	ExpiresAt *time.Time
 }
 
+// Active reports only that the token was not revoked. It cannot see expiry,
+// because expiry needs a clock: every authentication and participation
+// decision must use ActiveAt instead.
 func (t *Token) Active() bool { return t != nil && t.RevokedAt == nil }
+
+// ActiveAt reports whether the token may authenticate at now: not revoked
+// and not expired. The expiry instant itself is already dead — a key issued
+// for 24 hours does not get a 24h+1ns grace.
+func (t *Token) ActiveAt(now time.Time) bool {
+	if !t.Active() {
+		return false
+	}
+	return t.ExpiresAt == nil || now.Before(*t.ExpiresAt)
+}
 
 // MayAccessProject reports whether the token is allowed to touch a project key.
 func (t *Token) MayAccessProject(key string) bool {

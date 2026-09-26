@@ -181,7 +181,9 @@ func (m *Manager) VerifyToken(ctx context.Context, secret string) (*domain.Token
 	if subtle.ConstantTimeCompare(tok.Hash, hash) != 1 {
 		return nil, nil
 	}
-	if !tok.Active() {
+	// ActiveAt, not Active: an expired executor key is as dead as a revoked
+	// one, and this is the one place every credential path passes through.
+	if !tok.ActiveAt(m.Now()) {
 		return nil, nil
 	}
 	return tok, nil

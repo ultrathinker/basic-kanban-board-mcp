@@ -87,14 +87,46 @@ func requireRead(a Actor) error {
 	return nil
 }
 
-func requireWrite(a Actor) error {
+// requireWrite admits full writers only. op names the operation in the
+// caller's words, because an executor key refused here must learn what it
+// cannot do and why, not merely that some scope is missing.
+func requireWrite(a Actor, op string) error {
+	if a.OwnCardsOnly() {
+		return domain.ExecutorRefused(a.Name, op)
+	}
 	if !a.CanWrite() {
 		return domain.Forbidden("token lacks write scope", "Use a token with the write scope.")
 	}
 	return nil
 }
 
-func requireAdmin(a Actor) error {
+// requireCardWrite admits writers AND executor keys. It is the gate of the
+// use-cases an executor may reach at all (claims, moves, notes, progress,
+// the feed); each of them then narrows an executor to its own cards with
+// requireOwnCard inside its transaction.
+func requireCardWrite(a Actor) error {
+	if !a.Scopes.Has(domain.ScopeExecutor) {
+		return domain.Forbidden("token lacks write scope",
+			"Use a token with the write scope, or an executor key for the cards assigned to it.")
+	}
+	return nil
+}
+
+// requireOwnCard refuses an executor key's write to a card assigned to
+// someone else. Writers pass untouched. It must run on the task as read
+// inside the write transaction: ownership checked before the transaction
+// would race a reassignment.
+func requireOwnCard(a Actor, t *domain.Task) error {
+	if !a.OwnCardsOnly() {
+		return nil
+	}
+	return domain.ExecutorOwns(a.Name, t)
+}
+
+func requireAdmin(a Actor, op string) error {
+	if a.OwnCardsOnly() {
+		return domain.ExecutorRefused(a.Name, op)
+	}
 	if !a.IsAdmin() {
 		return domain.Forbidden("token lacks admin scope", "Use a token with the admin scope.")
 	}
@@ -140,6 +172,24 @@ func requireAdminForce(a Actor, force bool) error {
 			"Ask an admin, or wait for the lease to expire.")
 	}
 	return nil
+}
+
+// tokenDeadReason says why a token can no longer act at the transaction's
+// clock — "revoked" or "expired" — or "" while it is live. Refusals name the
+// reason because the remedies differ: an expired executor key is re-issued,
+// a revoked token is replaced.
+func tokenDeadReason(tx store.Tx, tok *domain.Token) (string, error) {
+	if !tok.Active() {
+		return "revoked", nil
+	}
+	now, err := tx.Now()
+	if err != nil {
+		return "", err
+	}
+	if !tok.ActiveAt(now) {
+		return "expired", nil
+	}
+	return "", nil
 }
 
 // ---------------------------------------------------------------------------

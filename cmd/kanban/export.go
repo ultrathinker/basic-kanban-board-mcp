@@ -617,6 +617,9 @@ func importProject(ctx context.Context, svc service.Service, actor service.Actor
 					DueAt:      tv.DueAt,
 					Metadata:   tv.Metadata,
 				}},
+				// The cards existed before the export; their assignees are
+				// history, not new assignments to check against today's keys.
+				Restore: true,
 			})
 			if err != nil {
 				return fmt.Errorf("import task %s: %w", tv.Key, err)

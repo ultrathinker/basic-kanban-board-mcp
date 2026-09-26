@@ -326,7 +326,9 @@ func (m *Manager) authenticateRequest(r *http.Request) (*AuthResult, error) {
 		if err != nil {
 			return nil, err
 		}
-		if tok == nil {
+		// A ticket outlives nothing it was issued for: a key revoked or
+		// expired since the ticket was minted is refused here too.
+		if tok == nil || !tok.ActiveAt(m.Now()) {
 			return nil, ErrForbidden
 		}
 		return &AuthResult{Token: tok, Actor: ResolveActor(tok), Kind: AuthTicket}, nil
@@ -353,7 +355,7 @@ func (m *Manager) authenticateRequest(r *http.Request) (*AuthResult, error) {
 				}
 				return nil, err
 			}
-			if tok == nil || !tok.Active() {
+			if tok == nil || !tok.ActiveAt(m.Now()) {
 				return nil, ErrForbidden
 			}
 			// Touch under a best-effort fire-and-forget; failure is logged

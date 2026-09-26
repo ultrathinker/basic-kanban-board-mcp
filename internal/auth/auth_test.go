@@ -577,6 +577,24 @@ func (r *fakeTokenRepo) Revoke(_ store.Tx, name string) error {
 	return nil
 }
 
+func (r *fakeTokenRepo) Reissue(_ store.Tx, t *domain.Token) error {
+	r.f.mu.Lock()
+	defer r.f.mu.Unlock()
+	for _, cur := range r.f.tokens {
+		if cur.ID == t.ID && cur.RevokedAt == nil {
+			delete(r.f.tokensByHash, hexBytes(cur.Hash))
+			cur.Hash = append([]byte(nil), t.Hash...)
+			cur.Scopes = t.Scopes
+			cur.ProjectKeys = t.ProjectKeys
+			cur.ExpiresAt = t.ExpiresAt
+			cur.LastUsedAt = nil
+			r.f.tokensByHash[hexBytes(cur.Hash)] = cur
+			return nil
+		}
+	}
+	return stubErr{s: "token not found"}
+}
+
 func (r *fakeTokenRepo) UpdateHash(_ store.Tx, id string, hash []byte) error {
 	r.f.mu.Lock()
 	defer r.f.mu.Unlock()

@@ -1,12 +1,12 @@
 # MCP Tools Reference
 
-basic-kanban-board-mcp exposes 13 native Model Context Protocol (MCP) tools over streamable-HTTP with mandatory bearer token authentication.
+basic-kanban-board-mcp exposes 14 native Model Context Protocol (MCP) tools over streamable-HTTP with mandatory bearer token authentication.
 
 Every task write is a batch, every read defaults to a token-efficient compact text format, and every task carries an authoritative version for optimistic concurrency.
 
 ---
 
-## Quick Reference: The 13 Tools
+## Quick Reference: The 14 Tools
 
 | Tool | Purpose |
 |---|---|
@@ -22,9 +22,10 @@ Every task write is a batch, every read defaults to a token-efficient compact te
 | [`project_post`](#10-project_post) | Post a live message to the project chat feed. |
 | [`progress_set`](#11-progress_set) | Record a progress assessment and completion forecast for a task or an entire project. |
 | [`progress_history`](#12-progress_history) | Read the full progress-mark history behind one metric: a project's manual estimate (project only) or one task's summary estimate (task). |
-| [`board_guide`](#13-board_guide) | Read the operating guide for this kanban board: identity rules, the canonical read-modify-write loop, lease behaviour, the compact grammar version, and the error envelope. |
+| [`executor_key_issue`](#13-executor_key_issue) | Issue an executor key: a named, expiring bearer token for one agent you launch. |
+| [`board_guide`](#14-board_guide) | Read the operating guide for this kanban board: identity rules, the canonical read-modify-write loop, lease behaviour, the compact grammar version, and the error envelope. |
 
-> **Tool count:** 13 tools on the full server (this file). 5 on `/mcp/readonly`: board_get, task_get, task_next with claim/start disabled, progress_history, board_guide. The count and the list both come from the registry, not a constant or a hand-written name.
+> **Tool count:** 14 tools on the full server (this file). 5 on `/mcp/readonly`: board_get, task_get, task_next with claim/start disabled, progress_history, board_guide. The count and the list both come from the registry, not a constant or a hand-written name.
 
 ---
 
@@ -181,6 +182,7 @@ board_get({ "after": <value> })
 
 Find, claim or start the next ready task. `peek` never takes anything; `claim` leases the top candidate without moving it; `start` leases it and moves it into the first active column atomically. Returns `data.tasks[]`: a flat list of task objects, best candidate first (task_get returns `data.items[]` instead, because it answers per requested key). `meta.reasons` counts why the rest were not offered.
 This is a chooser, so it answers cheaply: bodies come back as a 256-byte excerpt ending in "… +N chars" and acceptance as the first 2 items with `acceptance_total` when there are more. `detail:"full"` widens that to 2048 bytes and 10 items; `meta.projection` always states which bounds were applied. Once you have chosen, task_get returns the whole card.
+With an executor key only the cards assigned to it are offered and taken.
 
 #### Parameters
 
@@ -226,6 +228,7 @@ task_get({ "keys": <value> })
 
 Create one or more tasks in a single atomic batch (all-or-nothing). To link items of the same batch, give one a `ref` and point at it from another by prefixing that name with a single @: an item created as `{"ref": "scaffold", ...}` is referenced as `"blocked_by": ["@scaffold"]`.
 Pass `source_message` to ACCEPT a command from the project feed: only the command's resolved_executor may, the tasks and the acceptance link commit atomically, and a repeat returns the original task keys with meta.already_accepted=true instead of creating a second batch. NOTE: this acceptance guarantee is about the BOARD only — it does not prevent an external command, deploy or side effect from running twice; guard those separately. A pure question needs no task at all — answer it with `project_post(reply_to: ...)`.
+`assignee` must be a participant of the project (board_get lists them; executor_key_issue adds one) — the executor key of that name then works the card. Executor keys cannot create tasks.
 Returns `data.tasks[]`, in request order: `{key, version, column}` per created task by default, the whole task with `echo:"full"`. The `version` on every returned task is the value AFTER the call and is authoritative — chain your next `if_version` from it and never re-read a task just to learn its version. `note`, lease operations and `focus` do not move a task's version by design, so a result echoing the same version you sent means the write landed and the version legitimately did not change.
 
 #### Parameters
@@ -247,7 +250,7 @@ task_create({ "tasks": <value> })
 
 ### 5. `task_update`
 
-Update one or more tasks. Per-item results by default (atomic:false); set atomic:true to make the whole batch commit or none of it does. if_version is required for any replacement-style field. Returns `data.items[]`: one entry per patch, in request order — `{key, ok, version, column}` by default, the whole task too with `echo:"full"`, or `{key, ok:false, error}`. The `version` on every returned task is the value AFTER the call and is authoritative — chain your next `if_version` from it and never re-read a task just to learn its version. `note`, lease operations and `focus` do not move a task's version by design, so a result echoing the same version you sent means the write landed and the version legitimately did not change.
+Update one or more tasks. Per-item results by default (atomic:false); set atomic:true to make the whole batch commit or none of it does. if_version is required for any replacement-style field. A new assignee must be a participant of the project (board_get lists them). An executor key may only send note, column and rank, only on cards assigned to it, and never into or out of a done column — hand work over by moving it into the review column. Returns `data.items[]`: one entry per patch, in request order — `{key, ok, version, column}` by default, the whole task too with `echo:"full"`, or `{key, ok:false, error}`. The `version` on every returned task is the value AFTER the call and is authoritative — chain your next `if_version` from it and never re-read a task just to learn its version. `note`, lease operations and `focus` do not move a task's version by design, so a result echoing the same version you sent means the write landed and the version legitimately did not change.
 
 #### Parameters
 
@@ -286,7 +289,7 @@ task_link({ "add": <value> })
 
 ### 7. `task_claim`
 
-Claim, renew or release the lease on a single task with an atomic compare-and-swap. Same actor never needs force; an expired former owner cannot renew after another actor won.
+Claim, renew or release the lease on a single task with an atomic compare-and-swap. Same actor never needs force; an expired former owner cannot renew after another actor won. An executor key may claim, renew and release only the cards assigned to it.
 
 #### Parameters
 
@@ -384,7 +387,7 @@ project_post({ "author": <value>, "body": <value>, "project": <value> })
 
 ### 11. `progress_set`
 
-Record a progress assessment and completion forecast for a task or an entire project. Provide periodic assessments as work proceeds (e.g. every few steps or significant discoveries), not just at the start or finish. Progress marks form an append-only calibration history: revisions never overwrite prior marks. Overestimating and underestimating are expected and harmless; rolling your progress estimate backward (e.g. from 70% down to 45%) is a normal and valuable signal reflecting discovered complexity, not an admission of defeat. Specify exactly one target: either `task` (e.g. KANB-3) to assess a specific task, or `project` (e.g. KANB) to assess the project as a whole. `eta` is an RFC3339 timestamp forecasting the expected finish date and time (e.g. 2026-09-12T18:00:00Z), not a remaining duration. Returns `data` containing the recorded mark and the updated summary progress for the assessed scope.
+Record a progress assessment and completion forecast for a task or an entire project. Provide periodic assessments as work proceeds (e.g. every few steps or significant discoveries), not just at the start or finish. Progress marks form an append-only calibration history: revisions never overwrite prior marks. Overestimating and underestimating are expected and harmless; rolling your progress estimate backward (e.g. from 70% down to 45%) is a normal and valuable signal reflecting discovered complexity, not an admission of defeat. Specify exactly one target: either `task` (e.g. KANB-3) to assess a specific task, or `project` (e.g. KANB) to assess the project as a whole. `eta` is an RFC3339 timestamp forecasting the expected finish date and time (e.g. 2026-09-12T18:00:00Z), not a remaining duration. An executor key may assess only the cards assigned to it, with `assessor` set to its own name, and never the project as a whole. Returns `data` containing the recorded mark and the updated summary progress for the assessed scope.
 
 #### Parameters
 
@@ -424,7 +427,30 @@ progress_history({ "limit": <value> })
 
 ---
 
-### 13. `board_guide`
+### 13. `executor_key_issue`
+
+Issue an executor key: a named, expiring bearer token for one agent you launch. Only an admin or the coordinator of every listed project may issue one; an executor key can never issue keys. The name becomes the executor's identity and a participant of the listed projects (board_get participants), so assign its cards to exactly that name.
+An executor key reads everything and writes only to cards assigned to its own name: claim/renew/release (task_claim; task_next claim/start offers only its cards), task_update with note, column and rank — any column except a done-kind one, so handing work over means moving it into the review column — progress_set on its cards with assessor = its name, and project_post. It cannot create, archive or link cards, change assignee, reviewer or any other field, move a card into or out of a done column, use force, or touch project_upsert; each refusal is a forbidden error naming the rule. The reviewer closes the work.
+ttl_seconds defaults to 86400 (24h) and must lie in 300..604800. An expired key stops authenticating and leaves the participant list on its own — nothing to clean up; issuing the same name again after it expired re-issues that key (reissued:true) with a new secret. A live key's name is refused.
+Returns `data`: token_id, name, projects, expires_at and `secret`. The secret is shown ONLY in this response and is never stored or shown again: hand it straight to the executor's launcher and never post it to the feed, a note or a card.
+
+#### Parameters
+
+| Name | Type | Required | Description |
+|---|---|---|---|
+| `name` | string | Required | the executor's name, taken verbatim: it becomes the key's identity and a participant of the listed projects — assign the executor's cards to exactly this name. No spaces; unique across all tokens |
+| `projects` | any | Required | project keys the executor works in, case-insensitive; you must be an admin or the coordinator of each |
+| `ttl_seconds` | integer | Optional | key lifetime in seconds; omit for 24h |
+
+#### Example Call
+
+```jsonc
+executor_key_issue({ "name": <value>, "projects": <value> })
+```
+
+---
+
+### 14. `board_guide`
 
 Read the operating guide for this kanban board: identity rules, the canonical read-modify-write loop, lease behaviour, the compact grammar version, and the error envelope. Without a `project`, returns the common guide plus the list of tools registered on this server (their count is computed, not a constant — adding a tool appears here automatically). With `project`, appends that project's settings (estimate unit, claim TTL, strict_done, enforce_dependencies, archive state) so an agent can read-modify-write against the project's own rules without guessing, plus who is on it: the appointed coordinator and the participants derived from the tokens with access, each as a tokens.id and a display name and never a secret. Access means a token MAY take part, not that it is working right now. This tool is read-only and exists on every server, including /mcp/readonly. Returns `data` with `guide`, `tool_count`, `tools[]`, and (optionally) `project`.
 

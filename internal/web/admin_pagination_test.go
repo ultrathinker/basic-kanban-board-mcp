@@ -62,6 +62,9 @@ func (adminPagerSvc) ChatAdd(context.Context, service.Actor, service.ChatAddInpu
 func (adminPagerSvc) ChatFeed(context.Context, service.Actor, service.ChatFeedInput) (*service.ChatFeedResult, error) {
 	return nil, ErrServiceUnavailable
 }
+func (adminPagerSvc) ExecutorKeyIssue(context.Context, service.Actor, service.ExecutorKeyIssueInput) (*service.ExecutorKeyIssueResult, error) {
+	return nil, ErrServiceUnavailable
+}
 func (adminPagerSvc) ChatList(context.Context, service.Actor, service.ChatListInput) (*service.ChatListResult, error) {
 	return nil, ErrServiceUnavailable
 }

@@ -13,7 +13,7 @@ import (
 // which changes readiness, which is exactly what an if_version-aware caller
 // needs to know about.
 func (s *svc) TaskLink(ctx context.Context, a Actor, in TaskLinkInput) (*TaskLinkResult, error) {
-	if err := requireWrite(a); err != nil {
+	if err := requireWrite(a, "add or remove dependency links"); err != nil {
 		return nil, err
 	}
 	if len(in.Add) == 0 && len(in.Remove) == 0 {

@@ -44,7 +44,7 @@ func (w *Web) sessionFromRequest(r *http.Request) (*domain.Token, error) {
 	}
 	for _, t := range toks {
 		if t.ID == sess.TokenID {
-			if !t.Active() {
+			if !t.ActiveAt(now) {
 				return nil, nil
 			}
 			if err := w.d.Auth.Sessions.TouchSession(r.Context(), sess.ID, now); err != nil {

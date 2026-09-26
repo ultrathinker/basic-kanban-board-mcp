@@ -41,7 +41,7 @@ func taskClaimTool() *gomcp.Tool {
 
 	return &gomcp.Tool{
 		Name:        opTaskClaim,
-		Description: "Claim, renew or release the lease on a single task with an atomic compare-and-swap. Same actor never needs force; an expired former owner cannot renew after another actor won.",
+		Description: "Claim, renew or release the lease on a single task with an atomic compare-and-swap. Same actor never needs force; an expired former owner cannot renew after another actor won. An executor key may claim, renew and release only the cards assigned to it.",
 		InputSchema: s,
 	}
 }

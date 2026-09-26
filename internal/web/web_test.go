@@ -60,6 +60,9 @@ func (stubService) ChatAdd(context.Context, service.Actor, service.ChatAddInput)
 func (stubService) ChatFeed(context.Context, service.Actor, service.ChatFeedInput) (*service.ChatFeedResult, error) {
 	return nil, ErrServiceUnavailable
 }
+func (stubService) ExecutorKeyIssue(context.Context, service.Actor, service.ExecutorKeyIssueInput) (*service.ExecutorKeyIssueResult, error) {
+	return nil, ErrServiceUnavailable
+}
 func (stubService) ChatList(context.Context, service.Actor, service.ChatListInput) (*service.ChatListResult, error) {
 	return nil, ErrServiceUnavailable
 }

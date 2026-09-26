@@ -66,7 +66,7 @@ type taskPatchIn struct {
 	Priority   *string  `json:"priority,omitempty"`
 	Estimate   *float64 `json:"estimate,omitempty" jsonschema:"send null to clear"`
 	Actual     *float64 `json:"actual,omitempty" jsonschema:"effort actually spent, same unit as estimate; send null to clear"`
-	Assignee   *string  `json:"assignee,omitempty" jsonschema:"send null to clear"`
+	Assignee   *string  `json:"assignee,omitempty" jsonschema:"a participant of the project, exactly as board_get lists it; send null to clear"`
 	Reviewer   *string  `json:"reviewer,omitempty" jsonschema:"who checks the work; send null to clear"`
 	Outcome    *string  `json:"outcome,omitempty" jsonschema:"where the task's result stands, independent of its column — a Done task can still be refuted or moot; open = not yet judged. Use one of: open, holds, refuted, superseded, moot."`
 	Conclusion *string  `json:"conclusion,omitempty" jsonschema:"post-hoc takeaway / verdict, distinct from body and from note; empty string clears it"`
@@ -165,6 +165,8 @@ func taskUpdateTool() *gomcp.Tool {
 		Name: opTaskUpdate,
 		Description: "Update one or more tasks. Per-item results by default (atomic:false); set atomic:true to make the whole batch commit or none of it does. " +
 			"if_version is required for any replacement-style field. " +
+			"A new assignee must be a participant of the project (board_get lists them). " +
+			"An executor key may only send note, column and rank, only on cards assigned to it, and never into or out of a done column — hand work over by moving it into the review column. " +
 			"Returns `data.items[]`: one entry per patch, in request order — `{key, ok, version, column}` by default, the whole task too with `echo:\"full\"`, or `{key, ok:false, error}`. " +
 			versionEchoRule,
 		InputSchema: s,

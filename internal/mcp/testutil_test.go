@@ -23,6 +23,13 @@ import (
 type fakeService struct {
 	mu sync.Mutex
 
+	// ExecutorKeyIssue.
+	NextExecutorKeyIssue      func(ctx context.Context, a service.Actor, in service.ExecutorKeyIssueInput) (*service.ExecutorKeyIssueResult, error)
+	DefaultExecutorKeyIssue   *service.ExecutorKeyIssueResult
+	DefaultExecutorKeyIssueEr error
+	LastExecutorKeyIssue      service.ExecutorKeyIssueInput
+	LastExecutorKeyIssueActor service.Actor
+
 	// BoardGet.
 	NextBoardGet      func(ctx context.Context, a service.Actor, in service.BoardGetInput) (*service.Board, error)
 	DefaultBoardGet   *service.Board
@@ -321,6 +328,21 @@ func (f *fakeService) ChatFeed(ctx context.Context, a service.Actor, in service.
 		return h(ctx, a, in)
 	}
 	return f.DefaultChatFeed, f.DefaultChatFeedEr
+}
+
+func (f *fakeService) ExecutorKeyIssue(ctx context.Context, a service.Actor, in service.ExecutorKeyIssueInput) (*service.ExecutorKeyIssueResult, error) {
+	f.mu.Lock()
+	h := f.NextExecutorKeyIssue
+	if h != nil {
+		f.NextExecutorKeyIssue = nil
+	}
+	f.LastExecutorKeyIssue = in
+	f.LastExecutorKeyIssueActor = a
+	f.mu.Unlock()
+	if h != nil {
+		return h(ctx, a, in)
+	}
+	return f.DefaultExecutorKeyIssue, f.DefaultExecutorKeyIssueEr
 }
 
 // fakeActor returns a non-zero Actor for tests that need an identity

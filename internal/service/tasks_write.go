@@ -50,7 +50,7 @@ type createItemPlan struct {
 }
 
 func (s *svc) TaskCreate(ctx context.Context, a Actor, in TaskCreateInput) (*TaskCreateResult, error) {
-	if err := requireWrite(a); err != nil {
+	if err := requireWrite(a, "create tasks"); err != nil {
 		return nil, err
 	}
 	if len(in.Tasks) == 0 {
@@ -61,6 +61,11 @@ func (s *svc) TaskCreate(ctx context.Context, a Actor, in TaskCreateInput) (*Tas
 		return nil, domain.Invalid("tasks",
 			fmt.Sprintf("%d tasks, the limit is %d", len(in.Tasks), domain.MaxBatchTasks),
 			"Split the request into multiple calls.")
+	}
+	if in.Restore {
+		if err := requireAdmin(a, "restore tasks from an export"); err != nil {
+			return nil, err
+		}
 	}
 	ctx = store.WithActor(ctx, a.Name)
 
@@ -156,6 +161,10 @@ func (s *svc) TaskCreate(ctx context.Context, a Actor, in TaskCreateInput) (*Tas
 		}
 
 		// Per-item: resolve project + column under access check, for "new" items.
+		// The assignee is checked against the project's participants here, in
+		// the same transaction as the insert, so a key issued or expiring
+		// concurrently cannot slip between the check and the write.
+		var pix *participantIndex
 		for _, p := range plans {
 			if p.isReplay || p.validation != nil {
 				continue
@@ -172,6 +181,17 @@ func (s *svc) TaskCreate(ctx context.Context, a Actor, in TaskCreateInput) (*Tas
 				continue
 			}
 			p.column = col
+			if !in.Restore && p.new.Assignee != nil && *p.new.Assignee != "" {
+				if pix == nil {
+					if pix, err = s.buildParticipantIndex(tx, now); err != nil {
+						return err
+					}
+				}
+				if err := pix.checkAssignee(proj, "", *p.new.Assignee); err != nil {
+					p.validation = domain.AsError(err)
+					continue
+				}
+			}
 		}
 
 		// Any validation error short-circuits the whole batch — store.Write
@@ -901,7 +921,7 @@ func (e *nestedItemError) Error() string { return e.err.Error() }
 func (e *nestedItemError) Unwrap() error { return e.err }
 
 func (s *svc) TaskUpdate(ctx context.Context, a Actor, in TaskUpdateInput) (*TaskUpdateResult, error) {
-	if err := requireWrite(a); err != nil {
+	if err := requireCardWrite(a); err != nil {
 		return nil, err
 	}
 	if len(in.Patches) == 0 {
@@ -1012,6 +1032,14 @@ func (s *svc) prepareUpdate(tx store.Tx, a Actor, patch TaskPatch) (*prepared, e
 	if err := s.validatePatchShape(patch); err != nil {
 		return nil, err
 	}
+	if a.OwnCardsOnly() {
+		if err := domain.ExecutorOwns(a.Name, task); err != nil {
+			return nil, err
+		}
+		if err := domain.ExecutorFieldsRefused(a.Name, task.Key, executorRefusedFields(patch)); err != nil {
+			return nil, err
+		}
+	}
 	if err := requireForce(a, patch.Force, patch.Reason); err != nil {
 		return nil, err
 	}
@@ -1034,6 +1062,24 @@ func (s *svc) prepareUpdate(tx store.Tx, a Actor, patch TaskPatch) (*prepared, e
 
 	prep := &prepared{task: task, project: proj}
 
+	// Only a NEW value is checked: a card whose stored assignee predates
+	// this rule, or names a key that has since expired, keeps working for
+	// every other edit, and re-sending the same value is not a change.
+	if patch.Assignee.Set && patch.Assignee.Value != "" &&
+		(task.Assignee == nil || *task.Assignee != patch.Assignee.Value) {
+		now, err := tx.Now()
+		if err != nil {
+			return nil, err
+		}
+		pix, err := s.buildParticipantIndex(tx, now)
+		if err != nil {
+			return nil, err
+		}
+		if err := pix.checkAssignee(proj, task.Key, patch.Assignee.Value); err != nil {
+			return nil, err
+		}
+	}
+
 	if patch.Column != "" {
 		dst, err := s.resolveColumn(tx, proj, patch.Column)
 		if err != nil {
@@ -1043,6 +1089,11 @@ func (s *svc) prepareUpdate(tx store.Tx, a Actor, patch TaskPatch) (*prepared, e
 		fromCol, err := s.store.Columns().GetByID(tx, task.ColumnID)
 		if err != nil {
 			return nil, err
+		}
+		if a.OwnCardsOnly() {
+			if err := domain.ExecutorMayMove(a.Name, task.Key, *fromCol, *dst); err != nil {
+				return nil, err
+			}
 		}
 		openBlocks, err := s.store.Links().OpenBlockers(tx, task.ID)
 		if err != nil {
@@ -1078,6 +1129,44 @@ func (s *svc) prepareUpdate(tx store.Tx, a Actor, patch TaskPatch) (*prepared, e
 		}
 	}
 	return prep, nil
+}
+
+// executorRefusedFields lists the fields of a patch an executor key may not
+// set (KANB-60). The allowance is a whitelist — note, column and rank —
+// because a blacklist would silently admit every field added to TaskPatch
+// after it was written. Assignee and reviewer are who does and who checks
+// the work; outcome, acceptance and focus are the judgement the reviewer
+// makes; force bypasses the very rules the key exists under.
+func executorRefusedFields(p TaskPatch) []string {
+	var out []string
+	add := func(on bool, name string) {
+		if on {
+			out = append(out, name)
+		}
+	}
+	add(p.Title != nil, "title")
+	add(p.Body != nil, "body")
+	add(p.BodyAppend != nil, "body_append")
+	add(p.Type != nil, "type")
+	add(p.Priority != nil, "priority")
+	add(p.Estimate.Set || p.Estimate.Clear, "estimate")
+	add(p.Actual.Set || p.Actual.Clear, "actual")
+	add(p.Assignee.Set || p.Assignee.Clear, "assignee")
+	add(p.Reviewer.Set || p.Reviewer.Clear, "reviewer")
+	add(p.Outcome != nil, "outcome")
+	add(p.Conclusion != nil, "conclusion")
+	add(p.DueAt.Set || p.DueAt.Clear, "due_at")
+	add(p.Tags != nil, "tags")
+	add(len(p.TagsAdd) > 0, "tags_add")
+	add(len(p.TagsRemove) > 0, "tags_remove")
+	add(p.Parent.Set || p.Parent.Clear, "parent")
+	add(p.Acceptance != nil, "acceptance")
+	add(len(p.AcceptanceCheck) > 0, "acceptance_check")
+	add(len(p.AcceptanceAdd) > 0, "acceptance_add")
+	add(p.Focus != nil, "focus")
+	add(len(p.MetadataMerge) > 0, "metadata_merge")
+	add(p.Force, "force")
+	return out
 }
 
 // validatePatchShape enforces PLAN §6.5's mutual-exclusion rules.
@@ -1548,7 +1637,7 @@ func copyTask(t *domain.Task) *domain.Task {
 // ---------------------------------------------------------------------------
 
 func (s *svc) TaskRemove(ctx context.Context, a Actor, in TaskRemoveInput) (*TaskRemoveResult, error) {
-	if err := requireWrite(a); err != nil {
+	if err := requireWrite(a, "archive or restore tasks"); err != nil {
 		return nil, err
 	}
 	if len(in.Items) == 0 {

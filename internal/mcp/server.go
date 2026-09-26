@@ -40,6 +40,7 @@ func NewServer(svc service.Service, version string) *gomcp.Server {
 	registerProjectPost(s, svc)
 	registerProgressSet(s, svc)
 	registerProgressHistory(s, svc)
+	registerExecutorKeyIssue(s, svc)
 	// board_guide is the first tool whose own response carries the
 	// registry snapshot (count + per-tool description + parameter list).
 	// It reads registry.go's fullToolFactories — the SAME slice

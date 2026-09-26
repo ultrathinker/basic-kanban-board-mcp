@@ -1,6 +1,6 @@
 # basic-kanban-board-mcp
 
-A kanban board your coding agents can actually use. One binary, one file, 13 tools.
+A kanban board your coding agents can actually use. One binary, one file, 14 tools.
 
 Point Claude Code, Codex or Cursor at it and your agents plan their work as tasks, take the
 next one, and report progress — while you watch the board in a browser and drop in new work
@@ -23,7 +23,7 @@ That is a whole project, as an agent sees it.
 Most MCP task servers expose dozens of tools and hand back JSON. An agent then spends its
 context deciding which tool to call and parsing the dump it gets back.
 
-This one exposes **13 tools** and answers in the compact text above.
+This one exposes **14 tools** and answers in the compact text above.
 
 | the same 30-task board | tokens |
 | --- | --- |
@@ -62,7 +62,7 @@ client you use.
 
 ## The tools
 
-The full list (13) lives in [`docs/MCP-TOOLS.md`](docs/MCP-TOOLS.md), which is generated
+The full list (14) lives in [`docs/MCP-TOOLS.md`](docs/MCP-TOOLS.md), which is generated
 from the registry — the count there is computed, not hand-kept, so it cannot drift from
 the actual server. The five reads an agent reaches for first:
 
@@ -80,9 +80,10 @@ the actual server. The five reads an agent reaches for first:
 | `project_post` | post a live progress update to the project chat feed |
 | `progress_set` | record a progress assessment and a forecast for a task or a project |
 | `progress_history` | read the full mark history behind one metric |
+| `executor_key_issue` | give an agent you launch its own expiring key that writes only to its own cards |
 | `board_guide` | read the operating guide and the registry snapshot |
 
-There will not be a fourteenth without the registry knowing. Everything else is a plugin.
+There will not be a fifteenth without the registry knowing. Everything else is a plugin.
 
 ## Two agents, one task
 

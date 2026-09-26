@@ -427,6 +427,8 @@ func eventVerb(t domain.EventType) string {
 		return "removed a progress track from"
 	case domain.EventChatPosted:
 		return "posted a thought in"
+	case domain.EventExecutorKeyIssued:
+		return "issued an executor key for"
 	default:
 		return string(t)
 	}

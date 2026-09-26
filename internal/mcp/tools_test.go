@@ -1003,30 +1003,31 @@ func TestRoundTrip_NoActorOnConnectCtx_AllToolsForbidden(t *testing.T) {
 // in the full server and five in the read-only server.
 // ---------------------------------------------------------------------------
 
-// TestListTools_FullServer_HasThirteen was TestListTools_FullServer_HasTwelve
-// before board_guide (KANB-42) was added: a deliberate update to the
-// pinned tool count, not a relaxed test — every tool name is still checked
-// individually below. board_guide is the only tool whose own response
-// carries the registry snapshot; if a future change added a 14th tool
-// without updating the list here AND without appending its factory to the
-// server.go / NewServer slice, board_guide's response would diverge from
-// the actual server and the divergence test below would catch it.
-func TestListTools_FullServer_HasThirteen(t *testing.T) {
+// TestListTools_FullServer_HasFourteen was TestListTools_FullServer_HasTwelve
+// before board_guide (KANB-42) and HasThirteen before executor_key_issue
+// (KANB-60) were added: deliberate updates to the pinned tool count, not a
+// relaxed test — every tool name is still checked individually below.
+// board_guide is the only tool whose own response carries the registry
+// snapshot; if a future change added a 15th tool without updating the list
+// here AND without appending its factory to the server.go / NewServer slice,
+// board_guide's response would diverge from the actual server and the
+// divergence test below would catch it.
+func TestListTools_FullServer_HasFourteen(t *testing.T) {
 	t.Parallel()
 	cs, _ := roundtripServer(t, NewServer)
 	res, err := cs.ListTools(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
-	if len(res.Tools) != 13 {
-		t.Errorf("tools count = %d, want 13 (got: %v)", len(res.Tools), names(res.Tools))
+	if len(res.Tools) != 14 {
+		t.Errorf("tools count = %d, want 14 (got: %v)", len(res.Tools), names(res.Tools))
 	}
 	want := map[string]bool{
 		"board_get": false, "task_next": false, "task_get": false,
 		"task_create": false, "task_update": false, "task_link": false,
 		"task_claim": false, "task_remove": false, "project_upsert": false,
 		"project_post": false, "progress_set": false, "progress_history": false,
-		"board_guide": false,
+		"executor_key_issue": false, "board_guide": false,
 	}
 	for _, t := range res.Tools {
 		want[t.Name] = true
