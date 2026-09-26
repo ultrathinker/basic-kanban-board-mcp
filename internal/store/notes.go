@@ -110,3 +110,36 @@ func (r *noteRepo) CountByTasks(tx Tx, taskIDs []string) (map[string]int, error)
 	}
 	return out, rows.Err()
 }
+
+// LatestByTasks returns the newest note time per task. MAX over the stored
+// text is exact for the canonical fractional layout, which is lexically
+// ordered; a legacy second-precision row can only sort up to a second off,
+// far below the hour-scale idle times this read feeds.
+func (r *noteRepo) LatestByTasks(tx Tx, taskIDs []string) (map[string]time.Time, error) {
+	if len(taskIDs) == 0 {
+		return map[string]time.Time{}, nil
+	}
+	tw := tx.(*txWrap)
+	placeholders, args := makeInClause(taskIDs)
+	q := `SELECT task_id, MAX(created_at) FROM notes
+	      WHERE task_id IN (` + placeholders + `)
+	      GROUP BY task_id`
+	rows, err := tw.tx.QueryContext(tw.ctx(), q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: latest notes: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[string]time.Time, len(taskIDs))
+	for rows.Next() {
+		var id, ts string
+		if err := rows.Scan(&id, &ts); err != nil {
+			return nil, fmt.Errorf("store: scan latest note: %w", err)
+		}
+		t, err := parseTime(ts)
+		if err != nil {
+			return nil, err
+		}
+		out[id] = t
+	}
+	return out, rows.Err()
+}

@@ -91,6 +91,16 @@ func (s *svc) TaskGet(ctx context.Context, a Actor, in TaskGetInput) (*TaskGetRe
 			if !in.Include.Has(IncludeMetadata) {
 				tv.Metadata = nil
 			}
+			if tv.SubTotal > 0 {
+				kinds, err := s.subtaskKinds(tx, cc, tv.ID)
+				if err != nil {
+					return err
+				}
+				if result.Subtasks == nil {
+					result.Subtasks = map[string]SubtaskKinds{}
+				}
+				result.Subtasks[tv.Key] = kinds
+			}
 			result.Tasks = append(result.Tasks, tv)
 		}
 		return nil

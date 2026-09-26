@@ -112,6 +112,40 @@ type taskOut struct {
 	CreatedBy             string          `json:"created_by"`
 	UpdatedBy             string          `json:"updated_by"`
 	ArchivedAt            *string         `json:"archived_at,omitempty"`
+	// Progress is board_get's include:["progress"] line for a card in an
+	// active column; Subtasks is task_get's epic summary for a parent. Both
+	// are absent everywhere else, so no other response grows (KANB-61).
+	Progress *taskProgressOut `json:"progress,omitempty"`
+	Subtasks *subtaskKindsOut `json:"subtasks,omitempty"`
+}
+
+// taskProgressOut is the JSON form of service.TaskActivity.
+type taskProgressOut struct {
+	AcceptanceDone  int    `json:"acceptance_done"`
+	AcceptanceTotal int    `json:"acceptance_total"`
+	Percent         *int   `json:"percent,omitempty"`
+	LastActivityAt  string `json:"last_activity_at"`
+	IdleSeconds     int    `json:"idle_seconds"`
+}
+
+func taskProgressOutFor(a service.TaskActivity) *taskProgressOut {
+	return &taskProgressOut{
+		AcceptanceDone:  a.AcceptanceDone,
+		AcceptanceTotal: a.AcceptanceTotal,
+		Percent:         a.Percent,
+		LastActivityAt:  formatTime(a.LastActivityAt),
+		IdleSeconds:     int(a.Idle / time.Second),
+	}
+}
+
+// subtaskKindsOut counts a parent's live subtasks per column kind. Every
+// kind is always present: a zero is information here ("nothing waiting"),
+// and a fixed shape is cheaper to read than one that varies.
+type subtaskKindsOut struct {
+	Backlog int `json:"backlog"`
+	Active  int `json:"active"`
+	Waiting int `json:"waiting"`
+	Done    int `json:"done"`
 }
 
 // taskViewOut renders a domain.TaskView under a service.Projection — the

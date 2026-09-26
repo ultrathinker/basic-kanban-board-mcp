@@ -43,7 +43,14 @@ func (s *svc) BoardGet(ctx context.Context, a Actor, in BoardGetInput) (*Board, 
 			doneLimit = domain.MaxDoneLimit
 		}
 
-		now, err := tx.Now()
+		// A progress line annotates task lines, and a summary has none: a
+		// silently empty answer would read as "no active cards".
+		if view == ViewSummary && in.Include.Has(IncludeProgress) {
+			return domain.Invalid("include", `include "progress" annotates task lines, and view:"summary" has none`,
+				`Use view:"tasks" (the default when project is set), or drop "progress" from include.`)
+		}
+
+		now, err := s.now(tx)
 		if err != nil {
 			return err
 		}
@@ -183,6 +190,7 @@ func (s *svc) buildBoardProject(
 		colIndex int
 	}
 	var doneCandidates []doneCandidate
+	var active []*domain.Task
 
 	for _, c := range cols {
 		cc.prime(c)
@@ -199,6 +207,9 @@ func (s *svc) buildBoardProject(
 			return nil, err
 		}
 		bc.Count = len(tasks)
+		if c.Kind == domain.KindActive {
+			active = append(active, tasks...)
+		}
 
 		if c.Kind == domain.KindDone {
 			bp.DoneTotal += len(tasks)
@@ -253,6 +264,10 @@ func (s *svc) buildBoardProject(
 		bp.DoneShown = len(doneCandidates)
 	}
 
+	bp.Attention, bp.Activity, err = s.boardActivity(tx, p, active, include.Has(IncludeProgress), now)
+	if err != nil {
+		return nil, err
+	}
 	return bp, nil
 }
 

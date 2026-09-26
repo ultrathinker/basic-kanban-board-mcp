@@ -111,8 +111,12 @@ The default output format for `board_get` is compact text (`format: "compact"`).
    - Each non-done column is formatted as `Name count`. The board has no WIP limits.
    - The done segment reports total archived/done tasks and whether any are currently rendered.
    - `v<version>` is the **project** configuration version and always comes last.
-3. **Column header:** `## ColumnName` (the Done section is omitted when `done_limit=0`).
-4. **Task line:** `- KEY [priority type] Title -- est <n><unit> -- @<assignee> -- lease <actor> <remaining>|expired -- sub <done>/<total> -- blocked-by <KEY>,<KEY> -- #tag #tag -- v<version> -- age <duration>`
+3. **Attention line** (optional, right under its project header): `attention <count>: KEY idle <duration>, KEY idle <duration>, and <n> more`
+   - Names the cards in `active` columns with no movement for longer than the project's `claim_ttl_seconds`. Movement is the newest of: entering the column, an edit, a claim or lease renewal, a note, a progress mark.
+   - Most idle first, at most 5 named; `and <n> more` appears only when more are idle. `waiting` and `backlog` columns never count.
+   - The line is absent when no card is idle. It follows the board `filter`, like the column counts.
+4. **Column header:** `## ColumnName` (the Done section is omitted when `done_limit=0`).
+5. **Task line:** `- KEY [priority type] Title -- est <n><unit> -- @<assignee> -- lease <actor> <remaining>|expired -- sub <done>/<total> -- blocked-by <KEY>,<KEY> -- #tag #tag -- v<version> -- age <duration> -- acc <done>/<total> -- pct <n> -- idle <duration>`
    - `[priority type]`: If priority is `none`, only `[type]` is rendered. When non-zero, rendered as `[high bug]`, `[critical feat]`.
    - Title: internal whitespace is collapsed, newlines stripped, and literal ` -- ` replaced with ` - `.
    - Labeled suffixes appear in fixed order, separated by ` -- `, and are omitted when empty:
@@ -124,12 +128,14 @@ The default output format for `board_get` is compact text (`format: "compact"`).
      - `#tag #tag`: tags prefixed with `#`, sorted lexicographically.
      - `v<version>`: **Always present** on every task line. Enables direct read-modify-write without extra reads.
      - `age <duration>`: time elapsed since task entered the current column.
+     - `acc <done>/<total> -- pct <n> -- idle <duration>`: only with `include:["progress"]`, only on cards in `active` columns. `acc` counts ticked acceptance criteria (omitted when the card has none), `pct` is the mean of each assessor's latest progress mark (omitted when nobody assessed), `idle` is the time since the card's last movement, as on the attention line.
 
 ### Worked Example
 
 ```text
 compact_version=1
-# BMB BeeMemoryBank -- focus BMB-14 -- Doing 2/3 -- Review 1 -- Backlog 1 -- Done 40 (hidden) -- v9
+# BMB BeeMemoryBank -- focus BMB-14 -- Doing 2 -- Review 1 -- Backlog 1 -- Done 40 (hidden) -- v9
+attention 2: BMB-17 idle 3d, BMB-12 idle 1d
 ## Doing
 - BMB-14 [high bug] Fix WAL checkpoint race -- est 2h -- @alex -- lease claude@rog 43m -- sub 1/3 -- #sync -- v7 -- age 2h
 - BMB-17 [medium feat] Encrypted FTS index -- est 8h -- lease codex@desk expired -- blocked-by BMB-14,BMB-9 -- v3 -- age 3d
@@ -147,6 +153,7 @@ compact_version=1
 
 Read the board. Compact text by default — about 1,000 tokens for 30 active tasks, roughly 90% smaller than the same board as JSON, so it is cheap enough to call at the start of every session. `format:"json"` returns the same board as JSON text instead. The project's description — its rulebook — is NOT returned unless asked for: add `include:["description"]` once per session, or again after your context was compacted.
 `view:"messages"` reads one project's communication feed forward through history instead of the board: `messages[]` in chronological order (each with `id`, `created_at`, `author`, `author_token_id` — the authorized source, which the caller never chooses — `kind`, `recipient`/`recipient_name`, `resolved_executor`/`resolved_executor_name`, `reply_to`, `body`, and the `task_keys` created by accepting that command), plus `next_cursor` and `has_more`. The board itself and task bodies are NOT part of that response. Chat history is never pruned, so a cursor never goes stale; a cursor from another project, a cursor naming a message that does not exist, or an unparseable cursor is refused with an actionable error rather than a silent empty page.
+A project whose active columns hold a card with no movement (column entry, edit, claim or renewal, note, progress mark) for longer than its `claim_ttl_seconds` carries an attention line right under its header — `attention 3: KANB-12 idle 5h, KANB-9 idle 2h, KANB-15 idle 1h`, the 5 most idle then `and N more`; in JSON `projects[].attention: {count, sample:[{key, idle_seconds}]}`. It is absent when nothing is idle, and waiting columns never count. `include:["progress"]` (view tasks) adds to every card in an active column its acceptance count, assessed percent and idle time: `acc 2/5 · pct 40 · idle 12m` on the compact line, `progress: {acceptance_done, acceptance_total, percent, last_activity_at, idle_seconds}` in JSON — a progress report in one read.
 Feed participants and the project's coordinator are published by `view:"summary"` as `projects[].participants[]` and `projects[].coordinator` — token ids and display names only, never secrets.
 
 #### Parameters
@@ -157,7 +164,7 @@ Feed participants and the project's coordinator are published by `view:"summary"
 | `done_limit` | integer | Optional | how many done tasks to include, most recently done first |
 | `filter` | any | Optional |  |
 | `format` | string | Optional | compact = the token-cheap text grammar, json = the same board as compact JSON text |
-| `include` | any | Optional | widen what is returned: per-task fields, and description for the project's own description (omitted by default) |
+| `include` | any | Optional | widen what is returned: per-task fields, description for the project's own description (omitted by default), progress for acceptance, assessed percent and idle time on every card in an active column (view:tasks only) |
 | `limit` | integer | Optional | messages view only: page size |
 | `project` | string | Optional | project key; omitted = every accessible project; REQUIRED for view:messages |
 | `view` | string | Optional | tasks = full board, summary = counts only, messages = the communication feed read forward from the beginning; default depends on whether project is set |
@@ -197,6 +204,7 @@ task_next({ "action": <value> })
 
 Fetch whole tasks by key — this is the tool for full detail; task_next deliberately returns bounded summaries. Returns `data.items[]`: one `{key, ok, task|error}` entry per requested key, in request order — a key that does not exist is reported in place with ok:false, never silently dropped. (task_next and task_create return a flat `data.tasks[]` instead, because neither answers per requested key.)
 Notes are opt-in via include and come newest-first, 20 at a time; when a task has older ones the result carries `notes_next_before` — send it back as `notes_before` to read the next page.
+A parent task carries `subtasks: {backlog, active, waiting, done}` — its live subtasks counted by the kind of column each sits in, the epic summary behind board_get's `sub <done>/<total>`; the field is absent on a task without subtasks.
 
 #### Parameters
 

@@ -4,7 +4,9 @@
 // The grammar is line-oriented so it round-trips through both eyes and
 // LLMs: every line is a fixed prefix (`#`, `##`, `-`), every suffix is
 // labelled (`est`, `@assignee`, `lease`, `sub`, `blocked-by`, `#tag`, `v`,
-// `age`), and every separator is ` · ` so the lexer never has to guess.
+// `age`, and with include:["progress"] `acc`, `pct`, `idle`), and every
+// separator is ` · ` so the lexer never has to guess. The one line without a
+// fixed prefix, `attention …`, sits directly under its project header.
 //
 // `v<version>` is always present on a task line. That is the whole point of
 // the cheap read: an agent doing read-modify-write from board_get must not
@@ -94,6 +96,10 @@ func renderProject(sb *strings.Builder, p *service.BoardProject, now time.Time) 
 	// It goes last so a reader scanning for the `Done …` segment, and any
 	// parser that stops there, is unaffected by its arrival.
 	fmt.Fprintf(sb, " · v%d\n", p.Version)
+	// The attention line sits right under the header because it is the one
+	// thing on the board that asks for action (KANB-61). It is absent when
+	// no card is idle, so a healthy board pays zero bytes for it.
+	writeAttention(sb, p.Attention)
 	// The project description is printed only when the caller asked for it
 	// (include:["description"]): board_get zeroes it otherwise. It is the
 	// project's rulebook, thousands of characters that do not change between
@@ -122,16 +128,42 @@ func renderProject(sb *strings.Builder, p *service.BoardProject, now time.Time) 
 		}
 		fmt.Fprintf(sb, "## %s\n", col.Name)
 		for j := range col.Tasks {
-			renderTask(sb, &col.Tasks[j], col.Kind, now, p.EstimateUnit)
+			tv := &col.Tasks[j]
+			var act *service.TaskActivity
+			if a, ok := p.Activity[tv.Key]; ok {
+				act = &a
+			}
+			renderTask(sb, tv, col.Kind, now, p.EstimateUnit, act)
 		}
 	}
+}
+
+// writeAttention renders `attention N: KEY idle D, KEY idle D, and M more`:
+// the sample the service chose, most idle first, and how many it left out.
+func writeAttention(sb *strings.Builder, a *service.Attention) {
+	if a == nil || a.Count == 0 {
+		return
+	}
+	fmt.Fprintf(sb, "attention %d: ", a.Count)
+	for i, it := range a.Sample {
+		if i > 0 {
+			sb.WriteString(", ")
+		}
+		fmt.Fprintf(sb, "%s idle %s", it.Key, formatDuration(it.Idle))
+	}
+	if more := a.Count - len(a.Sample); more > 0 {
+		fmt.Fprintf(sb, ", and %d more", more)
+	}
+	sb.WriteByte('\n')
 }
 
 func writeColumnHeader(sb *strings.Builder, col *service.BoardColumn) {
 	fmt.Fprintf(sb, "%s %d", col.Name, col.Count)
 }
 
-func renderTask(sb *strings.Builder, tv *domain.TaskView, kind domain.Kind, now time.Time, unit string) {
+// renderTask renders one task line. act is the card's include:["progress"]
+// line, nil when it was not asked for or the card is not in an active column.
+func renderTask(sb *strings.Builder, tv *domain.TaskView, kind domain.Kind, now time.Time, unit string, act *service.TaskActivity) {
 	if unit == "" {
 		unit = "h"
 	}
@@ -203,6 +235,15 @@ func renderTask(sb *strings.Builder, tv *domain.TaskView, kind domain.Kind, now 
 			age = 0
 		}
 		parts = append(parts, "age "+formatDuration(age))
+	}
+	if act != nil {
+		if act.AcceptanceTotal > 0 {
+			parts = append(parts, fmt.Sprintf("acc %d/%d", act.AcceptanceDone, act.AcceptanceTotal))
+		}
+		if act.Percent != nil {
+			parts = append(parts, fmt.Sprintf("pct %d", *act.Percent))
+		}
+		parts = append(parts, "idle "+formatDuration(act.Idle))
 	}
 
 	if len(parts) > 0 {
