@@ -77,7 +77,7 @@ type taskPatchIn struct {
 	TagsRemove []string `json:"tags_remove,omitempty"`
 
 	Column string  `json:"column,omitempty" jsonschema:"move to this column; validated (dependencies, strict_done) inside the transaction"`
-	Rank   string  `json:"rank,omitempty" jsonschema:"reposition within the destination column"`
+	Rank   string  `json:"rank,omitempty" jsonschema:"reposition within the destination column; without column, within the column the card is in — a move either way, so it needs if_version and bumps version"`
 	Parent *string `json:"parent,omitempty" jsonschema:"reparent to this task key, or send null to clear; \"parent\" alone is a normal field, not the three-state trick — use JSON null to clear"`
 
 	Acceptance      []acceptanceIn `json:"acceptance,omitempty" jsonschema:"replace the whole checklist; each item is either a plain string (unchecked) or {text, done}; mutually exclusive with acceptance_check/acceptance_add"`
@@ -165,6 +165,7 @@ func taskUpdateTool() *gomcp.Tool {
 		Name: opTaskUpdate,
 		Description: "Update one or more tasks. Per-item results by default (atomic:false); set atomic:true to make the whole batch commit or none of it does. " +
 			"if_version is required for any replacement-style field. " +
+			"rank (top|bottom) without column repositions the card inside its current column; it is a move, so it needs if_version and bumps the version. " +
 			"A new assignee or reviewer must be a participant of the project (board_get lists them; executor_key_issue participant_only:true adds someone who needs no key); a stored value that predates the rule keeps working and can always be cleared. " +
 			"An executor key may only send note, column and rank, only on cards assigned to it, and never into or out of a done column — hand work over by moving it into the review column. " +
 			"Returns `data.items[]`: one entry per patch, in request order — `{key, ok, version, column}` by default, the whole task too with `echo:\"full\"`, or `{key, ok:false, error}`. " +

@@ -1037,7 +1037,7 @@ func isReplacementPatch(p TaskPatch) bool {
 		p.BodyAppend != nil ||
 		p.DueAt.Set || p.DueAt.Clear ||
 		p.Tags != nil ||
-		p.Column != "" ||
+		p.Column != "" || p.Rank != "" ||
 		p.Parent.Set || p.Parent.Clear ||
 		p.Acceptance != nil || len(p.AcceptanceCheck) > 0 || len(p.AcceptanceAdd) > 0 ||
 		len(p.MetadataMerge) > 0
@@ -1117,16 +1117,22 @@ func (s *svc) prepareUpdate(tx store.Tx, a Actor, patch TaskPatch) (*prepared, e
 		}
 	}
 
-	if patch.Column != "" {
-		dst, err := s.resolveColumn(tx, proj, patch.Column)
-		if err != nil {
-			return nil, err
-		}
-		prep.column = dst
+	// rank without column repositions the card inside the column it is in:
+	// it is exactly a move into the same column, so it runs the same checks
+	// and bumps the version the same way. Accepting it and doing nothing, as
+	// this once did, answered success for a call that changed nothing.
+	if patch.Column != "" || patch.Rank != "" {
 		fromCol, err := s.store.Columns().GetByID(tx, task.ColumnID)
 		if err != nil {
 			return nil, err
 		}
+		dst := fromCol
+		if patch.Column != "" {
+			if dst, err = s.resolveColumn(tx, proj, patch.Column); err != nil {
+				return nil, err
+			}
+		}
+		prep.column = dst
 		if a.OwnCardsOnly() {
 			if err := domain.ExecutorMayMove(a.Name, task.Key, *fromCol, *dst); err != nil {
 				return nil, err
@@ -1222,6 +1228,12 @@ func (s *svc) validatePatchShape(p TaskPatch) error {
 		return domain.Invalid("body_append",
 			"body and body_append are mutually exclusive",
 			"Send either body (replace) or body_append (append), not both.")
+	}
+	// Anything but top/bottom used to land at the bottom unannounced.
+	if p.Rank != "" && !strings.EqualFold(p.Rank, "top") && !strings.EqualFold(p.Rank, "bottom") {
+		return domain.Invalid("rank",
+			fmt.Sprintf("rank %q is not top or bottom", p.Rank),
+			"Send rank:\"top\" or rank:\"bottom\"; with no column it repositions the card inside its current column.")
 	}
 	return nil
 }
