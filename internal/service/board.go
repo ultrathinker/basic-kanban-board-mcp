@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -50,6 +51,10 @@ func (s *svc) BoardGet(ctx context.Context, a Actor, in BoardGetInput) (*Board, 
 		pc := newProjectCache(s, tx)
 		pix, err := s.buildParticipantIndex(tx)
 		if err != nil {
+			return err
+		}
+
+		if err := s.validateColumnFilter(tx, projects, in.Filter); err != nil {
 			return err
 		}
 
@@ -183,7 +188,7 @@ func (s *svc) buildBoardProject(
 		cc.prime(c)
 		bc := BoardColumn{Name: c.Name, Kind: c.Kind}
 
-		if !columnAllowed(filter, c.Name) {
+		if !columnAllowed(filter, c) {
 			bp.Columns = append(bp.Columns, bc)
 			continue
 		}
@@ -267,16 +272,76 @@ func doneAtLess(a, b *time.Time) bool {
 	return a.Before(*b)
 }
 
-func columnAllowed(bf BoardFilter, name string) bool {
+func columnAllowed(bf BoardFilter, col *domain.Column) bool {
+	if len(bf.ColumnKinds) > 0 {
+		ok := false
+		for _, k := range bf.ColumnKinds {
+			if k == col.Kind {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return false
+		}
+	}
 	if len(bf.Columns) == 0 {
 		return true
 	}
 	for _, c := range bf.Columns {
-		if strings.EqualFold(c, name) {
+		if strings.EqualFold(c, col.Name) {
 			return true
 		}
 	}
 	return false
+}
+
+// validateColumnFilter refuses a filter that can only ever return an empty
+// board: a column kind that does not exist, or a column name that none of
+// the projects being read has. The IAMT retrospective counted six requests
+// that came back empty for exactly this reason and were read as "nothing
+// there" (KANB-59). The error lists the real names so the next call is right.
+func (s *svc) validateColumnFilter(tx store.Tx, projects []*domain.Project, bf BoardFilter) error {
+	for _, k := range bf.ColumnKinds {
+		if !k.Valid() {
+			return domain.Invalid("filter.column_kinds",
+				fmt.Sprintf("unknown column kind %q", k),
+				"Use one of: backlog, active, waiting, done.")
+		}
+	}
+	if len(bf.Columns) == 0 || len(projects) == 0 {
+		return nil
+	}
+	var names []string
+	seen := map[string]bool{}
+	for _, p := range projects {
+		cols, err := s.store.Columns().ListByProject(tx, p.ID)
+		if err != nil {
+			return err
+		}
+		for _, c := range cols {
+			if k := strings.ToLower(c.Name); !seen[k] {
+				seen[k] = true
+				names = append(names, c.Name)
+			}
+		}
+	}
+	var unknown []string
+	for _, want := range bf.Columns {
+		if !seen[strings.ToLower(strings.TrimSpace(want))] {
+			unknown = append(unknown, fmt.Sprintf("%q", want))
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	where := "these projects"
+	if len(projects) == 1 {
+		where = "project " + projects[0].Key
+	}
+	return domain.Invalid("filter.columns",
+		fmt.Sprintf("no column named %s in %s", strings.Join(unknown, ", "), where),
+		"Columns that exist: "+strings.Join(names, ", ")+". To filter by what a column means rather than its name, use filter.column_kinds.")
 }
 
 func boardStoreFilter(bf BoardFilter, projectID, columnID string) store.TaskFilter {

@@ -184,7 +184,9 @@ func paramsFromSchema(s any) []boardGuideParamSpec {
 func guideText() string {
 	return fmt.Sprintf(`Identity: your actor identity is the name of your bearer token. No tool accepts an "actor" parameter — whatever you do is attributed to your token, always.
 
-Projects: you may not see every project on the board. Call board_get with no project to list every project your token can access.
+Projects: you may not see every project on the board. Call board_get with no project to list every project your token can access. A project can be named by its key or by its name; a name that fits several projects is refused with the list.
+
+Re-reading: after your context was compacted, do not re-read the whole board. board_get with filter.updated_since set to the last time you read it returns only what changed. To narrow by what a column means rather than its name, use filter.column_kinds (backlog, active, waiting, done).
 
 The canonical loop:
   1. board_get(project: "KEY") at the start of a session — prefer the default compact text; it is cheap enough to call every session.

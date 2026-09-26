@@ -26,7 +26,10 @@ type newTaskIn struct {
 	Column         string         `json:"column,omitempty" jsonschema:"column name; default is the project's first backlog column"`
 	Parent         string         `json:"parent,omitempty" jsonschema:"an existing task key such as \"BMB-14\", or another item of this same batch written as a single @ followed by that item's ref value: an item declaring ref:\"scaffold\" is written here as \"@scaffold\"."`
 	BlockedBy      []string       `json:"blocked_by,omitempty" jsonschema:"tasks that must be done first: existing keys and/or items of this same batch, e.g. [\"BMB-14\", \"@scaffold\"] where another item in the batch declares ref:\"scaffold\"."`
+	Blocks         []string       `json:"blocks,omitempty" jsonschema:"tasks this one must finish before (blocked_by seen from the other end): existing keys and/or @ref items of this batch"`
 	Acceptance     []string       `json:"acceptance,omitempty" jsonschema:"acceptance criteria, unchecked"`
+	Outcome        string         `json:"outcome,omitempty" jsonschema:"where the result stands, for a card created already judged (e.g. found and fixed on the way); default open"`
+	Conclusion     string         `json:"conclusion,omitempty" jsonschema:"post-hoc takeaway / verdict, distinct from body; lets a card created straight into done say what it concluded"`
 	DueAt          string         `json:"due_at,omitempty" jsonschema:"RFC3339 timestamp"`
 	Metadata       map[string]any `json:"metadata,omitempty"`
 	Ref            string         `json:"ref,omitempty" jsonschema:"name this item so other items in the batch can point at it: ref:\"scaffold\" here is written \"@scaffold\" in their parent or blocked_by."`
@@ -79,6 +82,7 @@ func taskCreateTool() *gomcp.Tool {
 	setEnum(prop(item, "type"), typeNames()...)
 	setDefault(prop(item, "type"), string(domain.TypeTask))
 	setEnum(prop(item, "priority"), priorityNames()...)
+	setEnum(prop(item, "outcome"), outcomeNames()...)
 	setDefault(prop(item, "priority"), domain.PriorityNone.String())
 	setMaxLen(prop(item, "assignee"), domain.MaxAssigneeLen)
 	setMaxLen(prop(item, "reviewer"), domain.MaxAssigneeLen)
@@ -182,7 +186,19 @@ func newTaskToService(in newTaskIn) (service.NewTask, *domain.Error) {
 			out.BlockedBy[i] = bk
 		}
 	}
+	for _, b := range in.Blocks {
+		bk, derr := keyOrRef("blocks", b)
+		if derr != nil {
+			return service.NewTask{}, derr
+		}
+		out.Blocks = append(out.Blocks, bk)
+	}
 	out.Acceptance = in.Acceptance
+	if in.Outcome != "" {
+		o := domain.Outcome(in.Outcome)
+		out.Outcome = &o
+	}
+	out.Conclusion = in.Conclusion
 	if in.DueAt != "" {
 		t, derr := parseRFC3339("due_at", in.DueAt)
 		if derr != nil {

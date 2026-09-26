@@ -29,7 +29,7 @@ import (
 // createItemPlan is the per-item plan constructed during TaskCreate. It
 // is shared between the validation, allocation and insertion phases; the
 // type lives at package scope so the helper functions (resolveNewParent,
-// resolveBlockerID) can take a slice of plans as a parameter.
+// resolveBatchTaskRef) can take a slice of plans as a parameter.
 type createItemPlan struct {
 	new        NewTask
 	project    *domain.Project
@@ -42,7 +42,11 @@ type createItemPlan struct {
 	// resolution phase and consumed during insertion.
 	resolvedParentID   string
 	resolvedBlockerIDs []string
-	inserted           *domain.Task // populated after Create
+	// resolvedBlocks are the tasks this item blocks: id always, the loaded
+	// task only when it already existed (its version moves, as task_link
+	// moves it).
+	resolvedBlocks []blockTarget
+	inserted       *domain.Task // populated after Create
 }
 
 func (s *svc) TaskCreate(ctx context.Context, a Actor, in TaskCreateInput) (*TaskCreateResult, error) {
@@ -214,7 +218,8 @@ func (s *svc) TaskCreate(ctx context.Context, a Actor, in TaskCreateInput) (*Tas
 				Tags:       append([]string(nil), p.new.Tags...),
 				Assignee:   p.new.Assignee,
 				Reviewer:   p.new.Reviewer,
-				Outcome:    domain.OutcomeOpen,
+				Outcome:    outcomeOrOpen(p.new.Outcome),
+				Conclusion: p.new.Conclusion,
 				Acceptance: buildAcceptance(p.new.Acceptance),
 				DueAt:      p.new.DueAt,
 				Metadata:   p.new.Metadata,
@@ -244,13 +249,20 @@ func (s *svc) TaskCreate(ctx context.Context, a Actor, in TaskCreateInput) (*Tas
 			if len(p.new.BlockedBy) > 0 {
 				ids := make([]string, 0, len(p.new.BlockedBy))
 				for _, raw := range p.new.BlockedBy {
-					id, err := s.resolveBlockerID(tx, a, p, raw, refToPlan)
+					id, _, err := s.resolveBatchTaskRef(tx, a, p, "blocked_by", raw, refToPlan)
 					if err != nil {
 						return err
 					}
 					ids = append(ids, id)
 				}
 				p.resolvedBlockerIDs = ids
+			}
+			for _, raw := range p.new.Blocks {
+				id, existing, err := s.resolveBatchTaskRef(tx, a, p, "blocks", raw, refToPlan)
+				if err != nil {
+					return err
+				}
+				p.resolvedBlocks = append(p.resolvedBlocks, blockTarget{id: id, existing: existing})
 			}
 		}
 
@@ -275,12 +287,51 @@ func (s *svc) TaskCreate(ctx context.Context, a Actor, in TaskCreateInput) (*Tas
 		}
 
 		// ----- Insert links (after tasks so cycle detection has them all) -----
+		// blocked_by and blocks are one edge seen from two ends, so a batch
+		// that states the same edge both ways must add it once.
+		type edge struct{ blocker, blocked string }
+		added := map[edge]bool{}
+		for _, p := range plans {
+			if p.inserted == nil {
+				continue
+			}
+			t := p.inserted
+			for _, bt := range p.resolvedBlocks {
+				e := edge{t.ID, bt.id}
+				if added[e] {
+					continue
+				}
+				added[e] = true
+				if err := s.store.Links().Add(tx, &domain.Link{
+					BlockerID: t.ID,
+					BlockedID: bt.id,
+					Type:      domain.LinkBlocks,
+					CreatedBy: a.Name,
+				}); err != nil {
+					return err
+				}
+				if bt.existing != nil {
+					if err := s.bumpVersion(tx, bt.existing, a.Name); err != nil {
+						return err
+					}
+				}
+				if err := s.emit(tx, &pending, a.Name, domain.EventLinkAdded, t.ProjectID, &bt.id,
+					map[string]any{"blocker_id": t.ID, "blocked_id": bt.id}); err != nil {
+					return err
+				}
+			}
+		}
 		for _, p := range plans {
 			if p.inserted == nil {
 				continue
 			}
 			t := p.inserted
 			for _, blockerID := range p.resolvedBlockerIDs {
+				e := edge{blockerID, t.ID}
+				if added[e] {
+					continue
+				}
+				added[e] = true
 				if err := s.store.Links().Add(tx, &domain.Link{
 					BlockerID: blockerID,
 					BlockedID: t.ID,
@@ -660,6 +711,13 @@ func validateNewTask(n NewTask) error {
 	if err := domain.ValidateAcceptance(buildAcceptance(n.Acceptance)); err != nil {
 		return err
 	}
+	if n.Outcome != nil && !n.Outcome.Valid() {
+		return domain.Invalid("outcome", fmt.Sprintf("outcome %q is invalid", *n.Outcome),
+			"Use one of: open, holds, refuted, superseded, moot.")
+	}
+	if err := domain.ValidateConclusion(n.Conclusion); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -716,27 +774,48 @@ func (s *svc) resolveNewParent(tx store.Tx, a Actor, owner *createItemPlan, raw 
 	return t.ID, nil
 }
 
-// resolveBlockerID resolves a single BlockedBy entry to a task ID, under the
-// same access and same-project rules as resolveNewParent.
-func (s *svc) resolveBlockerID(tx store.Tx, a Actor, owner *createItemPlan, raw string, refToPlan map[string]*createItemPlan) (string, error) {
+// resolveBatchTaskRef resolves one blocked_by or blocks entry of a
+// task_create item to a task ID, under the same access and same-project
+// rules as resolveNewParent. "@ref" points at another item of the batch;
+// anything else is an existing key, and then the loaded task is returned
+// too so its version can move. field names the input in errors.
+func (s *svc) resolveBatchTaskRef(tx store.Tx, a Actor, owner *createItemPlan, field, raw string, refToPlan map[string]*createItemPlan) (string, *domain.Task, error) {
 	if strings.HasPrefix(raw, "@") {
 		ref := strings.TrimPrefix(raw, "@")
 		target, ok := refToPlan[ref]
 		if !ok {
-			return "", domain.Invalid("blocked_by",
-				fmt.Sprintf("blocker ref %q does not match any item in this batch", raw),
+			return "", nil, domain.Invalid(field,
+				fmt.Sprintf("%s ref %q does not match any item in this batch", field, raw),
 				"Use @name pointing at a ref in the same batch, or a literal task key.")
 		}
-		if target.project.ID != owner.project.ID {
-			return "", crossProjectEdge("blocked_by", owner.inserted.Key, target.inserted.Key)
+		if target == owner {
+			return "", nil, domain.Invalid(field,
+				fmt.Sprintf("%s ref %q points at the item itself", field, raw),
+				"A task cannot block itself.")
 		}
-		return target.inserted.ID, nil
+		if target.project.ID != owner.project.ID {
+			return "", nil, crossProjectEdge(field, owner.inserted.Key, target.inserted.Key)
+		}
+		return target.inserted.ID, nil, nil
 	}
-	t, err := s.resolveRelatedTask(tx, a, "blocked_by", raw, owner.inserted.Key, owner.project.ID)
+	t, err := s.resolveRelatedTask(tx, a, field, raw, owner.inserted.Key, owner.project.ID)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
-	return t.ID, nil
+	return t.ID, t, nil
+}
+
+// blockTarget is one resolved `blocks` entry of a task_create item.
+type blockTarget struct {
+	id       string
+	existing *domain.Task // nil for an item of the same batch
+}
+
+func outcomeOrOpen(o *domain.Outcome) domain.Outcome {
+	if o == nil {
+		return domain.OutcomeOpen
+	}
+	return *o
 }
 
 // ---------------------------------------------------------------------------

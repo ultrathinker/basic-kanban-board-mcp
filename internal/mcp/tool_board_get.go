@@ -14,7 +14,8 @@ const opBoardGet = "board_get"
 
 // boardFilterIn is the wire form of PLAN §6.1's `filter` object.
 type boardFilterIn struct {
-	Columns      []string `json:"columns,omitempty" jsonschema:"column names to include (OR)"`
+	Columns      []string `json:"columns,omitempty" jsonschema:"column names to include (OR); a name no column has is an error listing the real ones"`
+	ColumnKinds  []string `json:"column_kinds,omitempty" jsonschema:"column kinds to include (OR): backlog, active, waiting, done; combined with columns, a column must match both"`
 	Types        []string `json:"types,omitempty" jsonschema:"task types to include (OR)"`
 	PriorityMin  string   `json:"priority_min,omitempty" jsonschema:"minimum priority name, inclusive"`
 	Tags         []string `json:"tags,omitempty" jsonschema:"tags to include (OR)"`
@@ -135,6 +136,7 @@ func boardGetTool() *gomcp.Tool {
 
 	filter := prop(s, "filter")
 	setEnum(prop(filter, "types"), typeNames()...)
+	setEnum(prop(filter, "column_kinds"), string(domain.KindBacklog), string(domain.KindActive), string(domain.KindWaiting), string(domain.KindDone))
 	setEnum(prop(filter, "priority_min"), priorityNames()...)
 	setEnum(prop(filter, "claimed"), "any", "mine", "unclaimed", "other")
 	setMaxItems(prop(filter, "tags"), domain.MaxTags)
@@ -193,6 +195,9 @@ func boardFilterToService(f *boardFilterIn) (service.BoardFilter, *domain.Error)
 	if f.Assignee != "" {
 		a := f.Assignee
 		out.Assignee = &a
+	}
+	for _, k := range f.ColumnKinds {
+		out.ColumnKinds = append(out.ColumnKinds, domain.Kind(k))
 	}
 	if len(f.Types) > 0 {
 		out.Types = make([]domain.Type, len(f.Types))

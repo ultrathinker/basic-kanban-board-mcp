@@ -43,6 +43,11 @@ type idemContent struct {
 	Acceptance []string        `json:"acceptance"`
 	DueAt      *time.Time      `json:"due_at,omitempty"`
 	Metadata   map[string]any  `json:"metadata"`
+	// Added by KANB-59; omitempty keeps the hash of a request that does not
+	// use them identical to the hash stored before they existed.
+	Blocks     []string        `json:"blocks,omitempty"`
+	Outcome    *domain.Outcome `json:"outcome,omitempty"`
+	Conclusion string          `json:"conclusion,omitempty"`
 }
 
 // hashNewTask projects n into idemContent, encodes it as canonical JSON
@@ -75,6 +80,12 @@ func hashNewTask(n NewTask) (string, error) {
 		idem.Acceptance = append([]string(nil), n.Acceptance...)
 		sort.Strings(idem.Acceptance)
 	}
+	if len(n.Blocks) > 0 {
+		idem.Blocks = append([]string(nil), n.Blocks...)
+		sort.Strings(idem.Blocks)
+	}
+	idem.Outcome = n.Outcome
+	idem.Conclusion = n.Conclusion
 	if n.DueAt != nil {
 		t := n.DueAt.UTC()
 		idem.DueAt = &t

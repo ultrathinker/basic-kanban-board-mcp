@@ -192,7 +192,13 @@ type BoardGetInput struct {
 }
 
 type BoardFilter struct {
-	Columns      []string
+	// Columns names columns to include (OR). A name that no column of the
+	// boards being read carries is a validation error listing the real
+	// names, never a silently empty board (KANB-59).
+	Columns []string
+	// ColumnKinds includes columns by kind (OR). With Columns set too, a
+	// column must satisfy both.
+	ColumnKinds  []domain.Kind
 	Types        []domain.Type
 	PriorityMin  *domain.Priority
 	Tags         []string
@@ -400,20 +406,28 @@ type TaskCreateInput struct {
 // miscounts array offsets far more often than it mistypes a name it chose.
 // Ref names the item; Parent/BlockedBy may point at "@name" within the batch.
 type NewTask struct {
-	ProjectKey     string
-	Title          string
-	Body           string
-	Type           domain.Type
-	Priority       domain.Priority
-	Estimate       *float64
-	Actual         *float64
-	Tags           []string
-	Assignee       *string
-	Reviewer       *string
-	Column         string // empty = first backlog column
-	Parent         string // task key or "@ref"
-	BlockedBy      []string
-	Acceptance     []string
+	ProjectKey string
+	Title      string
+	Body       string
+	Type       domain.Type
+	Priority   domain.Priority
+	Estimate   *float64
+	Actual     *float64
+	Tags       []string
+	Assignee   *string
+	Reviewer   *string
+	Column     string // empty = first backlog column
+	Parent     string // task key or "@ref"
+	BlockedBy  []string
+	// Blocks is BlockedBy seen from the other end: tasks (existing keys or
+	// "@ref" items of this batch) that this new task must finish before.
+	Blocks     []string
+	Acceptance []string
+	// Outcome and Conclusion let a card be created already judged: the
+	// legitimate "found it and fixed it on the way" card that goes straight
+	// to Done (KANB-59). nil Outcome = open.
+	Outcome        *domain.Outcome
+	Conclusion     string
 	DueAt          *time.Time
 	Metadata       map[string]any
 	Ref            string

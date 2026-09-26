@@ -143,13 +143,82 @@ func requireAdminForce(a Actor, force bool) error {
 // ---------------------------------------------------------------------------
 
 // resolveProject loads a project by key after checking the actor's project
-// scope. Errors are loud: an inaccessible project is Forbidden, a missing
-// one is NotFound (from the store).
-func (s *svc) resolveProject(tx store.Tx, a Actor, key string) (*domain.Project, error) {
-	if err := requireProjectAccess(a, key); err != nil {
+// scope, and falls back to the project's NAME when no key matches (KANB-59:
+// agents asked for "BeeMemoryBank" and got a bare not_found). Errors stay
+// loud: an inaccessible project is Forbidden, a name that fits several
+// projects is a validation error listing them, and a miss lists the
+// projects the actor can see so the next call can be right.
+//
+// The name fallback only ever searches projects the actor may access, so it
+// cannot be used to learn that a project outside the token's scope exists.
+func (s *svc) resolveProject(tx store.Tx, a Actor, ref string) (*domain.Project, error) {
+	ref = strings.TrimSpace(ref)
+	accessErr := requireProjectAccess(a, ref)
+	if accessErr == nil {
+		p, err := s.store.Projects().GetByKey(tx, ref)
+		if err == nil {
+			return p, nil
+		}
+		if de := domain.AsError(err); de == nil || de.Code != domain.CodeNotFound {
+			return nil, err
+		}
+	}
+	if ref == "" {
+		if accessErr != nil {
+			return nil, accessErr
+		}
+		return s.store.Projects().GetByKey(tx, ref)
+	}
+
+	all, err := s.store.Projects().List(tx, false)
+	if err != nil {
 		return nil, err
 	}
-	return s.store.Projects().GetByKey(tx, key)
+	var visible, exact, partial []*domain.Project
+	needle := strings.ToLower(ref)
+	for _, p := range all {
+		if !actorMayAccessProject(a, p.Key) {
+			continue
+		}
+		visible = append(visible, p)
+		name := strings.ToLower(strings.TrimSpace(p.Name))
+		switch {
+		case name == needle:
+			exact = append(exact, p)
+		case strings.Contains(name, needle):
+			partial = append(partial, p)
+		}
+	}
+	matches := exact
+	if len(matches) == 0 {
+		matches = partial
+	}
+	switch {
+	case len(matches) == 1:
+		return matches[0], nil
+	case len(matches) > 1:
+		return nil, domain.Invalid("project",
+			fmt.Sprintf("%q matches %d projects by name: %s", ref, len(matches), projectList(matches)),
+			"Pass the project key instead of the name.")
+	case accessErr != nil:
+		return nil, accessErr
+	default:
+		nf := domain.NotFound("project", ref)
+		nf.Remediation = "No project has this key or name. Projects you can see: " + projectList(visible) + "."
+		return nil, nf
+	}
+}
+
+// projectList renders projects as `KEY (Name), KEY (Name)` for an error.
+func projectList(ps []*domain.Project) string {
+	if len(ps) == 0 {
+		return "none"
+	}
+	parts := make([]string, len(ps))
+	for i, p := range ps {
+		parts[i] = fmt.Sprintf("%s (%s)", p.Key, p.Name)
+	}
+	return strings.Join(parts, ", ")
 }
 
 // resolveTask loads a task by key. The project-key prefix is parsed out of
