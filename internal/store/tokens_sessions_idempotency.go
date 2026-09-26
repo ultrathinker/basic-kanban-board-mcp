@@ -78,6 +78,31 @@ func (r *tokenRepo) Reissue(tx Tx, t *domain.Token) error {
 	return nil
 }
 
+// SetExpiry is the renewal of an executor key: only expires_at moves. The
+// hash stays, so the secret already handed out keeps authenticating, and a
+// revoked row is not found — a key someone killed is not brought back by a
+// renewal.
+func (r *tokenRepo) SetExpiry(tx Tx, id string, expiresAt time.Time) error {
+	if id == "" || expiresAt.IsZero() {
+		return domain.Invalid("token", "id and expiry are required",
+			"Pass the token UUID and the new expiry.")
+	}
+	tw := tx.(*txWrap)
+	res, err := tw.tx.ExecContext(tw.ctx(),
+		`UPDATE tokens SET expires_at = ? WHERE id = ? AND revoked_at IS NULL`, formatTime(expiresAt), id)
+	if err != nil {
+		return fmt.Errorf("store: token.SetExpiry: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: token.SetExpiry rows: %w", err)
+	}
+	if n == 0 {
+		return domain.NotFound("token", id)
+	}
+	return nil
+}
+
 func (r *tokenRepo) Create(tx Tx, t *domain.Token) error {
 	if t == nil {
 		return errors.New("store: token.Create: nil token")

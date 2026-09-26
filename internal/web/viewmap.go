@@ -384,6 +384,23 @@ func taskRefsFor(res *service.TaskGetResult) []view.TaskRef {
 	return out
 }
 
+// activityVerb is eventVerb refined by the payload where one event type
+// covers several acts: executor_key.issued also reports a renewal and a
+// participant added without a key (KANB-68), and calling either of those
+// "issued an executor key" would tell the watcher a new secret exists when
+// none does.
+func activityVerb(e domain.Event) string {
+	if e.Type == domain.EventExecutorKeyIssued {
+		switch {
+		case e.Payload["renewed"] == true:
+			return "renewed an executor key for"
+		case e.Payload["participant_only"] == true:
+			return "added a participant without a key to"
+		}
+	}
+	return eventVerb(e.Type)
+}
+
 // eventVerb renders a domain.EventType as the short, human verb the activity
 // feed shows. PLAN §12 leaves the SSE/activity presentation format to
 // implementation, so this mapping is this package's decision.

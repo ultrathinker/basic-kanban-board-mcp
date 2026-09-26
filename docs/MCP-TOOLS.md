@@ -229,7 +229,7 @@ task_get({ "keys": <value> })
 Create one or more tasks in a single atomic batch (all-or-nothing). Set `project` once at the top level and every item without its own `project` is created there; an item's own `project` wins: `{"project": "KANB", "tasks": [{"title": "a"}, {"project": "OPS", "title": "b"}]}` makes a in KANB and b in OPS.
 To link items of the same batch, give one a `ref` and point at it from another by prefixing that name with a single @: an item created as `{"ref": "scaffold", ...}` is referenced as `"blocked_by": ["@scaffold"]`.
 Pass `source_message` to ACCEPT a command from the project feed: only the command's resolved_executor may, the tasks and the acceptance link commit atomically, and a repeat returns the original task keys with meta.already_accepted=true instead of creating a second batch. NOTE: this acceptance guarantee is about the BOARD only — it does not prevent an external command, deploy or side effect from running twice; guard those separately. A pure question needs no task at all — answer it with `project_post(reply_to: ...)`.
-`assignee` must be a participant of the project (board_get lists them; executor_key_issue adds one) — the executor key of that name then works the card. Executor keys cannot create tasks.
+`assignee` and `reviewer` must be participants of the project (board_get lists them; executor_key_issue adds one — with participant_only:true for someone who needs no key, such as the owner) — the executor key of the assignee's name then works the card. Executor keys cannot create tasks.
 Returns `data.tasks[]`, in request order: `{key, version, column}` per created task by default, the whole task with `echo:"full"`. The `version` on every returned task is the value AFTER the call and is authoritative — chain your next `if_version` from it and never re-read a task just to learn its version. `note`, lease operations and `focus` do not move a task's version by design, so a result echoing the same version you sent means the write landed and the version legitimately did not change.
 
 #### Parameters
@@ -251,7 +251,7 @@ task_create({ "tasks": <value> })
 
 ### 5. `task_update`
 
-Update one or more tasks. Per-item results by default (atomic:false); set atomic:true to make the whole batch commit or none of it does. if_version is required for any replacement-style field. A new assignee must be a participant of the project (board_get lists them). An executor key may only send note, column and rank, only on cards assigned to it, and never into or out of a done column — hand work over by moving it into the review column. Returns `data.items[]`: one entry per patch, in request order — `{key, ok, version, column}` by default, the whole task too with `echo:"full"`, or `{key, ok:false, error}`. The `version` on every returned task is the value AFTER the call and is authoritative — chain your next `if_version` from it and never re-read a task just to learn its version. `note`, lease operations and `focus` do not move a task's version by design, so a result echoing the same version you sent means the write landed and the version legitimately did not change.
+Update one or more tasks. Per-item results by default (atomic:false); set atomic:true to make the whole batch commit or none of it does. if_version is required for any replacement-style field. A new assignee or reviewer must be a participant of the project (board_get lists them; executor_key_issue participant_only:true adds someone who needs no key); a stored value that predates the rule keeps working and can always be cleared. An executor key may only send note, column and rank, only on cards assigned to it, and never into or out of a done column — hand work over by moving it into the review column. Returns `data.items[]`: one entry per patch, in request order — `{key, ok, version, column}` by default, the whole task too with `echo:"full"`, or `{key, ok:false, error}`. The `version` on every returned task is the value AFTER the call and is authoritative — chain your next `if_version` from it and never re-read a task just to learn its version. `note`, lease operations and `focus` do not move a task's version by design, so a result echoing the same version you sent means the write landed and the version legitimately did not change.
 
 #### Parameters
 
@@ -389,13 +389,13 @@ project_post({ "author": <value>, "body": <value>, "project": <value> })
 
 ### 11. `progress_set`
 
-Record a progress assessment and completion forecast for a task or an entire project. Provide periodic assessments as work proceeds (e.g. every few steps or significant discoveries), not just at the start or finish. Progress marks form an append-only calibration history: revisions never overwrite prior marks. Overestimating and underestimating are expected and harmless; rolling your progress estimate backward (e.g. from 70% down to 45%) is a normal and valuable signal reflecting discovered complexity, not an admission of defeat. Specify exactly one target: either `task` (e.g. KANB-3) to assess a specific task, or `project` (e.g. KANB) to assess the project as a whole. `eta` is an RFC3339 timestamp forecasting the expected finish date and time (e.g. 2026-09-12T18:00:00Z), not a remaining duration. An executor key may assess only the cards assigned to it, with `assessor` set to its own name, and never the project as a whole. Returns `data` containing the recorded mark and the updated summary progress for the assessed scope.
+Record a progress assessment and completion forecast for a task or an entire project. Provide periodic assessments as work proceeds (e.g. every few steps or significant discoveries), not just at the start or finish. Progress marks form an append-only calibration history: revisions never overwrite prior marks. Overestimating and underestimating are expected and harmless; rolling your progress estimate backward (e.g. from 70% down to 45%) is a normal and valuable signal reflecting discovered complexity, not an admission of defeat. Specify exactly one target: either `task` (e.g. KANB-3) to assess a specific task, or `project` (e.g. KANB) to assess the project as a whole. `eta` is an RFC3339 timestamp forecasting the expected finish date and time (e.g. 2026-09-12T18:00:00Z), not a remaining duration. `assessor` defaults to your token's name; a write or admin token may name someone else (an orchestrator recording the owner's verdict), an executor key may assess only the cards assigned to it, only under its own name, and never the project as a whole. Returns `data` containing the recorded mark and the updated summary progress for the assessed scope.
 
 #### Parameters
 
 | Name | Type | Required | Description |
 |---|---|---|---|
-| `assessor` | string | Required | agent self-declared name / identity (free-form text) |
+| `assessor` | string | Optional | whose assessment this is; omit to record it under your token's name. An executor key may only use its own name; a write or admin token may record for someone else (e.g. the owner's verdict) |
 | `eta` | any | Optional | RFC3339 timestamp forecasting target completion date and time (not duration remaining) |
 | `percent` | integer | Required | progress percentage, integer 0..100 |
 | `project` | any | Optional | project key; exactly one of task or project must be provided |
@@ -404,7 +404,7 @@ Record a progress assessment and completion forecast for a task or an entire pro
 #### Example Call
 
 ```jsonc
-progress_set({ "assessor": <value>, "percent": <value> })
+progress_set({ "percent": <value> })
 ```
 
 ---
@@ -435,19 +435,23 @@ Issue an executor key: a named, expiring bearer token for one agent you launch. 
 An executor key reads everything and writes only to cards assigned to its own name: claim/renew/release (task_claim; task_next claim/start offers only its cards), task_update with note, column and rank — any column except a done-kind one, so handing work over means moving it into the review column — progress_set on its cards with assessor = its name, and project_post. It cannot create, archive or link cards, change assignee, reviewer or any other field, move a card into or out of a done column, use force, or touch project_upsert; each refusal is a forbidden error naming the rule. The reviewer closes the work.
 ttl_seconds defaults to 86400 (24h) and must lie in 300..604800. An expired key stops authenticating and leaves the participant list on its own — nothing to clean up; issuing the same name again after it expired re-issues that key (reissued:true) with a new secret. A live key's name is refused.
 Returns `data`: token_id, name, projects, expires_at and `secret`. The secret is shown ONLY in this response and is never stored or shown again: hand it straight to the executor's launcher and never post it to the feed, a note or a card.
+renew:true extends the executor key already called name to now + ttl_seconds WITHOUT a new secret, so an agent resuming after a long pause keeps the secret its launcher holds. It works on a live or an expired key, omits projects (the key keeps its own), and returns renewed:true with the new expires_at and no secret. A revoked key, or a name that is not an executor key, is refused. Same authority: admin, or the coordinator of every project on the key.
+participant_only:true makes name a participant of projects without any key — for someone cards are assigned to or reviewed by who never calls the board under that name (the owner, a person, an agent run from outside). No secret is created or stored, nobody can sign in as it, and it never expires (ttl_seconds is refused). Calling it again for the same name adds the listed projects to it; the response lists all its projects, added_projects the new ones, and has no secret. A name that already belongs to a key or a standing token is refused.
 
 #### Parameters
 
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `name` | string | Required | the executor's name, taken verbatim: it becomes the key's identity and a participant of the listed projects — assign the executor's cards to exactly this name. No spaces; unique across all tokens |
-| `projects` | any | Required | project keys the executor works in, case-insensitive; you must be an admin or the coordinator of each |
-| `ttl_seconds` | integer | Optional | key lifetime in seconds; omit for 24h |
+| `participant_only` | boolean | Optional | make name a participant of projects WITHOUT a key: no secret exists, nobody can sign in as it, it never expires. Again for the same name adds projects |
+| `projects` | any | Optional | project keys the executor works in, case-insensitive; you must be an admin or the coordinator of each. Required, except with renew, which keeps the key's own projects and refuses this field |
+| `renew` | boolean | Optional | extend the existing executor key named name to now + ttl_seconds, keeping its secret; works on a live or expired key, never a revoked one |
+| `ttl_seconds` | integer | Optional | key lifetime in seconds, counted from now (also for renew); omit for 24h. Refused with participant_only |
 
 #### Example Call
 
 ```jsonc
-executor_key_issue({ "name": <value>, "projects": <value> })
+executor_key_issue({ "name": <value> })
 ```
 
 ---

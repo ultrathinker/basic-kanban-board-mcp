@@ -22,7 +22,7 @@ type newTaskIn struct {
 	Actual         *float64       `json:"actual,omitempty" jsonschema:"effort actually spent, same unit as estimate"`
 	Tags           []string       `json:"tags,omitempty"`
 	Assignee       string         `json:"assignee,omitempty" jsonschema:"a participant of the project, exactly as board_get lists it (a token or executor key name); anything else is refused"`
-	Reviewer       string         `json:"reviewer,omitempty" jsonschema:"free text: who checks the work"`
+	Reviewer       string         `json:"reviewer,omitempty" jsonschema:"who checks the work: a participant of the project, exactly as board_get lists it; anything else is refused"`
 	Column         string         `json:"column,omitempty" jsonschema:"column name; default is the project's first backlog column"`
 	Parent         string         `json:"parent,omitempty" jsonschema:"an existing task key such as \"BMB-14\", or another item of this same batch written as a single @ followed by that item's ref value: an item declaring ref:\"scaffold\" is written here as \"@scaffold\"."`
 	BlockedBy      []string       `json:"blocked_by,omitempty" jsonschema:"tasks that must be done first: existing keys and/or items of this same batch, e.g. [\"BMB-14\", \"@scaffold\"] where another item in the batch declares ref:\"scaffold\"."`
@@ -114,7 +114,7 @@ func taskCreateTool() *gomcp.Tool {
 			"NOTE: this acceptance guarantee is about the BOARD only — it does not prevent an external command, deploy or " +
 			"side effect from running twice; guard those separately. " +
 			"A pure question needs no task at all — answer it with `project_post(reply_to: ...)`.\n" +
-			"`assignee` must be a participant of the project (board_get lists them; executor_key_issue adds one) — the executor key of that name then works the card. " +
+			"`assignee` and `reviewer` must be participants of the project (board_get lists them; executor_key_issue adds one — with participant_only:true for someone who needs no key, such as the owner) — the executor key of the assignee's name then works the card. " +
 			"Executor keys cannot create tasks.\n" +
 			"Returns `data.tasks[]`, in request order: `{key, version, column}` per created task by default, the whole task with `echo:\"full\"`. " +
 			versionEchoRule,

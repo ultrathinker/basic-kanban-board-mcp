@@ -595,6 +595,19 @@ func (r *fakeTokenRepo) Reissue(_ store.Tx, t *domain.Token) error {
 	return stubErr{s: "token not found"}
 }
 
+func (r *fakeTokenRepo) SetExpiry(_ store.Tx, id string, expiresAt time.Time) error {
+	r.f.mu.Lock()
+	defer r.f.mu.Unlock()
+	for _, cur := range r.f.tokens {
+		if cur.ID == id && cur.RevokedAt == nil {
+			e := expiresAt
+			cur.ExpiresAt = &e
+			return nil
+		}
+	}
+	return stubErr{s: "token not found"}
+}
+
 func (r *fakeTokenRepo) UpdateHash(_ store.Tx, id string, hash []byte) error {
 	r.f.mu.Lock()
 	defer r.f.mu.Unlock()

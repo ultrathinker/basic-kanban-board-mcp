@@ -181,13 +181,26 @@ func (s *svc) TaskCreate(ctx context.Context, a Actor, in TaskCreateInput) (*Tas
 				continue
 			}
 			p.column = col
-			if !in.Restore && p.new.Assignee != nil && *p.new.Assignee != "" {
-				if pix == nil {
-					if pix, err = s.buildParticipantIndex(tx, now); err != nil {
-						return err
-					}
+			// Restore carries history over: an imported card's assignee or
+			// reviewer may name someone who is long gone.
+			if in.Restore {
+				continue
+			}
+			hasAssignee := p.new.Assignee != nil && *p.new.Assignee != ""
+			hasReviewer := p.new.Reviewer != nil && *p.new.Reviewer != ""
+			if (hasAssignee || hasReviewer) && pix == nil {
+				if pix, err = s.buildParticipantIndex(tx, now); err != nil {
+					return err
 				}
+			}
+			if hasAssignee {
 				if err := pix.checkAssignee(proj, "", *p.new.Assignee); err != nil {
+					p.validation = domain.AsError(err)
+					continue
+				}
+			}
+			if hasReviewer {
+				if err := pix.checkReviewer(proj, "", *p.new.Reviewer); err != nil {
 					p.validation = domain.AsError(err)
 					continue
 				}
@@ -1078,8 +1091,12 @@ func (s *svc) prepareUpdate(tx store.Tx, a Actor, patch TaskPatch) (*prepared, e
 	// Only a NEW value is checked: a card whose stored assignee predates
 	// this rule, or names a key that has since expired, keeps working for
 	// every other edit, and re-sending the same value is not a change.
-	if patch.Assignee.Set && patch.Assignee.Value != "" &&
-		(task.Assignee == nil || *task.Assignee != patch.Assignee.Value) {
+	// The reviewer follows the same rule (KANB-68).
+	newAssignee := patch.Assignee.Set && patch.Assignee.Value != "" &&
+		(task.Assignee == nil || *task.Assignee != patch.Assignee.Value)
+	newReviewer := patch.Reviewer.Set && patch.Reviewer.Value != "" &&
+		(task.Reviewer == nil || *task.Reviewer != patch.Reviewer.Value)
+	if newAssignee || newReviewer {
 		now, err := tx.Now()
 		if err != nil {
 			return nil, err
@@ -1088,8 +1105,15 @@ func (s *svc) prepareUpdate(tx store.Tx, a Actor, patch TaskPatch) (*prepared, e
 		if err != nil {
 			return nil, err
 		}
-		if err := pix.checkAssignee(proj, task.Key, patch.Assignee.Value); err != nil {
-			return nil, err
+		if newAssignee {
+			if err := pix.checkAssignee(proj, task.Key, patch.Assignee.Value); err != nil {
+				return nil, err
+			}
+		}
+		if newReviewer {
+			if err := pix.checkReviewer(proj, task.Key, patch.Reviewer.Value); err != nil {
+				return nil, err
+			}
 		}
 	}
 

@@ -119,3 +119,50 @@ func ExecutorRefused(actor, op string) error {
 		fmt.Sprintf("executor key %s cannot %s", actor, op),
 		"An executor key claims, moves and annotates its own cards, records progress on them and posts to the project feed; ask the coordinator (a write or admin token) for anything else.")
 }
+
+// A participant without a key (KANB-68) is a token row that exists only so
+// its name is a participant of some projects: someone cards are assigned to
+// or reviewed by who never calls the board themselves — the owner, a person,
+// an agent driven from outside. It must never authenticate, so its stored
+// hash is not a digest of anything: a marker of a different length than any
+// SHA-256 output (32 bytes), which no presented secret can hash to. The row
+// id inside the marker keeps the hash column's UNIQUE index satisfied.
+const noSecretHashPrefix = "participant-without-key:"
+
+// sha256Size is the length of every real token hash. Spelled out here so
+// the domain stays free of the auth package; auth.HashBytes is the same 32.
+const sha256Size = 32
+
+// NoSecretHash is the stored hash of a participant without a key: it names
+// the row and matches no secret.
+func NoSecretHash(tokenID string) []byte {
+	return []byte(noSecretHashPrefix + tokenID)
+}
+
+// HasNoSecret reports whether the token is a participant without a key. The
+// length check is what makes the marker unforgeable: a real hash is always
+// exactly 32 bytes, the marker never is.
+func (t *Token) HasNoSecret() bool {
+	return t != nil && len(t.Hash) != sha256Size && strings.HasPrefix(string(t.Hash), noSecretHashPrefix)
+}
+
+// MergeProjectKeys adds the keys in more to have, keeping have's order and
+// appending only keys it lacks (case-insensitively, as project keys are).
+// It returns the merged list and the keys that were actually added.
+func MergeProjectKeys(have, more []string) (merged, added []string) {
+	merged = append([]string(nil), have...)
+	for _, k := range more {
+		dup := false
+		for _, h := range merged {
+			if strings.EqualFold(h, k) {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			merged = append(merged, k)
+			added = append(added, k)
+		}
+	}
+	return merged, added
+}

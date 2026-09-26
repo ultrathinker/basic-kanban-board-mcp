@@ -99,7 +99,70 @@ func TestExecutorKeyIssue_SchemaBounds(t *testing.T) {
 	for _, r := range req {
 		names = append(names, r.(string))
 	}
-	if strings.Join(names, ",") != "name,projects" {
-		t.Errorf("required = %v, want name and projects", names)
+	// projects is required by the service for an issue and a participant,
+	// and refused with renew, so the schema can only require the name.
+	if strings.Join(names, ",") != "name" {
+		t.Errorf("required = %v, want name only", names)
+	}
+}
+
+// KANB-68: renew and participant_only reach the service verbatim, and their
+// answers carry no secret at all — not even an empty "secret" field that
+// would read like one was withheld. A participant without a key never
+// expires, so it has no expires_at either.
+func TestExecutorKeyIssue_RenewAndParticipantOnlyCarryNoSecret(t *testing.T) {
+	t.Parallel()
+	expires := time.Date(2026, 9, 27, 12, 0, 0, 0, time.UTC)
+	cases := []struct {
+		label   string
+		args    map[string]any
+		result  *service.ExecutorKeyIssueResult
+		check   func(in service.ExecutorKeyIssueInput) bool
+		want    map[string]any
+		without []string
+	}{
+		{
+			label:  "renew",
+			args:   map[string]any{"name": "exec-1", "renew": true, "ttl_seconds": 7200},
+			result: &service.ExecutorKeyIssueResult{TokenID: "tok-1", Name: "exec-1", ProjectKeys: []string{"BMB"}, ExpiresAt: expires, Renewed: true},
+			check: func(in service.ExecutorKeyIssueInput) bool {
+				return in.Renew && !in.ParticipantOnly && in.TTLSeconds == 7200 && len(in.ProjectKeys) == 0
+			},
+			want:    map[string]any{"renewed": true, "expires_at": "2026-09-27T12:00:00Z"},
+			without: []string{"secret", "participant_only"},
+		},
+		{
+			label: "participant_only",
+			args:  map[string]any{"name": "owner", "projects": []string{"BMB", "OPS"}, "participant_only": true},
+			result: &service.ExecutorKeyIssueResult{TokenID: "tok-2", Name: "owner", ProjectKeys: []string{"BMB", "OPS"},
+				ParticipantOnly: true, AddedProjects: []string{"OPS"}},
+			check: func(in service.ExecutorKeyIssueInput) bool {
+				return in.ParticipantOnly && !in.Renew && len(in.ProjectKeys) == 2
+			},
+			want:    map[string]any{"participant_only": true},
+			without: []string{"secret", "expires_at", "renewed"},
+		},
+	}
+	for _, tc := range cases {
+		cs, svc := roundtripServer(t, NewServer)
+		svc.DefaultExecutorKeyIssue = tc.result
+		res, sc := callTool(t, cs, "executor_key_issue", tc.args)
+		if res.IsError {
+			t.Fatalf("%s: %v", tc.label, sc)
+		}
+		if !tc.check(svc.LastExecutorKeyIssue) {
+			t.Fatalf("%s: forwarded %+v", tc.label, svc.LastExecutorKeyIssue)
+		}
+		data := sc["data"].(map[string]any)
+		for k, v := range tc.want {
+			if data[k] != v {
+				t.Errorf("%s: data[%s] = %v, want %v", tc.label, k, data[k], v)
+			}
+		}
+		for _, k := range tc.without {
+			if _, ok := data[k]; ok {
+				t.Errorf("%s: data carries %q: %v", tc.label, k, data)
+			}
+		}
 	}
 }

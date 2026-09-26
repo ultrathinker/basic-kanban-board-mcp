@@ -1062,6 +1062,15 @@ type ExecutorKeyIssueInput struct {
 	// TTLSeconds is the key's lifetime; 0 = domain.ExecutorKeyDefaultTTL,
 	// anything outside [ExecutorKeyMinTTL, ExecutorKeyMaxTTL] is refused.
 	TTLSeconds int
+	// ParticipantOnly makes Name a participant of ProjectKeys without a key
+	// (KANB-68): no secret is minted or stored, the name cannot sign in, and
+	// it never expires. Calling it again for the same participant adds
+	// projects to it.
+	ParticipantOnly bool
+	// Renew extends the executor key already named Name to now + TTLSeconds
+	// and keeps its secret (KANB-68), live or expired, never revoked.
+	// ProjectKeys must be empty: a renewal keeps the key's projects.
+	Renew bool
 }
 
 // ExecutorKeyIssueResult carries the secret exactly once. Nothing else in
@@ -1070,9 +1079,19 @@ type ExecutorKeyIssueResult struct {
 	TokenID     string
 	Name        string
 	ProjectKeys []string
-	ExpiresAt   time.Time
-	Secret      string
+	// ExpiresAt is zero for a participant without a key: it never expires.
+	ExpiresAt time.Time
+	// Secret is set only by a plain issue. A renewal keeps the secret the
+	// executor already has, and a participant without a key has none.
+	Secret string
 	// Reissued is true when the name belonged to an expired executor key and
 	// that row was given a new secret and expiry instead of a new row.
 	Reissued bool
+	// Renewed is true for a renewal: same row, same secret, new expiry.
+	Renewed bool
+	// ParticipantOnly is true for a participant without a key; ProjectKeys
+	// is then every project it participates in after the call, and
+	// AddedProjects the ones this call added (empty on a repeat).
+	ParticipantOnly bool
+	AddedProjects   []string
 }

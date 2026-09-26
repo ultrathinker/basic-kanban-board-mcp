@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -144,6 +145,50 @@ func TestValidateTokenName(t *testing.T) {
 	} {
 		if err := ValidateTokenName("name", tc.name); (err == nil) != tc.ok {
 			t.Errorf("ValidateTokenName(%q) = %v, want ok=%v", tc.name, err, tc.ok)
+		}
+	}
+}
+
+// KANB-68: the marker of a participant without a key must be recognised,
+// and nothing that could be a real digest may pass for it.
+func TestHasNoSecret(t *testing.T) {
+	real := make([]byte, 32)
+	copy(real, "participant-without-key:")
+	cases := []struct {
+		label string
+		tok   *Token
+		want  bool
+	}{
+		{"marker", &Token{Hash: NoSecretHash("id-1")}, true},
+		{"a 32-byte hash that starts like the marker", &Token{Hash: real}, false},
+		{"an ordinary hash", &Token{Hash: []byte("0123456789abcdef0123456789abcdef")}, false},
+		{"another prefix", &Token{Hash: []byte("hash-id-1")}, false},
+		{"nil token", nil, false},
+	}
+	for _, tc := range cases {
+		if got := tc.tok.HasNoSecret(); got != tc.want {
+			t.Errorf("%s: HasNoSecret = %v, want %v", tc.label, got, tc.want)
+		}
+	}
+	if string(NoSecretHash("a")) == string(NoSecretHash("b")) {
+		t.Error("two rows share one marker; the hash column is UNIQUE")
+	}
+}
+
+func TestMergeProjectKeys(t *testing.T) {
+	cases := []struct {
+		have, more    []string
+		merged, added string
+	}{
+		{[]string{"BMB"}, []string{"OPS"}, "BMB,OPS", "OPS"},
+		{[]string{"BMB", "OPS"}, []string{"ops", "BMB"}, "BMB,OPS", ""},
+		{nil, []string{"BMB"}, "BMB", "BMB"},
+		{[]string{"BMB"}, nil, "BMB", ""},
+	}
+	for _, tc := range cases {
+		merged, added := MergeProjectKeys(tc.have, tc.more)
+		if strings.Join(merged, ",") != tc.merged || strings.Join(added, ",") != tc.added {
+			t.Errorf("MergeProjectKeys(%v, %v) = %v, %v; want %s, %s", tc.have, tc.more, merged, added, tc.merged, tc.added)
 		}
 	}
 }

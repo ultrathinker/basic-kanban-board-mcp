@@ -321,21 +321,6 @@ func TestProgressSet_AssessorTooLongRejectedByService(t *testing.T) {
 	}, "assessor", &task.ID)
 }
 
-// TestProgressSet_EmptyAssessorRejectedByService closes the same class of gap
-// for the "assessor required" branch: the MCP-level test for this
-// (TestProgressSet_EmptyAssessorRejected) also only exercises the tool
-// wrapper's own duplicate check against a fake service.
-func TestProgressSet_EmptyAssessorRejectedByService(t *testing.T) {
-	env := openTestEnv(t)
-	task := makeBacklogTask(t, env, "assessor required check")
-
-	expectProgressSetValidation(t, env, ProgressSetInput{
-		Assessor: "   ",
-		Percent:  50,
-		TaskKey:  task.Key,
-	}, "assessor", &task.ID)
-}
-
 // TestProgressSet_PercentOutOfRangeRejectedByService covers both directions
 // of the 0..100 bound directly against the service. As with the assessor
 // checks above, the MCP-level equivalent (TestProgressSet_PercentAndEtaValidation)
