@@ -806,3 +806,10 @@ func (stubService) ProgressTrackDelete(context.Context, service.Actor, service.P
 func (stubService) ProgressSet(context.Context, service.Actor, service.ProgressSetInput) (*service.ProgressSetResult, error) {
 	return nil, ErrServiceUnavailable
 }
+
+func (stubService) Export(context.Context, service.Actor, service.ExportInput) (*service.ExportDocument, error) {
+	return nil, ErrServiceUnavailable
+}
+func (stubService) Import(context.Context, service.Actor, *service.ExportDocument) (*service.ImportResult, error) {
+	return nil, ErrServiceUnavailable
+}

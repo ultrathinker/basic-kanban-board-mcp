@@ -452,3 +452,13 @@ func (f *fakeService) ProgressSet(ctx context.Context, a service.Actor, in servi
 	}
 	return f.DefaultProgressSet, f.DefaultProgressSetEr
 }
+
+// Export and Import back the CLI and web backup paths; no MCP tool reaches
+// them, so the fake only has to exist.
+func (f *fakeService) Export(context.Context, service.Actor, service.ExportInput) (*service.ExportDocument, error) {
+	return nil, errors.New("fakeService: Export is not an MCP tool")
+}
+
+func (f *fakeService) Import(context.Context, service.Actor, *service.ExportDocument) (*service.ImportResult, error) {
+	return nil, errors.New("fakeService: Import is not an MCP tool")
+}

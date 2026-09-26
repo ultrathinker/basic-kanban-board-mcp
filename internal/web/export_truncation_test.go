@@ -2,113 +2,91 @@ package web
 
 import (
 	"context"
-	"encoding/json"
+	"fmt"
+	"path/filepath"
 	"testing"
 
+	"github.com/ultrathinker/basic-kanban-board-mcp/internal/domain"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/service"
+	"github.com/ultrathinker/basic-kanban-board-mcp/internal/store"
 )
 
 // ---------------------------------------------------------------------------
-// KANB-29: the web export must not lose done tasks silently.
+// KANB-70: the web export is the CLI export.
 //
-// The board read behind the export caps done tasks at domain.MaxDoneLimit.
-// The CLI path already owned up to that -- a "truncated" block in the
-// document plus a warning line on stderr -- while the web path produced a
-// short document and said nothing, which is the exact failure the card was
-// filed against, only on the other surface.
+// The web Export button used to build its own, smaller document: done cards
+// capped at board_get's limit, plus a "truncated" field the strict importer
+// does not know, so the download of any mature project could not be restored
+// at all. The document now comes from Service.Export, the builder `kanban
+// export` uses, and nothing is capped.
 // ---------------------------------------------------------------------------
 
-// truncatingService hands back one project whose done column did not fit.
-// DoneShown/DoneTotal are board_get's own accounting, so the export does not
-// have to re-count anything to know a gap exists.
-type truncatingService struct {
-	stubService
-	doneShown int
-	doneTotal int
-}
+// TestWebExport_DoneBeyondTheBoardCapIsCompleteAndImportable downloads a
+// project holding more done cards than board_get ever returns and restores
+// the download through the importer's own decoder and Service.Import.
+func TestWebExport_DoneBeyondTheBoardCapIsCompleteAndImportable(t *testing.T) {
+	env := newExportEnv(t)
+	ctx := context.Background()
+	admin := service.Actor{Name: "seed", Scopes: domain.Scopes{domain.ScopeAdmin}}
 
-func (s truncatingService) BoardGet(context.Context, service.Actor, service.BoardGetInput) (*service.Board, error) {
-	return &service.Board{Projects: []service.BoardProject{{
-		Key:       "BMB",
-		Name:      "Truncation",
-		DoneShown: s.doneShown,
-		DoneTotal: s.doneTotal,
-	}}}, nil
-}
+	if _, err := env.svc.ProjectUpsert(ctx, admin, service.ProjectUpsertInput{
+		Mode: service.UpsertCreate, Key: "BMB", Name: "Done overflow",
+	}); err != nil {
+		t.Fatalf("seed project: %v", err)
+	}
+	doneCount := domain.MaxDoneLimit + 5
+	for created := 0; created < doneCount; {
+		batch := min(doneCount-created, domain.MaxBatchTasks)
+		tasks := make([]service.NewTask, batch)
+		for i := range tasks {
+			tasks[i] = service.NewTask{ProjectKey: "BMB", Column: "Done", Title: fmt.Sprintf("done %d", created+i), Type: domain.TypeTask}
+		}
+		if _, err := env.svc.TaskCreate(ctx, admin, service.TaskCreateInput{Tasks: tasks}); err != nil {
+			t.Fatalf("seed done tasks: %v", err)
+		}
+		created += batch
+	}
 
-func (truncatingService) ProgressHistory(context.Context, service.Actor, service.ProgressHistoryInput) (*service.ProgressHistoryResult, error) {
-	return &service.ProgressHistoryResult{}, nil
-}
-
-func (truncatingService) ChatList(context.Context, service.Actor, service.ChatListInput) (*service.ChatListResult, error) {
-	return &service.ChatListResult{}, nil
-}
-
-// TestWebExport_NamesTheDoneLimit: when the board hands back fewer done
-// tasks than it has, the downloaded document says so, in the same shape and
-// with the same numbers the CLI document uses.
-func TestWebExport_NamesTheDoneLimit(t *testing.T) {
-	t.Parallel()
-	svc := truncatingService{doneShown: 200, doneTotal: 512}
-
-	doc, err := buildWebExportDoc(context.Background(), svc, service.Actor{Name: "alex"}, "BMB")
+	rec := env.postExport(t, "/p/BMB/export")
+	if rec.Code != 200 {
+		t.Fatalf("export status = %d, body %.300s", rec.Code, rec.Body.String())
+	}
+	doc, _, err := service.DecodeExportDocument(rec.Body.Bytes())
 	if err != nil {
-		t.Fatalf("buildWebExportDoc: %v", err)
+		t.Fatalf("the importer refuses the web download: %v", err)
 	}
-	if len(doc.Truncated) != 1 {
-		t.Fatalf("truncated = %+v, want exactly one notice", doc.Truncated)
-	}
-	got := doc.Truncated[0]
-	if got.Project != "BMB" || got.Included != 200 || got.Total != 512 {
-		t.Errorf("truncated[0] = %+v, want {BMB 200 512}", got)
+	if got := countDone(doc.Projects); got != doneCount {
+		t.Fatalf("web export carries %d done cards, want all %d", got, doneCount)
 	}
 
-	// The importer reads JSON, not the Go struct, so assert the wire form:
-	// the field names have to be the ones cmd/kanban already writes.
-	raw, err := json.Marshal(doc)
+	dst, err := store.Open(ctx, store.Config{Path: filepath.Join(t.TempDir(), "kanban.db")})
 	if err != nil {
-		t.Fatalf("marshal: %v", err)
+		t.Fatalf("store.Open: %v", err)
 	}
-	var wire struct {
-		Truncated []struct {
-			Project  string `json:"project"`
-			Included int    `json:"included"`
-			Total    int    `json:"total"`
-		} `json:"truncated"`
+	t.Cleanup(func() { _ = dst.Close() })
+	dstSvc := service.New(dst, nil)
+	if _, err := dstSvc.Import(ctx, admin, &doc); err != nil {
+		t.Fatalf("Import of the web download: %v", err)
 	}
-	if err := json.Unmarshal(raw, &wire); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+	back, err := dstSvc.BoardGet(ctx, admin, service.BoardGetInput{
+		ProjectKey: "BMB", View: service.ViewTasks, DoneLimit: service.DoneLimitUnlimited,
+	})
+	if err != nil {
+		t.Fatalf("BoardGet after import: %v", err)
 	}
-	if len(wire.Truncated) != 1 || wire.Truncated[0].Project != "BMB" ||
-		wire.Truncated[0].Included != 200 || wire.Truncated[0].Total != 512 {
-		t.Errorf("wire truncated = %+v, want one {BMB 200 512} entry", wire.Truncated)
+	if got := countDone(back.Projects); got != doneCount {
+		t.Fatalf("restored project has %d done cards, want %d", got, doneCount)
 	}
 }
 
-// TestWebExport_NoNoticeWhenNothingWasDropped keeps the notice honest in the
-// other direction: a complete export must not carry a "truncated" key at
-// all, or every download would read as lossy and the real warning would stop
-// meaning anything.
-func TestWebExport_NoNoticeWhenNothingWasDropped(t *testing.T) {
-	t.Parallel()
-	svc := truncatingService{doneShown: 7, doneTotal: 7}
-
-	doc, err := buildWebExportDoc(context.Background(), svc, service.Actor{Name: "alex"}, "BMB")
-	if err != nil {
-		t.Fatalf("buildWebExportDoc: %v", err)
+func countDone(projects []service.BoardProject) int {
+	n := 0
+	for _, p := range projects {
+		for _, c := range p.Columns {
+			if c.Kind == domain.KindDone {
+				n += len(c.Tasks)
+			}
+		}
 	}
-	if len(doc.Truncated) != 0 {
-		t.Fatalf("truncated = %+v, want none", doc.Truncated)
-	}
-	raw, err := json.Marshal(doc)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	var wire map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &wire); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if _, present := wire["truncated"]; present {
-		t.Errorf("a complete export must omit \"truncated\" entirely, got %s", raw)
-	}
+	return n
 }

@@ -339,3 +339,10 @@ func (searchSvc) ProgressTrackDelete(context.Context, service.Actor, service.Pro
 func (searchSvc) ProgressSet(context.Context, service.Actor, service.ProgressSetInput) (*service.ProgressSetResult, error) {
 	return nil, ErrServiceUnavailable
 }
+
+func (searchSvc) Export(context.Context, service.Actor, service.ExportInput) (*service.ExportDocument, error) {
+	return nil, ErrServiceUnavailable
+}
+func (searchSvc) Import(context.Context, service.Actor, *service.ExportDocument) (*service.ImportResult, error) {
+	return nil, ErrServiceUnavailable
+}

@@ -59,6 +59,16 @@ type Service interface {
 	// projects (KANB-60). The issuer is an admin or the coordinator of every
 	// listed project. The secret is returned here and nowhere else.
 	ExecutorKeyIssue(ctx context.Context, a Actor, in ExecutorKeyIssueInput) (*ExecutorKeyIssueResult, error)
+
+	// Export builds the full backup document (KANB-70): every readable
+	// project with all its cards, archived ones included, and every history
+	// stream. `kanban export` and both web Export buttons call it, so they
+	// produce the same document.
+	Export(ctx context.Context, a Actor, in ExportInput) (*ExportDocument, error)
+	// Import restores an export document in one transaction, all or nothing,
+	// and refuses before writing anything if one of its projects already
+	// exists. Admin only.
+	Import(ctx context.Context, a Actor, doc *ExportDocument) (*ImportResult, error)
 }
 
 // Include names an optional expansion on a read. One parameter name across all
