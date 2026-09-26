@@ -37,11 +37,14 @@ type newTaskIn struct {
 }
 
 type taskCreateInput struct {
-	// Project must NOT be set here — it is a per-item field. It is declared
-	// only so that a caller who puts it at the top level (a common mistake:
-	// "project":"I6","tasks":[...]) gets the precise "move it inside each item"
-	// error below, instead of the SDK's terse "unexpected additional property".
-	Project *string     `json:"project,omitempty" jsonschema:"do NOT set this: project is a per-item field — put it inside each element of tasks[]"`
+	// Project is the batch's default project (KANB-67): every item of
+	// tasks[] that names no project of its own is created in it, and an
+	// item's own project wins. It used to be a declared-but-forbidden field
+	// that only produced a "move it inside each item" error, but writing
+	// "project":"I6","tasks":[...] was the shape callers reached for first,
+	// and a batch almost always targets one project, so the owner made the
+	// natural shape the working one.
+	Project string      `json:"project,omitempty" jsonschema:"default project key for every item of tasks[] that has no project of its own; an item's own project wins"`
 	Tasks   []newTaskIn `json:"tasks" jsonschema:"all-or-nothing: either every task is created, or none are"`
 	// SourceMessage accepts a kind:command feed message ATOMICALLY: the tasks
 	// and the "command -> tasks -> you" link commit together or not at all.
@@ -92,14 +95,17 @@ func taskCreateTool() *gomcp.Tool {
 	acc := prop(item, "acceptance")
 	setMaxItems(acc, domain.MaxAcceptance)
 	setMaxLen(acc.Items, domain.MaxAcceptanceText)
-	// The wire struct infers "project" as required (no `omitempty`), but
-	// the friendly "put project INSIDE each item" remediation belongs on
-	// our envelope, not on the SDK's terse "missing required property".
+	// The wire struct infers "project" as required (no `omitempty`), but an
+	// item may inherit the top-level default, and when neither is set the
+	// remediation that names both places belongs on our envelope, not on the
+	// SDK's terse "missing required property".
 	dropRequired(item, "project")
 
 	return &gomcp.Tool{
 		Name: opTaskCreate,
 		Description: "Create one or more tasks in a single atomic batch (all-or-nothing). " +
+			"Set `project` once at the top level and every item without its own `project` is created there; an item's own `project` wins: " +
+			"`{\"project\": \"KANB\", \"tasks\": [{\"title\": \"a\"}, {\"project\": \"OPS\", \"title\": \"b\"}]}` makes a in KANB and b in OPS.\n" +
 			"To link items of the same batch, give one a `ref` and point at it from another by prefixing that name with a single @: " +
 			"an item created as `{\"ref\": \"scaffold\", ...}` is referenced as `\"blocked_by\": [\"@scaffold\"]`.\n" +
 			"Pass `source_message` to ACCEPT a command from the project feed: only the command's resolved_executor may, " +
@@ -133,14 +139,20 @@ func keyOrRef(field, s string) (string, *domain.Error) {
 	return nk, nil
 }
 
-func newTaskToService(in newTaskIn) (service.NewTask, *domain.Error) {
-	if strings.TrimSpace(in.Project) == "" {
+// newTaskToService converts one item. defaultProject is the call's top-level
+// project, already trimmed; the item's own project wins over it.
+func newTaskToService(in newTaskIn, defaultProject string) (service.NewTask, *domain.Error) {
+	project := strings.TrimSpace(in.Project)
+	if project == "" {
+		project = defaultProject
+	}
+	if project == "" {
 		return service.NewTask{}, domain.Invalid("project",
 			"project is required on each task item",
-			"Put \"project\" INSIDE each item of tasks[], not at the top level: {\"tasks\":[{\"project\":\"I6\",\"title\":\"...\"}]}")
+			"Set \"project\" once at the top level to apply it to every item without one: {\"project\":\"I6\",\"tasks\":[{\"title\":\"...\"}]}, or inside each item of tasks[]: {\"tasks\":[{\"project\":\"I6\",\"title\":\"...\"}]}")
 	}
 	out := service.NewTask{
-		ProjectKey:     domain.NormalizeProjectKey(in.Project),
+		ProjectKey:     domain.NormalizeProjectKey(project),
 		Title:          in.Title,
 		Body:           in.Body,
 		Column:         in.Column,
@@ -219,20 +231,20 @@ func registerTaskCreate(s *gomcp.Server, svc service.Service) {
 			return errorResult(opTaskCreate, aerr), taskCreateOutput{OK: false, Op: opTaskCreate, Error: newErrorEnvelope(aerr)}, nil
 		}
 
-		// A top-level "project" is the shape mistake that motivated the
-		// per-item error too: catch it here with the same remediation, since
-		// the SDK would otherwise reject the extra key with a generic message
-		// that never says where "project" belongs.
-		if in.Project != nil {
+		// A top-level project that is only whitespace was meant to be a
+		// default and names none; refusing it beats quietly falling through
+		// to the per-item error, which would blame the items instead.
+		defaultProject := strings.TrimSpace(in.Project)
+		if in.Project != "" && defaultProject == "" {
 			derr := domain.Invalid("project",
-				"project is a per-item field, not a top-level one",
-				"Move \"project\" INSIDE each item of tasks[]: {\"tasks\":[{\"project\":\"I6\",\"title\":\"...\"}]}")
+				"the top-level project is blank",
+				"Send a project key such as \"I6\" as the batch default, or leave the top-level project out and set it inside each item of tasks[].")
 			return errorResult(opTaskCreate, derr), taskCreateOutput{OK: false, Op: opTaskCreate, Error: newErrorEnvelope(derr)}, nil
 		}
 
 		tasks := make([]service.NewTask, len(in.Tasks))
 		for i, t := range in.Tasks {
-			nt, derr := newTaskToService(t)
+			nt, derr := newTaskToService(t, defaultProject)
 			if derr != nil {
 				return errorResult(opTaskCreate, derr), taskCreateOutput{OK: false, Op: opTaskCreate, Error: newErrorEnvelope(derr)}, nil
 			}

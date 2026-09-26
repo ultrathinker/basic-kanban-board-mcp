@@ -226,7 +226,8 @@ task_get({ "keys": <value> })
 
 ### 4. `task_create`
 
-Create one or more tasks in a single atomic batch (all-or-nothing). To link items of the same batch, give one a `ref` and point at it from another by prefixing that name with a single @: an item created as `{"ref": "scaffold", ...}` is referenced as `"blocked_by": ["@scaffold"]`.
+Create one or more tasks in a single atomic batch (all-or-nothing). Set `project` once at the top level and every item without its own `project` is created there; an item's own `project` wins: `{"project": "KANB", "tasks": [{"title": "a"}, {"project": "OPS", "title": "b"}]}` makes a in KANB and b in OPS.
+To link items of the same batch, give one a `ref` and point at it from another by prefixing that name with a single @: an item created as `{"ref": "scaffold", ...}` is referenced as `"blocked_by": ["@scaffold"]`.
 Pass `source_message` to ACCEPT a command from the project feed: only the command's resolved_executor may, the tasks and the acceptance link commit atomically, and a repeat returns the original task keys with meta.already_accepted=true instead of creating a second batch. NOTE: this acceptance guarantee is about the BOARD only — it does not prevent an external command, deploy or side effect from running twice; guard those separately. A pure question needs no task at all — answer it with `project_post(reply_to: ...)`.
 `assignee` must be a participant of the project (board_get lists them; executor_key_issue adds one) — the executor key of that name then works the card. Executor keys cannot create tasks.
 Returns `data.tasks[]`, in request order: `{key, version, column}` per created task by default, the whole task with `echo:"full"`. The `version` on every returned task is the value AFTER the call and is authoritative — chain your next `if_version` from it and never re-read a task just to learn its version. `note`, lease operations and `focus` do not move a task's version by design, so a result echoing the same version you sent means the write landed and the version legitimately did not change.
@@ -236,7 +237,7 @@ Returns `data.tasks[]`, in request order: `{key, version, column}` per created t
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `echo` | string | Optional | ack (default) = key, version and column per task — the version is the AFTER-value, chain your next if_version from it; full = the whole task, body and checklist included |
-| `project` | any | Optional | do NOT set this: project is a per-item field — put it inside each element of tasks[] |
+| `project` | string | Optional | default project key for every item of tasks[] that has no project of its own; an item's own project wins |
 | `source_message` | string | Optional | id of a kind:command message you (its resolved_executor) are accepting; omit for an ordinary create |
 | `tasks` | any | Required | all-or-nothing: either every task is created, or none are |
 
