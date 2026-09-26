@@ -220,6 +220,7 @@ func (s *svc) buildBoardProject(
 		EnforceDependencies: p.EnforceDependencies,
 		StrictDone:          p.StrictDone,
 		ClaimTTLSeconds:     p.ClaimTTLSeconds,
+		IdleAfterSeconds:    p.IdleAfterSeconds,
 		Archived:            p.ArchivedAt != nil,
 		Coordinator:         pix.coordinator(p),
 		Participants:        pix.participantsFor(p.Key),

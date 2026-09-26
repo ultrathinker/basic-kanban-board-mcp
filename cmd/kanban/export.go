@@ -698,6 +698,7 @@ func importProject(ctx context.Context, svc service.Service, st store.Store, act
 			EnforceDependencies: &bp.EnforceDependencies,
 			StrictDone:          &bp.StrictDone,
 			ClaimTTLSeconds:     &bp.ClaimTTLSeconds,
+			IdleAfterSeconds:    optionalSeconds(bp.IdleAfterSeconds),
 		},
 	}); err != nil {
 		return fmt.Errorf("import project %s: %w", bp.Key, err)
@@ -1184,4 +1185,14 @@ func importJournal(ctx context.Context, st store.Store, doc exportDocument) erro
 		}
 		return nil
 	})
+}
+
+// optionalSeconds sends an optional project setting only when the exported
+// board had one: 0 is "not set", and an export written before the setting
+// existed carries no value at all, so the restored project keeps the default.
+func optionalSeconds(n int) *int {
+	if n == 0 {
+		return nil
+	}
+	return &n
 }

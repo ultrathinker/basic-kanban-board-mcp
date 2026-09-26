@@ -113,7 +113,7 @@ The default output format for `board_get` is compact text (`format: "compact"`).
    - The done segment reports total archived/done tasks and whether any are currently rendered.
    - `v<version>` is the **project** configuration version and always comes last.
 3. **Attention line** (optional, right under its project header): `attention <count>: KEY idle <duration>, KEY idle <duration>, and <n> more`
-   - Names the cards in `active` columns with no movement for longer than the project's `claim_ttl_seconds`. Movement is the newest of: entering the column, an edit, a claim or lease renewal, a note, a progress mark.
+   - Names the cards in `active` columns with no movement for longer than the project's idle threshold: `idle_after_seconds` when the project set one, otherwise its `claim_ttl_seconds`. Movement is the newest of: entering the column, an edit, a claim or lease renewal, a note, a progress mark.
    - Most idle first, at most 5 named; `and <n> more` appears only when more are idle. `waiting` and `backlog` columns never count.
    - The line is absent when no card is idle. It follows the board `filter`, like the column counts.
 4. **Column header:** `## ColumnName` (the Done section is omitted when `done_limit=0`).
@@ -154,7 +154,7 @@ attention 2: BMB-17 idle 3d, BMB-12 idle 1d
 
 Read the board. Compact text by default — about 1,000 tokens for 30 active tasks, roughly 90% smaller than the same board as JSON, so it is cheap enough to call at the start of every session. `format:"json"` returns the same board as JSON text instead. The project's description — its rulebook — is NOT returned unless asked for: add `include:["description"]` once per session, or again after your context was compacted.
 `view:"messages"` reads one project's communication feed forward through history instead of the board: `messages[]` in chronological order (each with `id`, `created_at`, `author`, `author_token_id` — the authorized source, which the caller never chooses — `kind`, `recipient`/`recipient_name`, `resolved_executor`/`resolved_executor_name`, `reply_to`, `body`, and the `task_keys` created by accepting that command), plus `next_cursor` and `has_more`. The board itself and task bodies are NOT part of that response. Chat history is never pruned, so a cursor never goes stale; a cursor from another project, a cursor naming a message that does not exist, or an unparseable cursor is refused with an actionable error rather than a silent empty page.
-A project whose active columns hold a card with no movement (column entry, edit, claim or renewal, note, progress mark) for longer than its `claim_ttl_seconds` carries an attention line right under its header — `attention 3: KANB-12 idle 5h, KANB-9 idle 2h, KANB-15 idle 1h`, the 5 most idle then `and N more`; in JSON `projects[].attention: {count, sample:[{key, idle_seconds}]}`. It is absent when nothing is idle, and waiting columns never count. `include:["progress"]` (view tasks) adds to every card in an active column its acceptance count, assessed percent and idle time: `acc 2/5 · pct 40 · idle 12m` on the compact line, `progress: {acceptance_done, acceptance_total, percent, last_activity_at, idle_seconds}` in JSON — a progress report in one read.
+A project whose active columns hold a card with no movement (column entry, edit, claim or renewal, note, progress mark) for longer than its idle threshold — `idle_after_seconds` when the project set one (project_upsert settings), otherwise its `claim_ttl_seconds` — carries an attention line right under its header — `attention 3: KANB-12 idle 5h, KANB-9 idle 2h, KANB-15 idle 1h`, the 5 most idle then `and N more`; in JSON `projects[].attention: {count, sample:[{key, idle_seconds}]}`. It is absent when nothing is idle, and waiting columns never count. `include:["progress"]` (view tasks) adds to every card in an active column its acceptance count, assessed percent and idle time: `acc 2/5 · pct 40 · idle 12m` on the compact line, `progress: {acceptance_done, acceptance_total, percent, last_activity_at, idle_seconds}` in JSON — a progress report in one read.
 Feed participants and the project's coordinator are published by `view:"summary"` as `projects[].participants[]` and `projects[].coordinator` — token ids and display names only, never secrets.
 
 #### Parameters
@@ -226,7 +226,8 @@ task_get({ "keys": <value> })
 
 ### 4. `task_create`
 
-Create one or more tasks in a single atomic batch (all-or-nothing). To link items of the same batch, give one a `ref` and point at it from another by prefixing that name with a single @: an item created as `{"ref": "scaffold", ...}` is referenced as `"blocked_by": ["@scaffold"]`.
+Create one or more tasks in a single atomic batch (all-or-nothing). Set `project` once at the top level and every item without its own `project` is created there; an item's own `project` wins: `{"project": "KANB", "tasks": [{"title": "a"}, {"project": "OPS", "title": "b"}]}` makes a in KANB and b in OPS.
+To link items of the same batch, give one a `ref` and point at it from another by prefixing that name with a single @: an item created as `{"ref": "scaffold", ...}` is referenced as `"blocked_by": ["@scaffold"]`.
 Pass `source_message` to ACCEPT a command from the project feed: only the command's resolved_executor may, the tasks and the acceptance link commit atomically, and a repeat returns the original task keys with meta.already_accepted=true instead of creating a second batch. NOTE: this acceptance guarantee is about the BOARD only — it does not prevent an external command, deploy or side effect from running twice; guard those separately. A pure question needs no task at all — answer it with `project_post(reply_to: ...)`.
 `assignee` must be a participant of the project (board_get lists them; executor_key_issue adds one) — the executor key of that name then works the card. Executor keys cannot create tasks.
 Returns `data.tasks[]`, in request order: `{key, version, column}` per created task by default, the whole task with `echo:"full"`. The `version` on every returned task is the value AFTER the call and is authoritative — chain your next `if_version` from it and never re-read a task just to learn its version. `note`, lease operations and `focus` do not move a task's version by design, so a result echoing the same version you sent means the write landed and the version legitimately did not change.
@@ -236,7 +237,7 @@ Returns `data.tasks[]`, in request order: `{key, version, column}` per created t
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `echo` | string | Optional | ack (default) = key, version and column per task — the version is the AFTER-value, chain your next if_version from it; full = the whole task, body and checklist included |
-| `project` | any | Optional | do NOT set this: project is a per-item field — put it inside each element of tasks[] |
+| `project` | string | Optional | default project key for every item of tasks[] that has no project of its own; an item's own project wins |
 | `source_message` | string | Optional | id of a kind:command message you (its resolved_executor) are accepting; omit for an ordinary create |
 | `tasks` | any | Required | all-or-nothing: either every task is created, or none are |
 
@@ -333,6 +334,7 @@ task_remove({ "items": <value> })
 Create or update one project: identity, columns and settings. `mode` is REQUIRED and has no default — despite the name this tool never guesses create-vs-update, because a typo in a project key must not silently fork the board into a second project.
 Create: {"mode":"create","key":"TEST","name":"Smoke Test"} — `name` is required; omitting `columns` gives the default set (Backlog, Doing, Done).
 Update: {"mode":"update","key":"TEST","if_version":3,"name":"New name"} — `if_version` is required and is the version your last read of the project returned.
+`settings.idle_after_seconds` sets how long a card in an active column may sit without movement before board_get's attention line names it (e.g. 172800 for a review cycle measured in days); unset or 0, the threshold is `claim_ttl_seconds`. How long a lease lasts and when a card looks abandoned are separate settings.
 Not sure which one applies? Call board_get with no `project` first: every project you can reach comes back with its key and version.
 
 #### Parameters

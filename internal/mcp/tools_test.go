@@ -398,6 +398,11 @@ func TestRoundTrip_TaskCreate_MissingProjectPerItem(t *testing.T) {
 	if !strings.Contains(low, "item") && !strings.Contains(low, "inside") {
 		t.Errorf("remediation %q should say item or inside", rem)
 	}
+	// KANB-67: the top level is now a working place for project too, and
+	// the error must say so rather than send the caller item by item.
+	if !strings.Contains(low, "top level") {
+		t.Errorf("remediation %q should offer the top-level default", rem)
+	}
 }
 
 // TestRoundTrip_TaskCreate_MissingProjectExplicitEmpty covers the
@@ -419,39 +424,6 @@ func TestRoundTrip_TaskCreate_MissingProjectExplicitEmpty(t *testing.T) {
 	}
 	if errObj := sc["error"].(map[string]any); errObj["code"] != "validation" {
 		t.Errorf("code = %v, want validation", errObj["code"])
-	}
-}
-
-// TestRoundTrip_TaskCreate_TopLevelProject is the user's literal complaint:
-// "project" placed at the top level of the call instead of inside each item.
-// A bare taskCreateInput would let the SDK reject the extra key with a generic
-// message that never names where "project" belongs; the declared-but-forbidden
-// field turns it into the same friendly, actionable remediation.
-func TestRoundTrip_TaskCreate_TopLevelProject(t *testing.T) {
-	t.Parallel()
-	cs, svc := roundtripServer(t, NewServer)
-
-	res, sc := callTool(t, cs, "task_create", map[string]any{
-		"project": "I6",
-		"tasks":   []map[string]any{{"title": "orphan top-level project"}},
-	})
-	if res.IsError != true {
-		t.Errorf("IsError = %v, want true", res.IsError)
-	}
-	if len(svc.LastTaskCreate.Tasks) != 0 {
-		t.Errorf("service was invoked despite a top-level project: %+v", svc.LastTaskCreate.Tasks)
-	}
-	errObj, ok := sc["error"].(map[string]any)
-	if !ok {
-		t.Fatalf("missing error envelope: %v", sc)
-	}
-	if errObj["code"] != "validation" {
-		t.Errorf("code = %v, want validation", errObj["code"])
-	}
-	rem, _ := errObj["remediation"].(string)
-	low := strings.ToLower(rem)
-	if !strings.Contains(low, "inside") && !strings.Contains(low, "item") {
-		t.Errorf("remediation %q should tell the caller to move project inside each item", rem)
 	}
 }
 

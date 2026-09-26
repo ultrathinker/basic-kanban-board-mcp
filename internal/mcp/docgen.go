@@ -353,7 +353,7 @@ func buildGrammar() string {
 	b.WriteString("   - The done segment reports total archived/done tasks and whether any are currently rendered.\n")
 	b.WriteString("   - `v<version>` is the **project** configuration version and always comes last.\n")
 	b.WriteString("3. **Attention line** (optional, right under its project header): `attention <count>: KEY idle <duration>, KEY idle <duration>, and <n> more`\n")
-	b.WriteString("   - Names the cards in `active` columns with no movement for longer than the project's `claim_ttl_seconds`. Movement is the newest of: entering the column, an edit, a claim or lease renewal, a note, a progress mark.\n")
+	b.WriteString("   - Names the cards in `active` columns with no movement for longer than the project's idle threshold: `idle_after_seconds` when the project set one, otherwise its `claim_ttl_seconds`. Movement is the newest of: entering the column, an edit, a claim or lease renewal, a note, a progress mark.\n")
 	b.WriteString("   - Most idle first, at most 5 named; `and <n> more` appears only when more are idle. `waiting` and `backlog` columns never count.\n")
 	b.WriteString("   - The line is absent when no card is idle. It follows the board `filter`, like the column counts.\n")
 	b.WriteString("4. **Column header:** `## ColumnName` (the Done section is omitted when `done_limit=0`).\n")

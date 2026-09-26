@@ -46,11 +46,11 @@ func (r *projectRepo) Create(tx Tx, p *domain.Project) error {
 		INSERT INTO projects(
 			id, key, name, description, version, next_task_seq,
 			focus_task_id, estimate_unit, enforce_dependencies, strict_done,
-			claim_ttl_seconds, coordinator_token_id, archived_at, created_at, updated_at)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			claim_ttl_seconds, idle_after_seconds, coordinator_token_id, archived_at, created_at, updated_at)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		p.ID, p.Key, p.Name, p.Description, p.Version, p.NextTaskSeq,
 		nullableIDPtr(p.FocusTaskID), p.EstimateUnit, boolToInt(p.EnforceDependencies), boolToInt(p.StrictDone),
-		p.ClaimTTLSeconds, nullableString(p.CoordinatorTokenID), nullableTime(p.ArchivedAt), formatTime(p.CreatedAt), formatTime(p.UpdatedAt),
+		p.ClaimTTLSeconds, nullableSeconds(p.IdleAfterSeconds), nullableString(p.CoordinatorTokenID), nullableTime(p.ArchivedAt), formatTime(p.CreatedAt), formatTime(p.UpdatedAt),
 	)
 	if err != nil {
 		if IsUniqueViolation(err) {
@@ -94,11 +94,11 @@ func (r *projectRepo) Update(tx Tx, p *domain.Project, ifVersion *int) error {
 	res, err := tw.tx.ExecContext(tw.ctx(), `
 		UPDATE projects SET
 			name=?, description=?, focus_task_id=?, estimate_unit=?,
-			enforce_dependencies=?, strict_done=?, claim_ttl_seconds=?,
+			enforce_dependencies=?, strict_done=?, claim_ttl_seconds=?, idle_after_seconds=?,
 			coordinator_token_id=?, archived_at=?, version=version+1, updated_at=?
 		WHERE id=?`,
 		p.Name, p.Description, nullableIDPtr(p.FocusTaskID), p.EstimateUnit,
-		boolToInt(p.EnforceDependencies), boolToInt(p.StrictDone), p.ClaimTTLSeconds,
+		boolToInt(p.EnforceDependencies), boolToInt(p.StrictDone), p.ClaimTTLSeconds, nullableSeconds(p.IdleAfterSeconds),
 		nullableString(p.CoordinatorTokenID), nullableTime(p.ArchivedAt), formatTime(p.UpdatedAt), p.ID,
 	)
 	if err != nil {
@@ -124,7 +124,7 @@ func (r *projectRepo) GetByKey(tx Tx, key string) (*domain.Project, error) {
 	row := tw.tx.QueryRowContext(tw.ctx(), `
 		SELECT id, key, name, description, version, next_task_seq,
 		       focus_task_id, estimate_unit, enforce_dependencies, strict_done,
-		       claim_ttl_seconds, coordinator_token_id, archived_at, created_at, updated_at
+		       claim_ttl_seconds, idle_after_seconds, coordinator_token_id, archived_at, created_at, updated_at
 		FROM projects WHERE key = ? COLLATE NOCASE`, key)
 	p, err := scanProject(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -141,7 +141,7 @@ func (r *projectRepo) GetByID(tx Tx, id string) (*domain.Project, error) {
 	row := tw.tx.QueryRowContext(tw.ctx(), `
 		SELECT id, key, name, description, version, next_task_seq,
 		       focus_task_id, estimate_unit, enforce_dependencies, strict_done,
-		       claim_ttl_seconds, coordinator_token_id, archived_at, created_at, updated_at
+		       claim_ttl_seconds, idle_after_seconds, coordinator_token_id, archived_at, created_at, updated_at
 		FROM projects WHERE id = ?`, id)
 	p, err := scanProject(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -154,7 +154,7 @@ func (r *projectRepo) List(tx Tx, includeArchived bool) ([]*domain.Project, erro
 	tw := tx.(*txWrap)
 	q := `SELECT id, key, name, description, version, next_task_seq,
 		       focus_task_id, estimate_unit, enforce_dependencies, strict_done,
-		       claim_ttl_seconds, coordinator_token_id, archived_at, created_at, updated_at
+		       claim_ttl_seconds, idle_after_seconds, coordinator_token_id, archived_at, created_at, updated_at
 		FROM projects`
 	if !includeArchived {
 		q += " WHERE archived_at IS NULL"
@@ -331,6 +331,7 @@ func scanProject(row *sql.Row) (*domain.Project, error) {
 	var (
 		p             domain.Project
 		focus         sql.NullString
+		idleAfter     sql.NullInt64
 		coordinator   sql.NullString
 		archived      sql.NullString
 		created, upd  string
@@ -339,7 +340,7 @@ func scanProject(row *sql.Row) (*domain.Project, error) {
 	err := row.Scan(
 		&p.ID, &p.Key, &p.Name, &p.Description, &p.Version, &p.NextTaskSeq,
 		&focus, &p.EstimateUnit, &enforceSD, &sd,
-		&p.ClaimTTLSeconds, &coordinator, &archived, &created, &upd,
+		&p.ClaimTTLSeconds, &idleAfter, &coordinator, &archived, &created, &upd,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, err
@@ -350,6 +351,9 @@ func scanProject(row *sql.Row) (*domain.Project, error) {
 	if focus.Valid {
 		s := focus.String
 		p.FocusTaskID = &s
+	}
+	if idleAfter.Valid {
+		p.IdleAfterSeconds = int(idleAfter.Int64)
 	}
 	if coordinator.Valid {
 		p.CoordinatorTokenID = coordinator.String
@@ -378,6 +382,7 @@ func scanProjectRows(rows *sql.Rows) (*domain.Project, error) {
 	var (
 		p             domain.Project
 		focus         sql.NullString
+		idleAfter     sql.NullInt64
 		coordinator   sql.NullString
 		archived      sql.NullString
 		created, upd  string
@@ -386,13 +391,16 @@ func scanProjectRows(rows *sql.Rows) (*domain.Project, error) {
 	if err := rows.Scan(
 		&p.ID, &p.Key, &p.Name, &p.Description, &p.Version, &p.NextTaskSeq,
 		&focus, &p.EstimateUnit, &enforceSD, &sd,
-		&p.ClaimTTLSeconds, &coordinator, &archived, &created, &upd,
+		&p.ClaimTTLSeconds, &idleAfter, &coordinator, &archived, &created, &upd,
 	); err != nil {
 		return nil, fmt.Errorf("store: scan project row: %w", err)
 	}
 	if focus.Valid {
 		s := focus.String
 		p.FocusTaskID = &s
+	}
+	if idleAfter.Valid {
+		p.IdleAfterSeconds = int(idleAfter.Int64)
 	}
 	if coordinator.Valid {
 		p.CoordinatorTokenID = coordinator.String
@@ -438,6 +446,15 @@ func nullableString(s string) any {
 		return nil
 	}
 	return s
+}
+
+// nullableSeconds stores an optional duration setting as SQL NULL when it is
+// 0, the value every reader treats as "not set".
+func nullableSeconds(n int) any {
+	if n == 0 {
+		return nil
+	}
+	return n
 }
 
 // _ keeps the strings import used somewhere in this file even when the

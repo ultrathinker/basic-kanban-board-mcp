@@ -59,6 +59,7 @@ type boardGuideProjectInfo struct {
 	EnforceDependencies bool   `json:"enforce_dependencies"`
 	StrictDone          bool   `json:"strict_done"`
 	ClaimTTLSeconds     int    `json:"claim_ttl_seconds"`
+	IdleAfterSeconds    int    `json:"idle_after_seconds,omitempty"`
 	Archived            bool   `json:"archived"`
 	// Coordinator and Participants answer "who else is on this project?"
 	// (KANB-44). Both carry the stable tokens.id and the display name and
@@ -287,6 +288,7 @@ func loadBoardGuideProject(ctx context.Context, svc service.Service, actor servi
 				EnforceDependencies: bp.EnforceDependencies,
 				StrictDone:          bp.StrictDone,
 				ClaimTTLSeconds:     bp.ClaimTTLSeconds,
+				IdleAfterSeconds:    bp.IdleAfterSeconds,
 				Archived:            bp.Archived,
 				Coordinator:         participantOutPtr(bp.Coordinator),
 				Participants:        participantOuts(bp.Participants),
