@@ -377,6 +377,10 @@ type TokenRepo interface {
 	// key's name comes back to life with a new secret on the same row, so
 	// the row id every stored reference points at stays the identity.
 	Reissue(tx Tx, t *domain.Token) error
+	// SetExpiry moves an unrevoked token's expiry and touches nothing else
+	// (KANB-68): renewing an executor key keeps its secret, so the agent
+	// whose launcher already holds it carries on after a long pause.
+	SetExpiry(tx Tx, id string, expiresAt time.Time) error
 	Revoke(tx Tx, name string) error
 	TouchLastUsed(tx Tx, id string) error
 	Count(tx Tx) (int, error)

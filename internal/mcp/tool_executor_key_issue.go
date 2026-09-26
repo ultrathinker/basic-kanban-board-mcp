@@ -13,18 +13,23 @@ import (
 const opExecutorKeyIssue = "executor_key_issue"
 
 type executorKeyIssueInput struct {
-	Name       string   `json:"name" jsonschema:"the executor's name, taken verbatim: it becomes the key's identity and a participant of the listed projects — assign the executor's cards to exactly this name. No spaces; unique across all tokens"`
-	Projects   []string `json:"projects" jsonschema:"project keys the executor works in, case-insensitive; you must be an admin or the coordinator of each"`
-	TTLSeconds int      `json:"ttl_seconds,omitempty" jsonschema:"key lifetime in seconds; omit for 24h"`
+	Name            string   `json:"name" jsonschema:"the executor's name, taken verbatim: it becomes the key's identity and a participant of the listed projects — assign the executor's cards to exactly this name. No spaces; unique across all tokens"`
+	Projects        []string `json:"projects,omitempty" jsonschema:"project keys the executor works in, case-insensitive; you must be an admin or the coordinator of each. Required, except with renew, which keeps the key's own projects and refuses this field"`
+	TTLSeconds      int      `json:"ttl_seconds,omitempty" jsonschema:"key lifetime in seconds, counted from now (also for renew); omit for 24h. Refused with participant_only"`
+	ParticipantOnly bool     `json:"participant_only,omitempty" jsonschema:"make name a participant of projects WITHOUT a key: no secret exists, nobody can sign in as it, it never expires. Again for the same name adds projects"`
+	Renew           bool     `json:"renew,omitempty" jsonschema:"extend the existing executor key named name to now + ttl_seconds, keeping its secret; works on a live or expired key, never a revoked one"`
 }
 
 type executorKeyIssueData struct {
-	TokenID   string   `json:"token_id"`
-	Name      string   `json:"name"`
-	Projects  []string `json:"projects"`
-	ExpiresAt string   `json:"expires_at"`
-	Secret    string   `json:"secret"`
-	Reissued  bool     `json:"reissued,omitempty"`
+	TokenID         string   `json:"token_id"`
+	Name            string   `json:"name"`
+	Projects        []string `json:"projects"`
+	ExpiresAt       string   `json:"expires_at,omitempty"`
+	Secret          string   `json:"secret,omitempty"`
+	Reissued        bool     `json:"reissued,omitempty"`
+	Renewed         bool     `json:"renewed,omitempty"`
+	ParticipantOnly bool     `json:"participant_only,omitempty"`
+	AddedProjects   []string `json:"added_projects,omitempty"`
 }
 
 type executorKeyIssueOutput struct {
@@ -51,7 +56,14 @@ var executorKeyIssueDescription = "Issue an executor key: a named, expiring bear
 	"issuing the same name again after it expired re-issues that key (reissued:true) with a new secret. " +
 	"A live key's name is refused.\n" +
 	"Returns `data`: token_id, name, projects, expires_at and `secret`. The secret is shown ONLY in this response and is never stored or shown again: " +
-	"hand it straight to the executor's launcher and never post it to the feed, a note or a card."
+	"hand it straight to the executor's launcher and never post it to the feed, a note or a card.\n" +
+	"renew:true extends the executor key already called name to now + ttl_seconds WITHOUT a new secret, so an agent resuming after a long pause keeps the secret its launcher holds. " +
+	"It works on a live or an expired key, omits projects (the key keeps its own), and returns renewed:true with the new expires_at and no secret. " +
+	"A revoked key, or a name that is not an executor key, is refused. Same authority: admin, or the coordinator of every project on the key.\n" +
+	"participant_only:true makes name a participant of projects without any key — for someone cards are assigned to or reviewed by who never calls the board under that name (the owner, a person, an agent run from outside). " +
+	"No secret is created or stored, nobody can sign in as it, and it never expires (ttl_seconds is refused). " +
+	"Calling it again for the same name adds the listed projects to it; the response lists all its projects, added_projects the new ones, and has no secret. " +
+	"A name that already belongs to a key or a standing token is refused."
 
 func executorKeyIssueTool() *gomcp.Tool {
 	s := schemaFor[executorKeyIssueInput]()
@@ -64,7 +76,6 @@ func executorKeyIssueTool() *gomcp.Tool {
 	setMaxLen(projects.Items, domain.MaxProjectKeyLen)
 	ttl := prop(s, "ttl_seconds")
 	setMin(ttl, 0)
-	setMax(ttl, domain.ExecutorKeyMaxTTL.Seconds())
 	setMax(ttl, domain.ExecutorKeyMaxTTL.Seconds())
 
 	return &gomcp.Tool{
@@ -82,9 +93,11 @@ func registerExecutorKeyIssue(s *gomcp.Server, svc service.Service) {
 			return errorResult(opExecutorKeyIssue, aerr), executorKeyIssueOutput{OK: false, Op: opExecutorKeyIssue, Error: newErrorEnvelope(aerr)}, nil
 		}
 		res, svcErr := svc.ExecutorKeyIssue(ctx, actor, service.ExecutorKeyIssueInput{
-			Name:        in.Name,
-			ProjectKeys: in.Projects,
-			TTLSeconds:  in.TTLSeconds,
+			Name:            in.Name,
+			ProjectKeys:     in.Projects,
+			TTLSeconds:      in.TTLSeconds,
+			ParticipantOnly: in.ParticipantOnly,
+			Renew:           in.Renew,
 		})
 		if svcErr != nil {
 			derr := asDomainError(svcErr)
@@ -93,13 +106,20 @@ func registerExecutorKeyIssue(s *gomcp.Server, svc service.Service) {
 		out := executorKeyIssueOutput{
 			OK: true, Op: opExecutorKeyIssue,
 			Data: &executorKeyIssueData{
-				TokenID:   res.TokenID,
-				Name:      res.Name,
-				Projects:  res.ProjectKeys,
-				ExpiresAt: formatTime(res.ExpiresAt),
-				Secret:    res.Secret,
-				Reissued:  res.Reissued,
+				TokenID:         res.TokenID,
+				Name:            res.Name,
+				Projects:        res.ProjectKeys,
+				Secret:          res.Secret,
+				Reissued:        res.Reissued,
+				Renewed:         res.Renewed,
+				ParticipantOnly: res.ParticipantOnly,
+				AddedProjects:   res.AddedProjects,
 			},
+		}
+		// A participant without a key never expires: no expires_at at all,
+		// rather than a zero time that reads like a date.
+		if !res.ExpiresAt.IsZero() {
+			out.Data.ExpiresAt = formatTime(res.ExpiresAt)
 		}
 		return &gomcp.CallToolResult{Content: []gomcp.Content{&gomcp.TextContent{Text: jsonText(out)}}}, out, nil
 	})

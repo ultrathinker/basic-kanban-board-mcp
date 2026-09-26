@@ -34,9 +34,12 @@ func (s *svc) ProgressSet(ctx context.Context, a Actor, in ProgressSetInput) (*P
 		return nil, err
 	}
 
+	// No assessor means the caller speaks as itself (KANB-68): the token's
+	// name is the one identity it has, and making every agent type it out
+	// only invited twenty-five spellings of it.
 	assessor := strings.TrimSpace(in.Assessor)
 	if assessor == "" {
-		return nil, domain.Invalid("assessor", "assessor is required", "Pass an assessor name representing your agent identity.")
+		assessor = a.Name
 	}
 	// Bounded the same way a chat author is (domain.ValidateActorName, 80
 	// bytes): the mark is stored forever (append-only, no thinning) and the

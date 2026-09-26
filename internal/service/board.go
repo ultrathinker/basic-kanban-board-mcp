@@ -144,6 +144,20 @@ func (ix *participantIndex) participantsFor(key string) []Participant {
 // can touch. The match is exact: the assignee is what an executor key's
 // name is compared against, byte for byte.
 func (ix *participantIndex) checkAssignee(p *domain.Project, taskKey, name string) error {
+	return ix.checkParticipant("assignee", p, taskKey, name,
+		"Assign one of the listed participants exactly as written, issue an executor key with that name first (executor_key_issue), add it as a participant without a key (executor_key_issue participant_only:true), or clear the assignee.")
+}
+
+// checkReviewer applies the assignee's rule to the reviewer (KANB-68): one
+// name per person or agent, so the reviewer of a card is someone the board
+// knows under exactly one spelling. A reviewer rarely calls the board
+// itself, which is what a participant without a key is for.
+func (ix *participantIndex) checkReviewer(p *domain.Project, taskKey, name string) error {
+	return ix.checkParticipant("reviewer", p, taskKey, name,
+		"Name one of the listed participants exactly as written, add the reviewer as a participant first (executor_key_issue participant_only:true), or clear the reviewer.")
+}
+
+func (ix *participantIndex) checkParticipant(field string, p *domain.Project, taskKey, name, remediation string) error {
 	parts := ix.participantsFor(p.Key)
 	names := make([]string, 0, len(parts))
 	for _, pt := range parts {
@@ -160,10 +174,10 @@ func (ix *participantIndex) checkAssignee(p *domain.Project, taskKey, name strin
 	if taskKey != "" {
 		where = taskKey
 	}
-	return domain.Invalid("assignee",
-		fmt.Sprintf("assignee %q on %s is not a participant of project %s; participants: %s",
-			name, where, p.Key, known),
-		"Assign one of the listed participants exactly as written, issue an executor key with that name first (executor_key_issue), or clear the assignee.")
+	return domain.Invalid(field,
+		fmt.Sprintf("%s %q on %s is not a participant of project %s; participants: %s",
+			field, name, where, p.Key, known),
+		remediation)
 }
 
 // coordinator resolves the project's appointed coordinator to a Participant.

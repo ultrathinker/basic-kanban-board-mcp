@@ -15,7 +15,7 @@ import (
 const opProgressSet = "progress_set"
 
 type progressSetInput struct {
-	Assessor string  `json:"assessor" jsonschema:"agent self-declared name / identity (free-form text)"`
+	Assessor string  `json:"assessor,omitempty" jsonschema:"whose assessment this is; omit to record it under your token's name. An executor key may only use its own name; a write or admin token may record for someone else (e.g. the owner's verdict)"`
 	Percent  int     `json:"percent" jsonschema:"progress percentage, integer 0..100"`
 	Task     *string `json:"task,omitempty" jsonschema:"task key (e.g. KANB-3); exactly one of task or project must be provided"`
 	Project  *string `json:"project,omitempty" jsonschema:"project key; exactly one of task or project must be provided"`
@@ -56,7 +56,8 @@ const progressSetDescription = "Record a progress assessment and completion fore
 	"Overestimating and underestimating are expected and harmless; rolling your progress estimate backward (e.g. from 70% down to 45%) is a normal and valuable signal reflecting discovered complexity, not an admission of defeat. " +
 	"Specify exactly one target: either `task` (e.g. KANB-3) to assess a specific task, or `project` (e.g. KANB) to assess the project as a whole. " +
 	"`eta` is an RFC3339 timestamp forecasting the expected finish date and time (e.g. 2026-09-12T18:00:00Z), not a remaining duration. " +
-	"An executor key may assess only the cards assigned to it, with `assessor` set to its own name, and never the project as a whole. " +
+	"`assessor` defaults to your token's name; a write or admin token may name someone else (an orchestrator recording the owner's verdict), " +
+	"an executor key may assess only the cards assigned to it, only under its own name, and never the project as a whole. " +
 	"Returns `data` containing the recorded mark and the updated summary progress for the assessed scope."
 
 func progressSetTool() *gomcp.Tool {
@@ -116,12 +117,6 @@ func registerProgressSet(s *gomcp.Server, svc service.Service) {
 			return errorResult(opProgressSet, derr), progressSetOutput{OK: false, Op: opProgressSet, Error: newErrorEnvelope(derr)}, nil
 		}
 
-		assessor := strings.TrimSpace(in.Assessor)
-		if assessor == "" {
-			derr := domain.Invalid("assessor", "assessor is required", "Pass an assessor name representing your agent identity.")
-			return errorResult(opProgressSet, derr), progressSetOutput{OK: false, Op: opProgressSet, Error: newErrorEnvelope(derr)}, nil
-		}
-
 		var taskKey, projectKey string
 		if hasTask {
 			taskKey = strings.TrimSpace(*in.Task)
@@ -130,7 +125,7 @@ func registerProgressSet(s *gomcp.Server, svc service.Service) {
 		}
 
 		res, svcErr := svc.ProgressSet(ctx, actor, service.ProgressSetInput{
-			Assessor:   assessor,
+			Assessor:   in.Assessor,
 			Percent:    in.Percent,
 			TaskKey:    taskKey,
 			ProjectKey: projectKey,

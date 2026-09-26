@@ -791,7 +791,7 @@ func (w *Web) handleActivity(rw http.ResponseWriter, r *http.Request) {
 	now := w.d.Now()
 	for _, e := range events {
 		ae := view.ActivityEvent{
-			ID: e.ID, Actor: e.Actor, Verb: eventVerb(e.Type),
+			ID: e.ID, Actor: e.Actor, Verb: activityVerb(e),
 			Target: eventPayloadString(e, "key"), TargetTitle: eventPayloadString(e, "title"),
 			TS: e.TS,
 		}

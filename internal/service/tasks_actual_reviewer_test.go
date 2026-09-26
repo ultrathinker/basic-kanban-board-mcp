@@ -14,6 +14,8 @@ import (
 func TestTaskUpdate_ActualSetAndClear(t *testing.T) {
 	env := openTestEnv(t)
 	task := makeBacklogTask(t, env, "calibrate")
+	// A reviewer must be a participant of the project (KANB-68).
+	seedToken(t, env, "tok-claude", "claude", domain.Scopes{domain.ScopeRead}, "BMB")
 
 	// Set both Actual and Reviewer in one patch.
 	act := 5.5
@@ -273,6 +275,7 @@ func TestTaskGet_ReturnsEstimateUnit(t *testing.T) {
 // echo them back.
 func TestTaskCreate_ActualReviewerRoundTrip(t *testing.T) {
 	env := openTestEnv(t)
+	seedToken(t, env, "tok-kira", "kira", domain.Scopes{domain.ScopeRead}, "BMB")
 	act := 2.0
 	rev := "kira"
 	res, err := env.svc.TaskCreate(context.Background(), env.actor, TaskCreateInput{

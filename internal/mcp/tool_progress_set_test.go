@@ -665,30 +665,37 @@ func TestProgressSet_AssessorTooLongRejected(t *testing.T) {
 	}
 }
 
-// TestProgressSet_EmptyAssessorRejected verifies that an empty assessor is rejected.
-func TestProgressSet_EmptyAssessorRejected(t *testing.T) {
+// TestProgressSet_AssessorOptional verifies that an omitted or blank
+// assessor reaches the service as blank (KANB-68): the service records the
+// mark under the token's name, so the MCP layer must neither refuse it nor
+// invent a name of its own.
+func TestProgressSet_AssessorOptional(t *testing.T) {
 	t.Parallel()
-	cs, svc := roundtripServer(t, NewServer)
-
-	res, err := cs.CallTool(context.Background(), &gomcp.CallToolParams{
-		Name: "progress_set",
-		Arguments: map[string]any{
-			"task":     "KANB-3",
-			"assessor": "   ",
-			"percent":  50,
-		},
-	})
-	if err != nil {
-		t.Fatalf("CallTool: %v", err)
+	for _, args := range []map[string]any{
+		{"task": "KANB-3", "percent": 50},
+		{"task": "KANB-3", "percent": 50, "assessor": "   "},
+	} {
+		cs, svc := roundtripServer(t, NewServer)
+		svc.DefaultProgressSet = &service.ProgressSetResult{
+			Mark:       domain.ProgressMark{ID: "pm-1", Assessor: "test-actor", Percent: 50},
+			TaskKey:    "KANB-3",
+			ProjectKey: "KANB",
+		}
+		res, sc := callTool(t, cs, "progress_set", args)
+		if res.IsError {
+			t.Fatalf("progress_set %v refused: %v", args, sc)
+		}
+		expectOK(t, sc, "progress_set")
+		if strings.TrimSpace(svc.LastProgressSet.Assessor) != "" {
+			t.Errorf("assessor forwarded as %q, want blank so the service uses the token's name", svc.LastProgressSet.Assessor)
+		}
 	}
-	env := errorEnvelopeOf(t, res)
-	if env["code"] != string(domain.CodeValidation) {
-		t.Errorf("code = %v, want %v", env["code"], domain.CodeValidation)
-	}
-	if !strings.Contains(env["message"].(string), "assessor") {
-		t.Errorf("message %q should mention assessor", env["message"])
-	}
-	if svc.LastProgressSet.Assessor != "" {
-		t.Errorf("service called despite empty assessor: %+v", svc.LastProgressSet)
+	cs, _ := roundtripServer(t, NewServer)
+	raw, _ := toolByName(t, cs, "progress_set").InputSchema.(map[string]any)
+	req, _ := raw["required"].([]any)
+	for _, r := range req {
+		if r == "assessor" {
+			t.Errorf("assessor is still required in the schema: %v", req)
+		}
 	}
 }

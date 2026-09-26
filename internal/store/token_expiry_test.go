@@ -141,3 +141,49 @@ func isNotFoundErr(err error) bool {
 	e := domain.AsError(err)
 	return e != nil && e.Code == domain.CodeNotFound
 }
+
+// KANB-68: SetExpiry is the renewal of an executor key. Only the expiry
+// moves — the hash, and so the secret the agent holds, stays — and a
+// revoked row is not brought back.
+func TestTokenSetExpiry_MovesOnlyTheExpiry(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	old := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	renewed := old.Add(48 * time.Hour)
+	tok := &domain.Token{ID: "t-renew", Name: "exec-1", Hash: []byte("h-renew"),
+		Scopes: domain.Scopes{domain.ScopeExecutor}, ProjectKeys: []string{"BMB"}, ExpiresAt: &old}
+	dead := &domain.Token{ID: "t-dead", Name: "exec-dead", Hash: []byte("h-dead"),
+		Scopes: domain.Scopes{domain.ScopeExecutor}, ProjectKeys: []string{"BMB"}, ExpiresAt: &old}
+	if err := s.Write(ctx, func(tx Tx) error {
+		for _, x := range []*domain.Token{tok, dead} {
+			if err := s.Tokens().Create(tx, x); err != nil {
+				return err
+			}
+		}
+		if err := s.Tokens().Revoke(tx, "exec-dead"); err != nil {
+			return err
+		}
+		return s.Tokens().SetExpiry(tx, tok.ID, renewed)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var got *domain.Token
+	var deadErr error
+	if err := s.Write(ctx, func(tx Tx) error {
+		var err error
+		if got, err = s.Tokens().GetByHash(tx, []byte("h-renew")); err != nil {
+			return err
+		}
+		deadErr = s.Tokens().SetExpiry(tx, dead.ID, renewed)
+		return nil
+	}); err != nil {
+		t.Fatalf("the old hash no longer resolves after SetExpiry: %v", err)
+	}
+	if got.ExpiresAt == nil || !got.ExpiresAt.Equal(renewed) || got.ID != tok.ID ||
+		len(got.ProjectKeys) != 1 || len(got.Scopes) != 1 || got.Scopes[0] != domain.ScopeExecutor {
+		t.Fatalf("after SetExpiry: %+v", got)
+	}
+	if e := domain.AsError(deadErr); e == nil || e.Code != domain.CodeNotFound {
+		t.Fatalf("SetExpiry on a revoked row: %v, want not_found", deadErr)
+	}
+}

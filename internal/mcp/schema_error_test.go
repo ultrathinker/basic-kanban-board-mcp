@@ -188,7 +188,7 @@ func TestSchemaRemediation_ListsWhatEachToolRequires(t *testing.T) {
 		{"task_update", []string{"patches"}},
 		{"task_claim", []string{"key", "action"}},
 		{"project_post", []string{"project", "author", "body"}},
-		{"progress_set", []string{"assessor", "percent"}},
+		{"progress_set", []string{"percent"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.tool, func(t *testing.T) {
