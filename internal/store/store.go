@@ -106,6 +106,11 @@ type ProjectRepo interface {
 	List(tx Tx, includeArchived bool) ([]*domain.Project, error)
 	// NextTaskSeq allocates the next PROJ-N number atomically inside tx.
 	NextTaskSeq(tx Tx, projectID string) (int, error)
+	// SetNextTaskSeq sets the number the next NextTaskSeq call hands out.
+	// Only `kanban import` calls it: restoring a backup must give every card
+	// back its ORIGINAL key (KANB-66), because notes, bodies, commits and
+	// the history rows of the same backup all name cards by key.
+	SetNextTaskSeq(tx Tx, projectID string, next int) error
 	SetFocus(tx Tx, projectID string, taskID *string) error
 	Archive(tx Tx, projectID string, archived bool) error
 	Delete(tx Tx, projectID string) error // admin CLI only, never over MCP

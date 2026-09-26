@@ -199,6 +199,25 @@ func (r *projectRepo) NextTaskSeq(tx Tx, projectID string) (int, error) {
 	return seq, nil
 }
 
+// SetNextTaskSeq sets next_task_seq outright. See ProjectRepo.
+func (r *projectRepo) SetNextTaskSeq(tx Tx, projectID string, next int) error {
+	if projectID == "" {
+		return domain.Invalid("project_id", "project id is empty", "Pass the project UUID.")
+	}
+	if next < 1 {
+		return domain.Invalid("next_task_seq", fmt.Sprintf("next_task_seq must be at least 1, got %d", next), "Pass a positive task number.")
+	}
+	tw := tx.(*txWrap)
+	res, err := tw.tx.ExecContext(tw.ctx(), `UPDATE projects SET next_task_seq = ? WHERE id = ?`, next, projectID)
+	if err != nil {
+		return fmt.Errorf("store: set next_task_seq: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return domain.NotFound("project", projectID)
+	}
+	return nil
+}
+
 // SetFocus updates the project's focus pointer and bumps the project
 // version. The focus event is logged at the service layer.
 func (r *projectRepo) SetFocus(tx Tx, projectID string, taskID *string) error {

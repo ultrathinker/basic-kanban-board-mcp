@@ -1436,3 +1436,102 @@ func TestExportImport_LinksWithADoneBlockerSurvive(t *testing.T) {
 		t.Fatalf("%d links after the round trip, want 2 (the edge from the done blocker must survive)", len(edges))
 	}
 }
+
+// TestExportImport_KeysNotesAndVerdictSurvive pins KANB-65 and KANB-66 on a
+// board shaped to break both: the done card is the OLDEST (key -1) but its
+// column comes last, so an import that numbers cards in column order gives it
+// another key — and every history row resolved by key afterwards (notes,
+// progress) lands on the wrong card. The done card also carries the notes a
+// done-blind task list used to drop, and a verdict the import used to reset.
+func TestExportImport_KeysNotesAndVerdictSurvive(t *testing.T) {
+	dir1, dir2 := t.TempDir(), t.TempDir()
+	ctx := context.Background()
+	st, err := openStore(ctx, dir1)
+	if err != nil {
+		t.Fatalf("openStore: %v", err)
+	}
+	svc := service.New(st, nil)
+	actor := service.Actor{Name: "tester", Scopes: domain.Scopes{domain.ScopeAdmin, domain.ScopeWrite, domain.ScopeRead}}
+	if _, err := svc.ProjectUpsert(ctx, actor, service.ProjectUpsertInput{
+		Mode: service.UpsertCreate, Key: "RKKY", Name: "Keys",
+		Columns: []service.ColumnSpec{
+			{Name: "Backlog", Kind: domain.KindBacklog},
+			{Name: "Doing", Kind: domain.KindActive},
+			{Name: "Done", Kind: domain.KindDone},
+		},
+	}); err != nil {
+		t.Fatalf("ProjectUpsert: %v", err)
+	}
+	holds := domain.OutcomeHolds
+	created, err := svc.TaskCreate(ctx, actor, service.TaskCreateInput{Tasks: []service.NewTask{
+		{ProjectKey: "RKKY", Column: "Done", Title: "oldest, finished", Type: domain.TypeTask, Outcome: &holds, Conclusion: "it held"},
+		{ProjectKey: "RKKY", Column: "Backlog", Title: "newer, open", Type: domain.TypeTask},
+		{ProjectKey: "RKKY", Column: "Backlog", Title: "newest, open", Type: domain.TypeTask},
+	}})
+	if err != nil {
+		t.Fatalf("TaskCreate: %v", err)
+	}
+	doneKey, doneID := created.Tasks[0].Key, created.Tasks[0].ID
+	noteAt := time.Date(2026, 9, 1, 10, 0, 0, 0, time.UTC)
+	var nextSeq int
+	if err := st.Write(ctx, func(tx store.Tx) error {
+		if err := st.Notes().Add(tx, &domain.Note{ID: "note-1", TaskID: doneID, Author: "reviewer-x", Body: "verified by a canary", CreatedAt: noteAt}); err != nil {
+			return err
+		}
+		p, err := st.Projects().GetByKey(tx, "RKKY")
+		if err != nil {
+			return err
+		}
+		// A number freed by a hard delete must not be handed out again.
+		nextSeq = p.NextTaskSeq + 5
+		return st.Projects().SetNextTaskSeq(tx, p.ID, nextSeq)
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	st.Close()
+
+	exportFile := filepath.Join(t.TempDir(), "export.json")
+	if err := runExport([]string{"--data", dir1, "--out", exportFile}); err != nil {
+		t.Fatalf("runExport: %v", err)
+	}
+	if err := runImport([]string{"--data", dir2, "--in", exportFile}); err != nil {
+		t.Fatalf("runImport: %v", err)
+	}
+
+	st2 := mustOpenStore(t, dir2)
+	if err := st2.Read(ctx, func(tx store.Tx) error {
+		for _, want := range created.Tasks {
+			got, err := st2.Tasks().GetByKey(tx, want.Key)
+			if err != nil {
+				return err
+			}
+			if got.Title != want.Title {
+				t.Errorf("%s restored as %q, want %q — keys were renumbered", want.Key, got.Title, want.Title)
+			}
+		}
+		done, err := st2.Tasks().GetByKey(tx, doneKey)
+		if err != nil {
+			return err
+		}
+		if done.Outcome != domain.OutcomeHolds || done.Conclusion != "it held" {
+			t.Errorf("verdict = %q / %q, want holds / it held", done.Outcome, done.Conclusion)
+		}
+		notes, err := st2.Notes().ListByTask(tx, done.ID, 10, nil)
+		if err != nil {
+			return err
+		}
+		if len(notes) != 1 || notes[0].Author != "reviewer-x" || !notes[0].CreatedAt.Equal(noteAt) || notes[0].Body != "verified by a canary" {
+			t.Errorf("notes of the done card = %+v, want the one note with its author and time", notes)
+		}
+		p, err := st2.Projects().GetByKey(tx, "RKKY")
+		if err != nil {
+			return err
+		}
+		if p.NextTaskSeq != nextSeq {
+			t.Errorf("next_task_seq = %d, want %d", p.NextTaskSeq, nextSeq)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}

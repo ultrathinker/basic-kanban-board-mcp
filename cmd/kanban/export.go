@@ -58,6 +58,28 @@ type exportDocument struct {
 	// archiving it. Re-keyed the same way ProgressMarks/ChatMessages/
 	// Journal are: a project KEY, not the internal id.
 	ArchivedTasks []exportArchivedTask `json:"archived_tasks,omitempty"`
+
+	// NextTaskSeq is each project's next card number, by project key. Import
+	// gives every card back its original key (KANB-66) and then restores
+	// this, so a number freed by a hard delete is not handed out again.
+	// Absent in older exports: import then falls back to highest key + 1.
+	NextTaskSeq map[string]int `json:"next_task_seq,omitempty"`
+
+	// Notes carries every note of every exported card, live or archived,
+	// with its original author and time (KANB-65). Before it existed a
+	// restored board had lost its entire work history: 1033 notes on the
+	// live board came back as 0.
+	Notes []exportNote `json:"notes,omitempty"`
+}
+
+// exportNote is one card note, re-keyed like the other history streams.
+type exportNote struct {
+	ID        string    `json:"id"`
+	Project   string    `json:"project"`
+	Task      string    `json:"task"`
+	Author    string    `json:"author"`
+	Body      string    `json:"body"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // exportArchivedTask is one archived task, carried in the same shape
@@ -179,9 +201,13 @@ func exportBoard(ctx context.Context, svc service.Service, st store.Store, actor
 			// Every task, archived included: board_get's own read (behind
 			// `board`) never surfaces an archived one, but a progress mark
 			// may name it, so collectProgress needs the list before it runs.
+			// IncludeDone as well: without it the done column — most of a
+			// mature board — was silently missing from this list, and with
+			// it every note and every archived card that sat in done.
 			all, err := st.Tasks().List(tx, store.TaskFilter{
 				ProjectIDs:      []string{p.ID},
 				IncludeArchived: true,
+				IncludeDone:     true,
 			})
 			if err != nil {
 				return fmt.Errorf("export archived tasks (project %s): %w", bp.Key, err)
@@ -192,6 +218,13 @@ func exportBoard(ctx context.Context, svc service.Service, st store.Store, actor
 					archivedTasks = append(archivedTasks, t)
 					archivedKeys[bp.Key] = append(archivedKeys[bp.Key], t.Key)
 				}
+			}
+			if out.NextTaskSeq == nil {
+				out.NextTaskSeq = map[string]int{}
+			}
+			out.NextTaskSeq[bp.Key] = p.NextTaskSeq
+			if err := collectNotes(tx, st, bp.Key, all, out); err != nil {
+				return err
 			}
 			if err := collectProgress(tx, st, bp, p.ID, archivedTasks, out); err != nil {
 				return err
@@ -231,6 +264,34 @@ func exportBoard(ctx context.Context, svc service.Service, st store.Store, actor
 		}
 	}
 	return out, nil
+}
+
+// outcomePtr passes a card's stored outcome to TaskCreate; empty stays nil
+// (TaskCreate then defaults to open).
+func outcomePtr(o domain.Outcome) *domain.Outcome {
+	if o == "" {
+		return nil
+	}
+	return &o
+}
+
+// collectNotes reads every note of every card of one project, live or
+// archived, oldest first so a re-import inserts them in their own order.
+func collectNotes(tx store.Tx, st store.Store, projectKey string, tasks []*domain.Task, out *exportDocument) error {
+	for _, t := range tasks {
+		notes, err := st.Notes().ListByTask(tx, t.ID, 1<<30, nil)
+		if err != nil {
+			return fmt.Errorf("export notes of %s: %w", t.Key, err)
+		}
+		for i := len(notes) - 1; i >= 0; i-- {
+			n := notes[i]
+			out.Notes = append(out.Notes, exportNote{
+				ID: n.ID, Project: projectKey, Task: t.Key,
+				Author: n.Author, Body: n.Body, CreatedAt: n.CreatedAt,
+			})
+		}
+	}
+	return nil
 }
 
 // collectProgress reads every mark of one project — both the project-level
@@ -451,7 +512,7 @@ func importBoard(ctx context.Context, svc service.Service, st store.Store, actor
 	}
 
 	for _, bp := range doc.Projects {
-		if err := importProject(ctx, svc, actor, bp, doc); err != nil {
+		if err := importProject(ctx, svc, st, actor, bp, doc); err != nil {
 			return err
 		}
 	}
@@ -604,6 +665,11 @@ func validateImportReferences(doc exportDocument) error {
 			return fmt.Errorf("import chat message %s: project %q not in document", msg.ID, msg.Project)
 		}
 	}
+	for _, n := range doc.Notes {
+		if _, ok := tasks[n.Project+"/"+n.Task]; !ok {
+			return fmt.Errorf("import note %s: task %q not in document project %q", n.ID, n.Task, n.Project)
+		}
+	}
 	return nil
 }
 
@@ -612,7 +678,7 @@ func validateImportReferences(doc exportDocument) error {
 // import looks exactly like one created by `kanban demo` followed by hand
 // edits, including the second pass that sets acceptance on done tasks and
 // the parent / links pass that turns bare task rows into a hierarchy.
-func importProject(ctx context.Context, svc service.Service, actor service.Actor, bp service.BoardProject, doc exportDocument) error {
+func importProject(ctx context.Context, svc service.Service, st store.Store, actor service.Actor, bp service.BoardProject, doc exportDocument) error {
 	cols := make([]service.ColumnSpec, len(bp.Columns))
 	for i, c := range bp.Columns {
 		cols[i] = service.ColumnSpec{
@@ -683,8 +749,37 @@ func importProject(ctx context.Context, svc service.Service, actor service.Actor
 	var reparents []reparentReq
 	var archivedKeys []string
 
+	// Every card keeps its original key (KANB-66): the history streams of
+	// this same document (progress, journal, notes) name cards by key and
+	// are resolved by key after this pass, and so do the bodies, notes,
+	// commits and agent memories outside it. Setting the counter right
+	// before each create makes TaskCreate hand out exactly that number.
+	var projectID string
+	if err := st.Read(ctx, func(tx store.Tx) error {
+		p, err := st.Projects().GetByKey(tx, bp.Key)
+		if err == nil {
+			projectID = p.ID
+		}
+		return err
+	}); err != nil {
+		return fmt.Errorf("import project %s: %w", bp.Key, err)
+	}
+	maxSeq := 0
+
 	for _, e := range entries {
 		tv := e.tv
+		keyProject, seq, err := domain.ParseTaskKey(tv.Key)
+		if err != nil || !strings.EqualFold(keyProject, bp.Key) {
+			return fmt.Errorf("import task %s: key does not belong to project %s", tv.Key, bp.Key)
+		}
+		if err := st.Write(ctx, func(tx store.Tx) error {
+			return st.Projects().SetNextTaskSeq(tx, projectID, seq)
+		}); err != nil {
+			return fmt.Errorf("import task %s: %w", tv.Key, err)
+		}
+		if seq > maxSeq {
+			maxSeq = seq
+		}
 		acceptanceStrings := make([]string, 0, len(tv.Acceptance))
 		for _, it := range tv.Acceptance {
 			acceptanceStrings = append(acceptanceStrings, it.Text)
@@ -705,6 +800,11 @@ func importProject(ctx context.Context, svc service.Service, actor service.Actor
 				Acceptance: acceptanceStrings,
 				DueAt:      tv.DueAt,
 				Metadata:   tv.Metadata,
+				// The verdict is part of the card: without these a restored
+				// board reset every judged card to "open" (found by a
+				// per-card comparison of a live round trip, KANB-65).
+				Outcome:    outcomePtr(tv.Outcome),
+				Conclusion: tv.Conclusion,
 			}},
 			// The cards existed before the export; their assignees are
 			// history, not new assignments to check against today's keys.
@@ -717,6 +817,9 @@ func importProject(ctx context.Context, svc service.Service, actor service.Actor
 			return fmt.Errorf("import task %s: no task returned", tv.Key)
 		}
 		createdTask := res.Tasks[0]
+		if createdTask.Key != tv.Key {
+			return fmt.Errorf("import task %s: was created as %s; the original key must be kept", tv.Key, createdTask.Key)
+		}
 		keyMap[tv.Key] = createdTask.Key
 		versions[createdTask.Key] = createdTask.Version
 
@@ -760,6 +863,18 @@ func importProject(ctx context.Context, svc service.Service, actor service.Actor
 		if e.archived {
 			archivedKeys = append(archivedKeys, createdTask.Key)
 		}
+	}
+
+	// Restore the counter the source had, so a number freed by a hard
+	// delete is not reused; an older export without it gets highest + 1.
+	next := doc.NextTaskSeq[bp.Key]
+	if next <= maxSeq {
+		next = maxSeq + 1
+	}
+	if err := st.Write(ctx, func(tx store.Tx) error {
+		return st.Projects().SetNextTaskSeq(tx, projectID, next)
+	}); err != nil {
+		return fmt.Errorf("import project %s: next task number: %w", bp.Key, err)
 	}
 
 	for _, r := range reparents {
@@ -832,7 +947,7 @@ func importProject(ctx context.Context, svc service.Service, actor service.Actor
 // surface routes everything through those — by design, so an agent
 // cannot smuggle a backdated claim into the chart.
 func importDated(ctx context.Context, st store.Store, actor service.Actor, doc exportDocument) error {
-	if len(doc.ProgressMarks) == 0 && len(doc.ChatMessages) == 0 {
+	if len(doc.ProgressMarks) == 0 && len(doc.ChatMessages) == 0 && len(doc.Notes) == 0 {
 		return nil
 	}
 	return st.Write(ctx, func(tx store.Tx) error {
@@ -909,6 +1024,20 @@ func importDated(ctx context.Context, st store.Store, actor service.Actor, doc e
 			}
 			if err := st.Chat().Add(tx, msg); err != nil {
 				return fmt.Errorf("import chat %s: %w", m.ID, err)
+			}
+		}
+		// Notes keep their original author and time: NoteRepo.Add writes
+		// CreatedAt as given. A note written through task_update would be
+		// stamped with the importer's name and today's date (KANB-65).
+		for _, n := range doc.Notes {
+			tid, ok := taskID[n.Project+"/"+n.Task]
+			if !ok {
+				return fmt.Errorf("import note %s: task %q not in document", n.ID, n.Task)
+			}
+			if err := st.Notes().Add(tx, &domain.Note{
+				ID: n.ID, TaskID: tid, Author: n.Author, Body: n.Body, CreatedAt: n.CreatedAt,
+			}); err != nil {
+				return fmt.Errorf("import note %s: %w", n.ID, err)
 			}
 		}
 		// Imported rows deliberately do not produce a domain event: the
