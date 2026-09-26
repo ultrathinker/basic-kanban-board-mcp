@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/ultrathinker/basic-kanban-board-mcp/internal/auth"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/domain"
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/web/view"
 )
@@ -39,6 +38,10 @@ func (w *Web) handleLoginSubmit(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.d.Auth.SetSessionCookie(rw, r, sess)
+	// Rotate the CSRF token on the way in (KANB-18): the anonymous token the
+	// login form carried must not outlive the transition. The session's own
+	// derived token replaces it right away instead of on the next render.
+	w.d.Auth.SetCSRFCookie(rw, r, w.d.Auth.CSRFTokenForSession(sess.ID))
 	http.Redirect(rw, r, next, http.StatusSeeOther)
 }
 
@@ -57,10 +60,15 @@ func (w *Web) handleLogout(rw http.ResponseWriter, r *http.Request) {
 		apiError(rw, err)
 		return
 	}
-	if c, err := r.Cookie(auth.DefaultCookiePolicy(false).Name); err == nil && c.Value != "" {
-		_ = w.d.Auth.Sessions.DeleteSession(r.Context(), c.Value)
+	if sid := w.d.Auth.SessionIDFromRequest(r); sid != "" {
+		_ = w.d.Auth.Sessions.DeleteSession(r.Context(), sid)
 	}
 	w.d.Auth.ClearSessionCookie(rw, r)
+	// ...and on the way out: the session's derived token dies with the
+	// session, and the login page starts from a fresh anonymous one.
+	if fresh, err := w.d.Auth.CSRFToken(); err == nil {
+		w.d.Auth.SetCSRFCookie(rw, r, fresh)
+	}
 	http.Redirect(rw, r, "/login", http.StatusSeeOther)
 }
 

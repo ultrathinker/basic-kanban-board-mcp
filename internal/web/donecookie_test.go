@@ -397,15 +397,18 @@ func TestHideDone_SecureMatchesSessionCookiePolicy(t *testing.T) {
 		boards := map[string]*service.Board{"BMB": doneToggleBoard("BMB", "Finished Widget")}
 		w, _ := newDoneToggleWeb(t, mgr, boards)
 		sess := sessionFor(t, mgr, testAdminSecret)
-		rw := do(w, "GET", "/p/BMB?hide_done=0", nil, sessionCookie(sess))
+		// Over HTTPS the session and CSRF cookies carry the __Host- prefix
+		// (KANB-18), and a plain-named session cookie is not honoured.
+		hostSession := &http.Cookie{Name: auth.HostCookiePrefix + "kanban_session", Value: sess.ID}
+		rw := do(w, "GET", "/p/BMB?hide_done=0", nil, hostSession)
 
 		done := doneShownCookie(rw)
 		if done == nil {
 			t.Fatal("no kanban_done_shown cookie set")
 		}
-		csrf := cookieNamed(rw, auth.CSRFCookieName)
+		csrf := cookieNamed(rw, auth.HostCookiePrefix+auth.CSRFCookieName)
 		if csrf == nil {
-			t.Fatal("no kanban_csrf cookie set (test setup problem, not the feature under test)")
+			t.Fatal("no __Host-kanban_csrf cookie set (test setup problem, not the feature under test)")
 		}
 		if done.Secure != csrf.Secure {
 			t.Fatalf("kanban_done_shown.Secure = %v, kanban_csrf.Secure = %v -- must agree", done.Secure, csrf.Secure)

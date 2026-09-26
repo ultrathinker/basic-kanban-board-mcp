@@ -64,14 +64,15 @@ func newSessionID() (string, error) {
 // trusted-proxy rules.
 func (m *Manager) SetSessionCookie(w http.ResponseWriter, r *http.Request, sess *domain.Session) {
 	pol := DefaultCookiePolicy(m.cookieSecureBase())
+	secure := pol.Secure(r, m)
 	c := &http.Cookie{
-		Name:     pol.Name,
+		Name:     cookieName(pol.Name, secure),
 		Value:    sess.ID,
 		Path:     pol.Path,
 		Expires:  sess.ExpiresAt,
 		HttpOnly: true,
 		SameSite: pol.SameSite,
-		Secure:   pol.Secure(r, m),
+		Secure:   secure,
 	}
 	http.SetCookie(w, c)
 }
@@ -81,17 +82,21 @@ func (m *Manager) SetSessionCookie(w http.ResponseWriter, r *http.Request, sess 
 // does not outlive the request.
 func (m *Manager) ClearSessionCookie(w http.ResponseWriter, r *http.Request) {
 	pol := DefaultCookiePolicy(m.cookieSecureBase())
-	c := &http.Cookie{
-		Name:     pol.Name,
-		Value:    "",
-		Path:     pol.Path,
-		Expires:  time.Unix(0, 0),
-		MaxAge:   -1,
-		HttpOnly: true,
-		SameSite: pol.SameSite,
-		Secure:   pol.Secure(r, m),
+	// Both names are cleared: a browser may still hold the plain cookie from
+	// before the deployment moved to HTTPS, or the reverse. The __Host- one
+	// must itself be Secure, or the browser ignores the deletion.
+	for _, secure := range []bool{false, true} {
+		http.SetCookie(w, &http.Cookie{
+			Name:     cookieName(pol.Name, secure),
+			Value:    "",
+			Path:     pol.Path,
+			Expires:  time.Unix(0, 0),
+			MaxAge:   -1,
+			HttpOnly: true,
+			SameSite: pol.SameSite,
+			Secure:   secure || pol.Secure(r, m),
+		})
 	}
-	http.SetCookie(w, c)
 }
 
 // cookieSecureBase reports whether Secure should be on for cookies written

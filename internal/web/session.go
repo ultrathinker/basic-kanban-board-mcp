@@ -22,12 +22,11 @@ import (
 // built without duplicating the token hash/verify logic — only the
 // session-lookup half is repeated here.
 func (w *Web) sessionFromRequest(r *http.Request) (*domain.Token, error) {
-	cookieName := auth.DefaultCookiePolicy(false).Name
-	c, err := r.Cookie(cookieName)
-	if err != nil || c.Value == "" {
+	sid := w.d.Auth.SessionIDFromRequest(r)
+	if sid == "" {
 		return nil, nil
 	}
-	sess, err := w.d.Auth.Sessions.GetSession(r.Context(), c.Value)
+	sess, err := w.d.Auth.Sessions.GetSession(r.Context(), sid)
 	if err != nil {
 		return nil, err
 	}

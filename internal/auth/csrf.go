@@ -38,14 +38,15 @@ func (m *Manager) IssueCSRF() (string, error) { return m.CSRFToken() }
 // the session idle TTL so an idle browser drops both cookies together.
 func (m *Manager) SetCSRFCookie(w http.ResponseWriter, r *http.Request, token string) {
 	pol := DefaultCookiePolicy(m.cookieSecureBase())
+	secure := pol.Secure(r, m)
 	c := &http.Cookie{
-		Name:     CSRFCookieName,
+		Name:     cookieName(CSRFCookieName, secure),
 		Value:    token,
 		Path:     pol.Path,
 		Expires:  m.Now().Add(domain.SessionIdleTTL),
 		HttpOnly: false, // browser-side form filler must read this
 		SameSite: pol.SameSite,
-		Secure:   pol.Secure(r, m),
+		Secure:   secure,
 	}
 	http.SetCookie(w, c)
 }
@@ -85,7 +86,7 @@ func (m *Manager) CSRFTokenForSession(sessionID string) string {
 // gets a freshly minted random token, as it always did.
 func (m *Manager) CSRFTokenForRequest(r *http.Request) (string, error) {
 	if r != nil {
-		if sid := sessionIDForCSRF(r); sid != "" {
+		if sid := m.SessionIDFromRequest(r); sid != "" {
 			return m.CSRFTokenForSession(sid), nil
 		}
 	}
@@ -103,16 +104,6 @@ func (m *Manager) csrfHMACKey() []byte {
 		_ = readRandom(m.csrfKey[:])
 	})
 	return m.csrfKey[:]
-}
-
-// sessionIDForCSRF returns the session cookie's value, or "" when the request
-// carries none.
-func sessionIDForCSRF(r *http.Request) string {
-	c, err := r.Cookie(DefaultCookiePolicy(false).Name)
-	if err != nil {
-		return ""
-	}
-	return c.Value
 }
 
 // VerifyCSRF checks the CSRF token on a state-changing browser request, using
@@ -144,18 +135,18 @@ func (m *Manager) VerifyCSRF(r *http.Request) error {
 	if got == "" {
 		return ErrForbidden
 	}
-	if sid := sessionIDForCSRF(r); sid != "" {
+	if sid := m.SessionIDFromRequest(r); sid != "" {
 		want := m.CSRFTokenForSession(sid)
 		if subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
 			return ErrForbidden
 		}
 		return nil
 	}
-	c, err := r.Cookie(CSRFCookieName)
-	if err != nil || c.Value == "" {
+	cookie := m.readCookie(r, CSRFCookieName)
+	if cookie == "" {
 		return ErrForbidden
 	}
-	if subtle.ConstantTimeCompare([]byte(got), []byte(c.Value)) != 1 {
+	if subtle.ConstantTimeCompare([]byte(got), []byte(cookie)) != 1 {
 		return ErrForbidden
 	}
 	return nil

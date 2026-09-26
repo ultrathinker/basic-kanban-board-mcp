@@ -333,7 +333,7 @@ func (m *Manager) authenticateRequest(r *http.Request) (*AuthResult, error) {
 		}
 		return &AuthResult{Token: tok, Actor: ResolveActor(tok), Kind: AuthTicket}, nil
 	}
-	if cid, ok := readSessionCookie(r); ok {
+	if cid, ok := m.readSessionCookie(r); ok {
 		sess, err := m.Sessions.GetSession(r.Context(), cid)
 		if err != nil {
 			// Same not-found-as-403 contract as VerifyToken: a stale or
@@ -399,12 +399,54 @@ func (m *Manager) validSession(s *domain.Session, now time.Time) bool {
 	return true
 }
 
-func readSessionCookie(r *http.Request) (string, bool) {
-	c, err := r.Cookie(DefaultCookiePolicy(false).Name)
-	if err != nil || c.Value == "" {
-		return "", false
+func (m *Manager) readSessionCookie(r *http.Request) (string, bool) {
+	v := m.SessionIDFromRequest(r)
+	return v, v != ""
+}
+
+// HostCookiePrefix is the "__Host-" cookie-name prefix (RFC 6265bis). A
+// browser accepts a cookie so named only if it is Secure, has Path=/ and
+// carries no Domain — so no sibling host under the same registrable domain
+// can plant or overwrite it. It matters the day the board leaves 127.0.0.1
+// for a domain name (KANB-18): an IP literal has no sibling hosts, a domain
+// does. Cookies written without Secure keep their plain names; a browser
+// would reject a __Host- cookie that is not Secure.
+const HostCookiePrefix = "__Host-"
+
+// cookieName is base, carrying the __Host- prefix when the cookie is Secure.
+func cookieName(base string, secure bool) string {
+	if secure {
+		return HostCookiePrefix + base
 	}
-	return c.Value, true
+	return base
+}
+
+// readCookie returns the value a request carries for base. The __Host- name
+// is always honoured. The plain name is honoured only when this request is
+// not one the server would answer with Secure cookies: over HTTPS a plain
+// cookie is exactly what a sibling host could have planted, so reading it
+// would undo the point of the prefix.
+func (m *Manager) readCookie(r *http.Request, base string) string {
+	if r == nil {
+		return ""
+	}
+	if c, err := r.Cookie(HostCookiePrefix + base); err == nil && c.Value != "" {
+		return c.Value
+	}
+	if DefaultCookiePolicy(m.cookieSecureBase()).Secure(r, m) {
+		return ""
+	}
+	if c, err := r.Cookie(base); err == nil && c.Value != "" {
+		return c.Value
+	}
+	return ""
+}
+
+// SessionIDFromRequest returns the browser session id r carries, or "".
+// Every reader of the session cookie goes through here, so the naming rule
+// (plain vs __Host-) lives in one place.
+func (m *Manager) SessionIDFromRequest(r *http.Request) string {
+	return m.readCookie(r, DefaultCookiePolicy(false).Name)
 }
 
 // writeAuthError renders the right HTTP status for each error class.
