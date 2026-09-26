@@ -54,6 +54,7 @@ func newErrorEnvelope(e *domain.Error) *errorEnvelope {
 // 26.09.2026, follow-up to KANB-58).
 type conflictTask struct {
 	Key        string           `json:"key"`
+	Project    string           `json:"project,omitempty"`
 	Version    int              `json:"version"`
 	Column     string           `json:"column,omitempty"`
 	UpdatedAt  time.Time        `json:"updated_at"`
@@ -92,6 +93,7 @@ func conflictCurrent(cur any) (any, int, bool) {
 			return nil, 0, false
 		}
 		out := conflictTaskOf(&c.Task)
+		out.Project = c.ProjectKey
 		out.Column = c.ColumnName
 		return out, c.Version, true
 	case *domain.Task:

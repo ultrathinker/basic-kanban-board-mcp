@@ -233,7 +233,7 @@ func TestNewErrorEnvelope_ConflictCurrentIsShaped(t *testing.T) {
 	env := newErrorEnvelope(domain.Conflict(cur, 3, 4))
 	raw, _ := json.Marshal(env)
 	s := string(raw)
-	for _, want := range []string{`"key":"BMB-7"`, `"version":4`, `"column":"Doing"`, `"updated_by":"glm-flash"`, `"assignee":"opus"`, `"acceptance":{"done":1,"total":2}`, `"priority":"high"`} {
+	for _, want := range []string{`"key":"BMB-7"`, `"project":"BMB"`, `"version":4`, `"column":"Doing"`, `"updated_by":"glm-flash"`, `"assignee":"opus"`, `"acceptance":{"done":1,"total":2}`, `"priority":"high"`} {
 		if !strings.Contains(s, want) {
 			t.Errorf("shaped current lacks %s: %s", want, s)
 		}
