@@ -377,6 +377,8 @@ func tokenList(args []string) error {
 		state := "active"
 		if r.RevokedAt != nil {
 			state = "revoked"
+		} else if !r.ActiveAt(time.Now()) {
+			state = "expired"
 		}
 		last := "-"
 		if r.LastUsedAt != nil {

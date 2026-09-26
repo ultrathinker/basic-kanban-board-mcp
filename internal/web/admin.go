@@ -45,12 +45,13 @@ func (w *Web) handleAdmin(rw http.ResponseWriter, r *http.Request) {
 		w.pageError(rw, r, err)
 		return
 	}
+	now := w.d.Auth.Now()
 	allTokens := make([]view.AdminToken, 0, len(toks))
 	for _, t := range toks {
 		allTokens = append(allTokens, view.AdminToken{
 			Name: t.Name, Scope: formatScopes(t.Scopes), ProjectKeys: formatProjectKeys(t.ProjectKeys),
 			CreatedAt: t.CreatedAt.UTC().Format(time.RFC3339), LastUsed: formatLastUsed(t.LastUsedAt),
-			Active: t.Active(),
+			Active: t.ActiveAt(now),
 		})
 	}
 	board, err := w.d.Service.BoardGet(r.Context(), actorFor(tok), service.BoardGetInput{View: service.ViewSummary})

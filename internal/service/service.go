@@ -25,6 +25,11 @@ func (a Actor) IsAdmin() bool  { return a.Scopes.Has(domain.ScopeAdmin) }
 func (a Actor) CanWrite() bool { return a.Scopes.Has(domain.ScopeWrite) }
 func (a Actor) CanRead() bool  { return a.Scopes.Has(domain.ScopeRead) }
 
+// OwnCardsOnly reports an executor key (KANB-60): it writes only to cards
+// assigned to its own name, never across the done boundary. Every write
+// use-case that admits executors checks this and narrows accordingly.
+func (a Actor) OwnCardsOnly() bool { return a.Scopes.OwnCardsOnly() }
+
 // Service is the whole application surface. Nine MCP tools, the UI and the CLI
 // all map onto these methods.
 type Service interface {
@@ -49,6 +54,11 @@ type Service interface {
 	// history (KANB-45) — the read a consumer uses to find commands that were
 	// written before it started.
 	ChatFeed(ctx context.Context, a Actor, in ChatFeedInput) (*ChatFeedResult, error)
+
+	// ExecutorKeyIssue mints a named, expiring executor key for one or more
+	// projects (KANB-60). The issuer is an admin or the coordinator of every
+	// listed project. The secret is returned here and nowhere else.
+	ExecutorKeyIssue(ctx context.Context, a Actor, in ExecutorKeyIssueInput) (*ExecutorKeyIssueResult, error)
 }
 
 // Include names an optional expansion on a read. One parameter name across all
@@ -394,6 +404,13 @@ type TaskCreateInput struct {
 	// survives restarts), and it covers the BOARD only: it cannot prevent an
 	// external command or deploy from running twice.
 	SourceMessage string
+	// Restore marks a batch that recreates cards which already existed — the
+	// `kanban import` path — rather than new work (KANB-60). Only then is an
+	// assignee accepted without being a participant of the project: the
+	// value is a historical fact carried over from an export, and the
+	// executor key it once named may long have expired. Admin scope only;
+	// no MCP tool sets it.
+	Restore bool
 }
 
 // NewTask uses symbolic refs, not positional indices: an LLM building a batch
@@ -950,4 +967,32 @@ type ProgressTrackDeleteInput struct {
 // ProgressTrackDeleteResult reports how many marks the store removed.
 type ProgressTrackDeleteResult struct {
 	Removed int64
+}
+
+// ---------------------------------------------------------------------------
+// executor_key_issue (KANB-60)
+// ---------------------------------------------------------------------------
+
+// ExecutorKeyIssueInput names the executor and where it works. Name becomes
+// the key's actor identity — the string a card's assignee must equal for the
+// key to write to it — so it is taken verbatim, never normalised.
+type ExecutorKeyIssueInput struct {
+	Name        string
+	ProjectKeys []string
+	// TTLSeconds is the key's lifetime; 0 = domain.ExecutorKeyDefaultTTL,
+	// anything outside [ExecutorKeyMinTTL, ExecutorKeyMaxTTL] is refused.
+	TTLSeconds int
+}
+
+// ExecutorKeyIssueResult carries the secret exactly once. Nothing else in
+// the product can show it again: only its hash is stored.
+type ExecutorKeyIssueResult struct {
+	TokenID     string
+	Name        string
+	ProjectKeys []string
+	ExpiresAt   time.Time
+	Secret      string
+	// Reissued is true when the name belonged to an expired executor key and
+	// that row was given a new secret and expiry instead of a new row.
+	Reissued bool
 }

@@ -93,7 +93,7 @@ func TestBoardGuide_NoMutation(t *testing.T) {
 // TestBoardGuide_ToolCountAndListDeriveFromRegistry is the canary the
 // card explicitly names: the tool count and the per-tool list must come
 // from the registry, not a hand-kept constant. The full server exposes
-// 13 tools; the read-only exposes 5. If a future change adds a tool but
+// 14 tools; the read-only exposes 5. If a future change adds a tool but
 // forgets to update NewServer's specsFromTools slice, the divergence is
 // visible here: published count != data.tool_count.
 func TestBoardGuide_ToolCountAndListDeriveFromRegistry(t *testing.T) {
@@ -105,8 +105,8 @@ func TestBoardGuide_ToolCountAndListDeriveFromRegistry(t *testing.T) {
 		wantCount   int
 		wantMembers []string
 	}{
-		{"full", NewServer, 13, []string{
-			"board_get", "board_guide", "progress_history", "progress_set",
+		{"full", NewServer, 14, []string{
+			"board_get", "board_guide", "executor_key_issue", "progress_history", "progress_set",
 			"project_post", "project_upsert", "task_claim", "task_create",
 			"task_get", "task_link", "task_next", "task_remove", "task_update",
 		}},

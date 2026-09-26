@@ -27,7 +27,7 @@ func (m *Manager) CreateSession(ctx context.Context, secret string) (*domain.Ses
 	if err != nil {
 		return nil, err
 	}
-	if tok == nil || !tok.Active() {
+	if tok == nil || !tok.ActiveAt(m.Now()) {
 		return nil, ErrInvalidCredential
 	}
 	now := m.Now()

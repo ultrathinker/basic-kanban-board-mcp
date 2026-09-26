@@ -13,7 +13,7 @@ import (
 // free or self-held lease); only the emitted event type distinguishes them
 // for the activity feed.
 func (s *svc) TaskClaim(ctx context.Context, a Actor, in TaskClaimInput) (*TaskClaimResult, error) {
-	if err := requireWrite(a); err != nil {
+	if err := requireCardWrite(a); err != nil {
 		return nil, err
 	}
 	if in.Key == "" {
@@ -35,6 +35,9 @@ func (s *svc) TaskClaim(ctx context.Context, a Actor, in TaskClaimInput) (*TaskC
 	err := s.store.Write(ctx, func(tx store.Tx) error {
 		t, err := s.resolveTask(tx, a, in.Key)
 		if err != nil {
+			return err
+		}
+		if err := requireOwnCard(a, t); err != nil {
 			return err
 		}
 		proj, err := s.store.Projects().GetByID(tx, t.ProjectID)

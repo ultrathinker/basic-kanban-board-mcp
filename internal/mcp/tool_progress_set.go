@@ -56,6 +56,7 @@ const progressSetDescription = "Record a progress assessment and completion fore
 	"Overestimating and underestimating are expected and harmless; rolling your progress estimate backward (e.g. from 70% down to 45%) is a normal and valuable signal reflecting discovered complexity, not an admission of defeat. " +
 	"Specify exactly one target: either `task` (e.g. KANB-3) to assess a specific task, or `project` (e.g. KANB) to assess the project as a whole. " +
 	"`eta` is an RFC3339 timestamp forecasting the expected finish date and time (e.g. 2026-09-12T18:00:00Z), not a remaining duration. " +
+	"An executor key may assess only the cards assigned to it, with `assessor` set to its own name, and never the project as a whole. " +
 	"Returns `data` containing the recorded mark and the updated summary progress for the assessed scope."
 
 func progressSetTool() *gomcp.Tool {

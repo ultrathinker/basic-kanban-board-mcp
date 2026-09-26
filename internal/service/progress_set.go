@@ -30,7 +30,7 @@ type ProgressSetResult struct {
 
 // ProgressSet records an append-only progress mark for either a task or a project.
 func (s *svc) ProgressSet(ctx context.Context, a Actor, in ProgressSetInput) (*ProgressSetResult, error) {
-	if err := requireWrite(a); err != nil {
+	if err := requireCardWrite(a); err != nil {
 		return nil, err
 	}
 
@@ -47,6 +47,13 @@ func (s *svc) ProgressSet(ctx context.Context, a Actor, in ProgressSetInput) (*P
 	if err := domain.ValidateActorName("assessor", assessor); err != nil {
 		return nil, err
 	}
+	// An executor key speaks as itself: an assessor it could name freely
+	// would let it record the reviewer's verdict under the reviewer's name.
+	if a.OwnCardsOnly() && assessor != a.Name {
+		return nil, domain.Forbidden(
+			fmt.Sprintf("executor key %s may record progress only as itself, not as %s", a.Name, assessor),
+			fmt.Sprintf("Pass assessor %q.", a.Name))
+	}
 
 	if in.Percent < 0 || in.Percent > 100 {
 		return nil, domain.Invalid("percent", fmt.Sprintf("progress percent %d is outside 0..100", in.Percent), "Send a percent between 0 and 100.")
@@ -61,6 +68,9 @@ func (s *svc) ProgressSet(ctx context.Context, a Actor, in ProgressSetInput) (*P
 	if !hasTask && !hasProject {
 		return nil, domain.Invalid("task", "neither task nor project was provided", "Provide exactly one of 'task' or 'project'.")
 	}
+	if hasProject && a.OwnCardsOnly() {
+		return nil, domain.ExecutorRefused(a.Name, "record project-level progress")
+	}
 
 	ctx = store.WithActor(ctx, a.Name)
 
@@ -70,6 +80,9 @@ func (s *svc) ProgressSet(ctx context.Context, a Actor, in ProgressSetInput) (*P
 		if hasTask {
 			t, err := s.resolveTask(tx, a, in.TaskKey)
 			if err != nil {
+				return err
+			}
+			if err := requireOwnCard(a, t); err != nil {
 				return err
 			}
 			p, err := s.store.Projects().GetByID(tx, t.ProjectID)

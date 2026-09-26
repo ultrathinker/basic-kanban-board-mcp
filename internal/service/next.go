@@ -25,7 +25,7 @@ func (s *svc) TaskNext(ctx context.Context, a Actor, in TaskNextInput) (*NextRes
 		return nil, domain.Invalid("action", "action must be peek, claim or start", "Use one of: peek, claim, start.")
 	}
 	if action != NextPeek {
-		if err := requireWrite(a); err != nil {
+		if err := requireCardWrite(a); err != nil {
 			return nil, err
 		}
 		if in.ProjectKey == "" {
@@ -96,7 +96,7 @@ func (s *svc) taskNextPeek(ctx context.Context, a Actor, in TaskNextInput, limit
 		var merged domain.NextOutput
 		for i, p := range projects {
 			pc.prime(p)
-			out, err := s.nextForProject(tx, cc, pc, p, a.Name, now, limit)
+			out, err := s.nextForProject(tx, cc, pc, p, a, now, limit)
 			if err != nil {
 				return err
 			}
@@ -142,7 +142,7 @@ func (s *svc) taskNextMutate(ctx context.Context, a Actor, in TaskNextInput, act
 		pc := newProjectCache(s, tx)
 		pc.prime(p)
 
-		out, err := s.nextForProject(tx, cc, pc, p, a.Name, now, limit)
+		out, err := s.nextForProject(tx, cc, pc, p, a, now, limit)
 		if err != nil {
 			return err
 		}
@@ -288,7 +288,13 @@ func midRank(before, after int64) int64 { return before + (after-before)/2 }
 
 // nextForProject gathers backlog candidates for one project, hydrates them
 // into TaskViews and runs the pure domain.NextReady algorithm.
-func (s *svc) nextForProject(tx store.Tx, cc *columnCache, pc *projectCache, p *domain.Project, actor string, now time.Time, limit int) (domain.NextOutput, error) {
+//
+// For an executor key the candidates are its own cards only (KANB-60): the
+// key may claim nothing else, so offering anything else would hand it a
+// card it is then refused, and a peek that disagrees with the claim that
+// follows it is worse than no peek. The filter runs after hydration, so a
+// parent's child counts still come from the whole board.
+func (s *svc) nextForProject(tx store.Tx, cc *columnCache, pc *projectCache, p *domain.Project, a Actor, now time.Time, limit int) (domain.NextOutput, error) {
 	cols, err := s.store.Columns().ListByProject(tx, p.ID)
 	if err != nil {
 		return domain.NextOutput{}, err
@@ -316,6 +322,9 @@ func (s *svc) nextForProject(tx store.Tx, cc *columnCache, pc *projectCache, p *
 	parentBlocked := make(map[string][]string, len(tasks))
 	parentBlockersCache := map[string][]string{}
 	for _, t := range tasks {
+		if a.OwnCardsOnly() && domain.ExecutorOwns(a.Name, t) != nil {
+			continue
+		}
 		tv, err := s.hydrateView(tx, cc, pc, t, now, hydrateOpts{})
 		if err != nil {
 			return domain.NextOutput{}, err
@@ -338,7 +347,7 @@ func (s *svc) nextForProject(tx store.Tx, cc *columnCache, pc *projectCache, p *
 
 	return domain.NextReady(domain.NextInput{
 		Now:           now,
-		Actor:         actor,
+		Actor:         a.Name,
 		Candidates:    views,
 		ParentBlocked: parentBlocked,
 		Limit:         limit,

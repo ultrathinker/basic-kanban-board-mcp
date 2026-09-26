@@ -22,7 +22,7 @@ import (
 // or reshape its columns; the human who runs the server holds the admin token
 // and sets projects up (or the --demo seed does it for a fresh node).
 func (s *svc) ProjectUpsert(ctx context.Context, a Actor, in ProjectUpsertInput) (*ProjectUpsertResult, error) {
-	if err := requireAdmin(a); err != nil {
+	if err := requireAdmin(a, "create or change projects"); err != nil {
 		return nil, err
 	}
 	switch in.Mode {
@@ -271,9 +271,13 @@ func (s *svc) validateCoordinator(tx store.Tx, p *domain.Project, in *ProjectSet
 			fmt.Sprintf("coordinator token %q does not exist", id),
 			"Pass the tokens.id of an active token that can access this project, or an empty string to clear the coordinator.")
 	}
-	if !tok.Active() {
+	why, err := tokenDeadReason(tx, tok)
+	if err != nil {
+		return err
+	}
+	if why != "" {
 		return domain.Invalid("settings.coordinator",
-			fmt.Sprintf("coordinator token %q (%s) is revoked", id, tok.Name),
+			fmt.Sprintf("coordinator token %q (%s) is %s", id, tok.Name, why),
 			"Appoint an active token, or clear the coordinator with an empty string.")
 	}
 	if !tok.MayAccessProject(p.Key) {

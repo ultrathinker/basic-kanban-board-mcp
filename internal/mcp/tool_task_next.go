@@ -103,7 +103,8 @@ func taskNextTool() *gomcp.Tool {
 			"-byte excerpt ending in \"… +N chars\" and acceptance as the first " + strconv.Itoa(service.NextSummaryAcceptanceItems) +
 			" items with `acceptance_total` when there are more. `detail:\"full\"` widens that to " +
 			strconv.Itoa(domain.NextBodyTruncate) + " bytes and " + strconv.Itoa(domain.NextAcceptanceItems) +
-			" items; `meta.projection` always states which bounds were applied. Once you have chosen, task_get returns the whole card.",
+			" items; `meta.projection` always states which bounds were applied. Once you have chosen, task_get returns the whole card.\n" +
+			"With an executor key only the cards assigned to it are offered and taken.",
 		InputSchema: s,
 	}
 }

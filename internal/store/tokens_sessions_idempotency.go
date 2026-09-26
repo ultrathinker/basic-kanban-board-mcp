@@ -39,6 +39,45 @@ func (r *tokenRepo) UpdateHash(tx Tx, id string, hash []byte) error {
 	return nil
 }
 
+// Reissue gives an existing, unrevoked token row a new life: new secret
+// hash, scopes, project list and expiry, with last_used_at reset. It is how
+// an executor key's name is reused after the key expired — `name` carries a
+// UNIQUE index, so a fresh Create would collide with the dead row, and the
+// row's id is the identity every stored reference (coordinator, message
+// executor) resolves through. Whether reissuing is allowed at all is the
+// service's decision, made in the same transaction.
+func (r *tokenRepo) Reissue(tx Tx, t *domain.Token) error {
+	if t == nil || t.ID == "" || len(t.Hash) == 0 {
+		return domain.Invalid("token", "id and hash are required",
+			"Pass the token UUID and the new hash.")
+	}
+	scopes, err := encodeJSON(t.Scopes)
+	if err != nil {
+		return err
+	}
+	projectKeys, err := encodeJSON(t.ProjectKeys)
+	if err != nil {
+		return err
+	}
+	tw := tx.(*txWrap)
+	res, err := tw.tx.ExecContext(tw.ctx(), `
+		UPDATE tokens SET hash = ?, scopes = ?, project_keys = ?, expires_at = ?, last_used_at = NULL
+		WHERE id = ? AND revoked_at IS NULL`,
+		t.Hash, scopes, projectKeys, nullableTime(t.ExpiresAt), t.ID)
+	if err != nil {
+		return fmt.Errorf("store: token.Reissue: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: token.Reissue rows: %w", err)
+	}
+	if n == 0 {
+		return domain.NotFound("token", t.ID)
+	}
+	t.LastUsedAt = nil
+	return nil
+}
+
 func (r *tokenRepo) Create(tx Tx, t *domain.Token) error {
 	if t == nil {
 		return errors.New("store: token.Create: nil token")
@@ -64,10 +103,10 @@ func (r *tokenRepo) Create(tx Tx, t *domain.Token) error {
 	}
 	tw := tx.(*txWrap)
 	_, err = tw.tx.ExecContext(tw.ctx(), `
-		INSERT INTO tokens(id, name, hash, scopes, project_keys, created_at, last_used_at, revoked_at)
-		VALUES (?,?,?,?,?,?,?,?)`,
+		INSERT INTO tokens(id, name, hash, scopes, project_keys, created_at, last_used_at, revoked_at, expires_at)
+		VALUES (?,?,?,?,?,?,?,?,?)`,
 		t.ID, t.Name, t.Hash, scopes, projectKeys,
-		formatTime(t.CreatedAt), nullableTime(t.LastUsedAt), nullableTime(t.RevokedAt),
+		formatTime(t.CreatedAt), nullableTime(t.LastUsedAt), nullableTime(t.RevokedAt), nullableTime(t.ExpiresAt),
 	)
 	if err != nil {
 		if IsUniqueViolation(err) {
@@ -84,7 +123,7 @@ func (r *tokenRepo) GetByName(tx Tx, name string) (*domain.Token, error) {
 	}
 	tw := tx.(*txWrap)
 	row := tw.tx.QueryRowContext(tw.ctx(), `
-		SELECT id, name, hash, scopes, project_keys, created_at, last_used_at, revoked_at
+		SELECT id, name, hash, scopes, project_keys, created_at, last_used_at, revoked_at, expires_at
 		FROM tokens WHERE name = ? COLLATE NOCASE`, name)
 	t, err := scanToken(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -99,7 +138,7 @@ func (r *tokenRepo) GetByID(tx Tx, id string) (*domain.Token, error) {
 	}
 	tw := tx.(*txWrap)
 	row := tw.tx.QueryRowContext(tw.ctx(), `
-		SELECT id, name, hash, scopes, project_keys, created_at, last_used_at, revoked_at
+		SELECT id, name, hash, scopes, project_keys, created_at, last_used_at, revoked_at, expires_at
 		FROM tokens WHERE id = ?`, id)
 	t, err := scanToken(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -117,7 +156,7 @@ func (r *tokenRepo) GetByHash(tx Tx, hash []byte) (*domain.Token, error) {
 	}
 	tw := tx.(*txWrap)
 	row := tw.tx.QueryRowContext(tw.ctx(), `
-		SELECT id, name, hash, scopes, project_keys, created_at, last_used_at, revoked_at
+		SELECT id, name, hash, scopes, project_keys, created_at, last_used_at, revoked_at, expires_at
 		FROM tokens WHERE hash = ?`, hash)
 	t, err := scanToken(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -133,7 +172,7 @@ func (r *tokenRepo) GetByHash(tx Tx, hash []byte) (*domain.Token, error) {
 func (r *tokenRepo) List(tx Tx) ([]*domain.Token, error) {
 	tw := tx.(*txWrap)
 	rows, err := tw.tx.QueryContext(tw.ctx(), `
-		SELECT id, name, hash, scopes, project_keys, created_at, last_used_at, revoked_at
+		SELECT id, name, hash, scopes, project_keys, created_at, last_used_at, revoked_at, expires_at
 		FROM tokens ORDER BY name ASC`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list tokens: %w", err)
@@ -212,14 +251,15 @@ func scanToken(row *sql.Row) (*domain.Token, error) {
 		created  string
 		lastUsed sql.NullString
 		revoked  sql.NullString
+		expires  sql.NullString
 	)
-	if err := row.Scan(&t.ID, &t.Name, &t.Hash, &scopes, &keys, &created, &lastUsed, &revoked); err != nil {
+	if err := row.Scan(&t.ID, &t.Name, &t.Hash, &scopes, &keys, &created, &lastUsed, &revoked, &expires); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, err
 		}
 		return nil, fmt.Errorf("store: scan token: %w", err)
 	}
-	if err := fillToken(&t, scopes, keys, created, lastUsed, revoked); err != nil {
+	if err := fillToken(&t, scopes, keys, created, lastUsed, revoked, expires); err != nil {
 		return nil, err
 	}
 	return &t, nil
@@ -233,17 +273,18 @@ func scanTokenRows(rows *sql.Rows) (*domain.Token, error) {
 		created  string
 		lastUsed sql.NullString
 		revoked  sql.NullString
+		expires  sql.NullString
 	)
-	if err := rows.Scan(&t.ID, &t.Name, &t.Hash, &scopes, &keys, &created, &lastUsed, &revoked); err != nil {
+	if err := rows.Scan(&t.ID, &t.Name, &t.Hash, &scopes, &keys, &created, &lastUsed, &revoked, &expires); err != nil {
 		return nil, fmt.Errorf("store: scan token row: %w", err)
 	}
-	if err := fillToken(&t, scopes, keys, created, lastUsed, revoked); err != nil {
+	if err := fillToken(&t, scopes, keys, created, lastUsed, revoked, expires); err != nil {
 		return nil, err
 	}
 	return &t, nil
 }
 
-func fillToken(t *domain.Token, scopes, keys, created string, lastUsed, revoked sql.NullString) error {
+func fillToken(t *domain.Token, scopes, keys, created string, lastUsed, revoked, expires sql.NullString) error {
 	sc, err := decodeScopes(scopes)
 	if err != nil {
 		return err
@@ -272,6 +313,13 @@ func fillToken(t *domain.Token, scopes, keys, created string, lastUsed, revoked 
 			return err
 		}
 		t.RevokedAt = &rt
+	}
+	if expires.Valid {
+		et, err := parseTime(expires.String)
+		if err != nil {
+			return err
+		}
+		t.ExpiresAt = &et
 	}
 	return nil
 }

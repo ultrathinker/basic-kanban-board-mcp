@@ -17,7 +17,7 @@ import (
 // never race a settings change: resolved_executor is computed from the
 // project configuration as of this send and then frozen on the row.
 func (s *svc) ChatAdd(ctx context.Context, a Actor, in ChatAddInput) (*domain.ChatMessage, error) {
-	if err := requireWrite(a); err != nil {
+	if err := requireCardWrite(a); err != nil {
 		return nil, err
 	}
 	key := strings.TrimSpace(in.ProjectKey)
@@ -234,9 +234,13 @@ func (s *svc) resolveMessageAddressing(tx store.Tx, p *domain.Project, kind doma
 		if err != nil {
 			return "", err
 		}
-		if !tok.Active() {
+		why, err := tokenDeadReason(tx, tok)
+		if err != nil {
+			return "", err
+		}
+		if why != "" {
 			return "", domain.Invalid("recipient",
-				fmt.Sprintf("recipient %s (%s) is revoked", recipient, tok.Name),
+				fmt.Sprintf("recipient %s (%s) is %s", recipient, tok.Name, why),
 				"Address an active participant.")
 		}
 		if !tok.MayAccessProject(p.Key) {
@@ -267,9 +271,13 @@ func (s *svc) resolveMessageAddressing(tx store.Tx, p *domain.Project, kind doma
 		if err != nil {
 			return "", err
 		}
-		if !tok.Active() {
+		why, err := tokenDeadReason(tx, tok)
+		if err != nil {
+			return "", err
+		}
+		if why != "" {
 			return "", domain.Invalid("recipient",
-				fmt.Sprintf("project %s's coordinator %s is revoked", p.Key, tok.Name),
+				fmt.Sprintf("project %s's coordinator %s is %s", p.Key, tok.Name, why),
 				"Ask an admin to re-appoint settings.coordinator on the project.")
 		}
 		if !tok.MayAccessProject(p.Key) {

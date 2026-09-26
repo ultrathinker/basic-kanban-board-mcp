@@ -363,6 +363,11 @@ type TokenRepo interface {
 	// UNIQUE indexes, so re-creating an existing token is a constraint
 	// violation rather than an upsert.
 	UpdateHash(tx Tx, id string, hash []byte) error
+	// Reissue replaces an unrevoked token's hash, scopes, project list and
+	// expiry in place and clears last_used_at (KANB-60): an expired executor
+	// key's name comes back to life with a new secret on the same row, so
+	// the row id every stored reference points at stays the identity.
+	Reissue(tx Tx, t *domain.Token) error
 	Revoke(tx Tx, name string) error
 	TouchLastUsed(tx Tx, id string) error
 	Count(tx Tx) (int, error)

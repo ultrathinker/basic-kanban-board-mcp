@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -48,7 +49,7 @@ func (s *svc) BoardGet(ctx context.Context, a Actor, in BoardGetInput) (*Board, 
 		}
 		cc := newColumnCache(s, tx)
 		pc := newProjectCache(s, tx)
-		pix, err := s.buildParticipantIndex(tx)
+		pix, err := s.buildParticipantIndex(tx, now)
 		if err != nil {
 			return err
 		}
@@ -76,16 +77,21 @@ func (s *svc) BoardGet(ctx context.Context, a Actor, in BoardGetInput) (*Board, 
 // every project its scope grants access to, so the board read resolves the
 // list from the same source of truth authentication checks — one query for
 // the whole board, not one per project.
+//
+// now is the read's database clock: an executor key past its expiry is no
+// longer a participant (KANB-60), and it drops out here on its own, with
+// nothing to clean up.
 type participantIndex struct {
 	byID map[string]*domain.Token
+	now  time.Time
 }
 
-func (s *svc) buildParticipantIndex(tx store.Tx) (*participantIndex, error) {
+func (s *svc) buildParticipantIndex(tx store.Tx, now time.Time) (*participantIndex, error) {
 	toks, err := s.store.Tokens().List(tx)
 	if err != nil {
 		return nil, err
 	}
-	ix := &participantIndex{byID: make(map[string]*domain.Token, len(toks))}
+	ix := &participantIndex{byID: make(map[string]*domain.Token, len(toks)), now: now}
 	for _, t := range toks {
 		ix.byID[t.ID] = t
 	}
@@ -99,13 +105,42 @@ func (s *svc) buildParticipantIndex(tx store.Tx) (*participantIndex, error) {
 func (ix *participantIndex) participantsFor(key string) []Participant {
 	out := make([]Participant, 0, len(ix.byID))
 	for _, t := range ix.byID {
-		if !t.Active() || !t.MayAccessProject(key) {
+		if !t.ActiveAt(ix.now) || !t.MayAccessProject(key) {
 			continue
 		}
 		out = append(out, Participant{TokenID: t.ID, Name: t.Name})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
+}
+
+// checkAssignee refuses an assignee that is not a participant of the
+// project (KANB-60). The participant list is the list of tokens that may
+// work there, executor keys included, so a name typed in one of twenty-five
+// spellings is caught at the write instead of leaving a card nobody's key
+// can touch. The match is exact: the assignee is what an executor key's
+// name is compared against, byte for byte.
+func (ix *participantIndex) checkAssignee(p *domain.Project, taskKey, name string) error {
+	parts := ix.participantsFor(p.Key)
+	names := make([]string, 0, len(parts))
+	for _, pt := range parts {
+		if pt.Name == name {
+			return nil
+		}
+		names = append(names, pt.Name)
+	}
+	known := strings.Join(names, ", ")
+	if known == "" {
+		known = "(none)"
+	}
+	where := "a new task"
+	if taskKey != "" {
+		where = taskKey
+	}
+	return domain.Invalid("assignee",
+		fmt.Sprintf("assignee %q on %s is not a participant of project %s; participants: %s",
+			name, where, p.Key, known),
+		"Assign one of the listed participants exactly as written, issue an executor key with that name first (executor_key_issue), or clear the assignee.")
 }
 
 // coordinator resolves the project's appointed coordinator to a Participant.

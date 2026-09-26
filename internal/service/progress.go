@@ -388,7 +388,7 @@ func (s *svc) ProgressHistory(ctx context.Context, a Actor, in ProgressHistoryIn
 // record that a track vanished at all. An unknown-assessor no-op (Removed
 // == 0) emits nothing: nothing changed, so there is nothing to signal.
 func (s *svc) ProgressTrackDelete(ctx context.Context, a Actor, in ProgressTrackDeleteInput) (*ProgressTrackDeleteResult, error) {
-	if err := requireWrite(a); err != nil {
+	if err := requireWrite(a, "delete progress tracks"); err != nil {
 		return nil, err
 	}
 	if strings.TrimSpace(in.Assessor) == "" {

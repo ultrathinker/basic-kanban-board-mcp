@@ -39,6 +39,7 @@ var fullToolFactories = []func() *gomcp.Tool{
 	projectPostTool,
 	progressSetTool,
 	progressHistoryTool,
+	executorKeyIssueTool,
 	boardGuideTool,
 }
 
