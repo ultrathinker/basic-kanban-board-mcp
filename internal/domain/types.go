@@ -219,6 +219,13 @@ type Project struct {
 	EnforceDependencies bool
 	StrictDone          bool
 	ClaimTTLSeconds     int // clamped to [ClaimTTLMin, ClaimTTLMax]
+	// IdleAfterSeconds is how long a card in an active column may go without
+	// movement before board_get's attention line names it (KANB-67). 0 = not
+	// set: the threshold is then the claim TTL, as it was before the setting
+	// existed. A lease and "this card looks abandoned" are different
+	// questions — a review cycle measured in days would otherwise light the
+	// line up every hour.
+	IdleAfterSeconds int
 	// CoordinatorTokenID names the project's coordinator (KANB-44). It is a
 	// tokens.id, never a display name: the id is the stable identity that
 	// survives secret rotation, while a name is a label that can be reused by

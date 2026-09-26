@@ -59,9 +59,16 @@ func idleSince(last, now time.Time) time.Duration {
 	return 0
 }
 
-// idleThreshold is the project's claim TTL as the store would grant it: a
-// card idle for longer than one lease has outlived any honest claim on it.
+// idleThreshold is the project's own idle_after_seconds when it set one
+// (KANB-67): how long a lease lasts and when a card looks abandoned are
+// different questions, and a board whose review takes days must be able to
+// say so. Unset, it is the claim TTL as the store would grant it — a card
+// idle for longer than one lease has outlived any honest claim on it — which
+// is what the threshold was before the setting existed.
 func idleThreshold(p *domain.Project) time.Duration {
+	if p.IdleAfterSeconds > 0 {
+		return time.Duration(p.IdleAfterSeconds) * time.Second
+	}
 	return domain.ClampClaimTTL(time.Duration(p.ClaimTTLSeconds) * time.Second)
 }
 

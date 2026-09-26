@@ -93,6 +93,7 @@ type boardProjectOut struct {
 	EnforceDependencies bool   `json:"enforce_dependencies"`
 	StrictDone          bool   `json:"strict_done"`
 	ClaimTTLSeconds     int    `json:"claim_ttl_seconds"`
+	IdleAfterSeconds    int    `json:"idle_after_seconds,omitempty" jsonschema:"the attention line's idle threshold; absent = not set, the threshold is claim_ttl_seconds"`
 	Archived            bool   `json:"archived,omitempty"`
 	// Coordinator names the appointed coordinator (nil/absent when none),
 	// Participants everyone who MAY participate: every active token with
@@ -109,7 +110,8 @@ type boardProjectOut struct {
 }
 
 // attentionOut is the JSON form of service.Attention: how many cards in
-// active columns went longer than claim_ttl_seconds without movement, and
+// active columns went longer than the project's idle threshold
+// (idle_after_seconds, else claim_ttl_seconds) without movement, and
 // the most idle of them.
 type attentionOut struct {
 	Count  int             `json:"count"`
@@ -175,7 +177,7 @@ func boardGetTool() *gomcp.Tool {
 		Name: opBoardGet,
 		Description: "Read the board. Compact text by default — about 1,000 tokens for 30 active tasks, roughly 90% smaller than the same board as JSON, so it is cheap enough to call at the start of every session. `format:\"json\"` returns the same board as JSON text instead. The project's description — its rulebook — is NOT returned unless asked for: add `include:[\"description\"]` once per session, or again after your context was compacted.\n" +
 			"`view:\"messages\"` reads one project's communication feed forward through history instead of the board: `messages[]` in chronological order (each with `id`, `created_at`, `author`, `author_token_id` — the authorized source, which the caller never chooses — `kind`, `recipient`/`recipient_name`, `resolved_executor`/`resolved_executor_name`, `reply_to`, `body`, and the `task_keys` created by accepting that command), plus `next_cursor` and `has_more`. The board itself and task bodies are NOT part of that response. Chat history is never pruned, so a cursor never goes stale; a cursor from another project, a cursor naming a message that does not exist, or an unparseable cursor is refused with an actionable error rather than a silent empty page.\n" +
-			"A project whose active columns hold a card with no movement (column entry, edit, claim or renewal, note, progress mark) for longer than its `claim_ttl_seconds` carries an attention line right under its header — `attention 3: KANB-12 idle 5h, KANB-9 idle 2h, KANB-15 idle 1h`, the " + strconv.Itoa(service.AttentionSampleSize) + " most idle then `and N more`; in JSON `projects[].attention: {count, sample:[{key, idle_seconds}]}`. It is absent when nothing is idle, and waiting columns never count. " +
+			"A project whose active columns hold a card with no movement (column entry, edit, claim or renewal, note, progress mark) for longer than its idle threshold — `idle_after_seconds` when the project set one (project_upsert settings), otherwise its `claim_ttl_seconds` — carries an attention line right under its header — `attention 3: KANB-12 idle 5h, KANB-9 idle 2h, KANB-15 idle 1h`, the " + strconv.Itoa(service.AttentionSampleSize) + " most idle then `and N more`; in JSON `projects[].attention: {count, sample:[{key, idle_seconds}]}`. It is absent when nothing is idle, and waiting columns never count. " +
 			"`include:[\"progress\"]` (view tasks) adds to every card in an active column its acceptance count, assessed percent and idle time: `acc 2/5 · pct 40 · idle 12m` on the compact line, `progress: {acceptance_done, acceptance_total, percent, last_activity_at, idle_seconds}` in JSON — a progress report in one read.\n" +
 			"Feed participants and the project's coordinator are published by `view:\"summary\"` as `projects[].participants[]` and `projects[].coordinator` — token ids and display names only, never secrets.",
 		InputSchema: s,
@@ -377,6 +379,7 @@ func registerBoardGet(s *gomcp.Server, svc service.Service) {
 				EnforceDependencies: p.EnforceDependencies,
 				StrictDone:          p.StrictDone,
 				ClaimTTLSeconds:     p.ClaimTTLSeconds,
+				IdleAfterSeconds:    p.IdleAfterSeconds,
 				Archived:            p.Archived,
 				Coordinator:         participantOutPtr(p.Coordinator),
 				Participants:        participantOuts(p.Participants),

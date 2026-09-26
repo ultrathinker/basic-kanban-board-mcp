@@ -88,7 +88,9 @@ func (s *svc) projectCreate(tx store.Tx, pending *[]domain.Event, a Actor, key s
 	if err := applyDescription(p, in); err != nil {
 		return nil, nil, err
 	}
-	applyProjectSettings(p, in.Settings)
+	if err := applyProjectSettings(p, in.Settings); err != nil {
+		return nil, nil, err
+	}
 	if err := s.validateCoordinator(tx, p, in.Settings); err != nil {
 		return nil, nil, err
 	}
@@ -134,7 +136,9 @@ func (s *svc) projectUpdate(tx store.Tx, pending *[]domain.Event, a Actor, key s
 	if err := applyDescription(p, in); err != nil {
 		return nil, nil, err
 	}
-	applyProjectSettings(p, in.Settings)
+	if err := applyProjectSettings(p, in.Settings); err != nil {
+		return nil, nil, err
+	}
 	if err := s.validateCoordinator(tx, p, in.Settings); err != nil {
 		return nil, nil, err
 	}
@@ -222,9 +226,12 @@ func applyDescription(p *domain.Project, in ProjectUpsertInput) error {
 	return nil
 }
 
-func applyProjectSettings(p *domain.Project, in *ProjectSettings) {
+// applyProjectSettings copies the settings a caller sent onto p. The only
+// one it can refuse is idle_after_seconds, which is validated rather than
+// clamped (see domain.ValidateIdleAfter).
+func applyProjectSettings(p *domain.Project, in *ProjectSettings) error {
 	if in == nil {
-		return
+		return nil
 	}
 	if in.EstimateUnit != nil {
 		p.EstimateUnit = *in.EstimateUnit
@@ -238,9 +245,16 @@ func applyProjectSettings(p *domain.Project, in *ProjectSettings) {
 	if in.ClaimTTLSeconds != nil {
 		p.ClaimTTLSeconds = int(domain.ClampClaimTTL(time.Duration(*in.ClaimTTLSeconds) * time.Second).Seconds())
 	}
+	if in.IdleAfterSeconds != nil {
+		if err := domain.ValidateIdleAfter(*in.IdleAfterSeconds); err != nil {
+			return err
+		}
+		p.IdleAfterSeconds = *in.IdleAfterSeconds
+	}
 	if in.Coordinator != nil {
 		p.CoordinatorTokenID = strings.TrimSpace(*in.Coordinator)
 	}
+	return nil
 }
 
 // validateCoordinator checks a coordinator appointment the caller just made.

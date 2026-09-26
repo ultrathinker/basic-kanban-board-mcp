@@ -267,6 +267,7 @@ type projectOut struct {
 	EnforceDependencies bool   `json:"enforce_dependencies"`
 	StrictDone          bool   `json:"strict_done"`
 	ClaimTTLSeconds     int    `json:"claim_ttl_seconds"`
+	IdleAfterSeconds    int    `json:"idle_after_seconds,omitempty"`
 	// CoordinatorTokenID echoes the appointed coordinator's tokens.id, or is
 	// absent when none is set (KANB-44). The id, not the name: board_get
 	// resolves ids to display names, this echo just confirms what was stored.
@@ -285,6 +286,7 @@ func projectOutFrom(p domain.Project, cols []domain.Column) projectOut {
 		EnforceDependencies: p.EnforceDependencies,
 		StrictDone:          p.StrictDone,
 		ClaimTTLSeconds:     p.ClaimTTLSeconds,
+		IdleAfterSeconds:    p.IdleAfterSeconds,
 		CoordinatorTokenID:  p.CoordinatorTokenID,
 		Archived:            p.ArchivedAt != nil,
 		Columns:             columnOutList(cols),

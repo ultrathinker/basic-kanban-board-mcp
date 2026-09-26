@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	gomcp "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -27,6 +28,10 @@ type projectSettingsIn struct {
 	EnforceDependencies *bool   `json:"enforce_dependencies,omitempty"`
 	StrictDone          *bool   `json:"strict_done,omitempty"`
 	ClaimTTLSeconds     *int    `json:"claim_ttl_seconds,omitempty"`
+	// IdleAfterSeconds is the attention-line threshold (KANB-67). Its bounds
+	// are published on the schema from the same domain constants the service
+	// enforces, so the range is learned from tools/list, not from a refusal.
+	IdleAfterSeconds *int `json:"idle_after_seconds,omitempty" jsonschema:"how long a card in an active column may go without movement before board_get's attention line names it; 0 clears it back to claim_ttl_seconds; absence leaves it unchanged"`
 	// Coordinator is the tokens.id of the project's coordinator, or an empty
 	// string to clear the appointment (KANB-44). The id — never the display
 	// name — is the contract: it survives secret rotation, a name does not.
@@ -76,6 +81,15 @@ func projectUpsertTool() *gomcp.Tool {
 	rmCols := prop(s, "remove_columns")
 	setMaxItems(rmCols, domain.MaxColumnsPerPrj)
 	setMaxLen(prop(rmCols.Items, "name"), domain.MaxColumnNameLen)
+	// 0 is the documented "clear", so the published minimum is 0 and the
+	// floor above it is stated in the description; a schema cannot express
+	// "0 or at least N" without a oneOf that clients render poorly.
+	idle := prop(prop(s, "settings"), "idle_after_seconds")
+	setMin(idle, 0)
+	setMax(idle, domain.IdleAfterMax.Seconds())
+	idle.Description += fmt.Sprintf("; otherwise %d (%d minutes) to %d (%d days) — out of range is refused, not clamped",
+		int(domain.IdleAfterMin.Seconds()), int(domain.IdleAfterMin.Minutes()),
+		int(domain.IdleAfterMax.Seconds()), int(domain.IdleAfterMax.Hours()/24))
 
 	return &gomcp.Tool{
 		Name:        opProjectUpsert,
@@ -115,6 +129,8 @@ var projectUpsertDescription = "Create or update one project: identity, columns 
 	"omitting `columns` gives the default set (" + defaultColumnSummary() + ").\n" +
 	"Update: {\"mode\":\"update\",\"key\":\"TEST\",\"if_version\":3,\"name\":\"New name\"} — `if_version` is required " +
 	"and is the version your last read of the project returned.\n" +
+	"`settings.idle_after_seconds` sets how long a card in an active column may sit without movement before board_get's attention line names it " +
+	"(e.g. 172800 for a review cycle measured in days); unset or 0, the threshold is `claim_ttl_seconds`. How long a lease lasts and when a card looks abandoned are separate settings.\n" +
 	"Not sure which one applies? Call board_get with no `project` first: every project you can reach comes back with its key and version."
 
 // defaultColumnSummary renders domain.DefaultColumns the way the tool
@@ -158,6 +174,7 @@ func settingsToService(s *projectSettingsIn) *service.ProjectSettings {
 		EnforceDependencies: s.EnforceDependencies,
 		StrictDone:          s.StrictDone,
 		ClaimTTLSeconds:     s.ClaimTTLSeconds,
+		IdleAfterSeconds:    s.IdleAfterSeconds,
 		Coordinator:         s.Coordinator,
 	}
 }

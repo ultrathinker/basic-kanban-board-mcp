@@ -12,14 +12,17 @@ import (
 // through every read path and the in-place Reissue that recycles an expired
 // executor key's row.
 
-func TestMigration0010_IsTheLatestApplied(t *testing.T) {
+// "Is the latest" stopped being true at 0011; that the whole sequence
+// applies up to the newest file is TestMigrations_NumberedWithoutGapsAndAllApply's
+// job, so this only pins that 0010 is part of it.
+func TestMigration0010_IsApplied(t *testing.T) {
 	s := openTestStore(t)
 	h, err := s.Health(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if h.Migration != 10 {
-		t.Fatalf("schema migration = %d, want 10 (0010_token_expiry)", h.Migration)
+	if h.Migration < 10 {
+		t.Fatalf("schema migration = %d, want at least 10 (0010_token_expiry)", h.Migration)
 	}
 }
 

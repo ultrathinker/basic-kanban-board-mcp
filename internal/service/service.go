@@ -252,7 +252,10 @@ type BoardProject struct {
 	EnforceDependencies bool
 	StrictDone          bool
 	ClaimTTLSeconds     int
-	Archived            bool
+	// IdleAfterSeconds is the project's own idle threshold, 0 when not set
+	// (the attention line then uses ClaimTTLSeconds).
+	IdleAfterSeconds int
+	Archived         bool
 
 	// Coordinator is the appointed coordinator, nil when none is set, and
 	// Participants is everyone who MAY participate — every active token with
@@ -267,7 +270,8 @@ type BoardProject struct {
 	DoneShown int
 
 	// Attention names the cards in active columns that have not moved for
-	// longer than ClaimTTLSeconds (KANB-61) — the signal that replaced WIP
+	// longer than IdleAfterSeconds, or ClaimTTLSeconds when that is not set
+	// (KANB-61, KANB-67) — the signal that replaced WIP
 	// limits. nil when no card qualifies, so a healthy board pays nothing.
 	// It follows the board filter, like the column counts do.
 	Attention *Attention
@@ -735,6 +739,11 @@ type ProjectSettings struct {
 	EnforceDependencies *bool
 	StrictDone          *bool
 	ClaimTTLSeconds     *int
+	// IdleAfterSeconds sets the project's idle threshold for board_get's
+	// attention line (KANB-67), inside [domain.IdleAfterMin,
+	// domain.IdleAfterMax]; 0 clears it back to the claim TTL, nil leaves it
+	// unchanged. Out of range is refused, never clamped.
+	IdleAfterSeconds *int
 	// Coordinator appoints the project's coordinator (KANB-44). The value is
 	// a tokens.id — the identity that survives secret rotation — or an empty
 	// string to clear the appointment. nil leaves it unchanged. There is

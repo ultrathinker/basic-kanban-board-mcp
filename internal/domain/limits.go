@@ -84,6 +84,14 @@ const (
 	ClaimTTLMin     = time.Minute
 	ClaimTTLMax     = 24 * time.Hour
 
+	// IdleAfterMin and IdleAfterMax bound a project's idle threshold, the
+	// age past which board_get's attention line names a card in an active
+	// column (KANB-67). The floor keeps the line from turning into noise that
+	// names every card between two notes; the ceiling is a month, past which
+	// "idle" stops meaning anything a reader would act on.
+	IdleAfterMin = 5 * time.Minute
+	IdleAfterMax = 30 * 24 * time.Hour
+
 	SessionIdleTTL     = 7 * 24 * time.Hour
 	SessionAbsoluteTTL = 30 * 24 * time.Hour
 
