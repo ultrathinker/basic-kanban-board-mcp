@@ -624,13 +624,16 @@ func (r *taskRepo) Move(tx Tx, id, columnID string, rank int64, actor string) er
 		}
 	}
 
+	// A reorder inside the same column (rank without a new column) is not
+	// entering the column: the card keeps its time-in-column.
 	res, err := tw.tx.ExecContext(tw.ctx(), `
 		UPDATE tasks SET
-			column_id = ?, rank = ?, column_entered_at = ?,
+			column_id = ?, rank = ?,
+			column_entered_at = CASE WHEN column_id = ? THEN column_entered_at ELSE ? END,
 			started_at = ?, done_at = ?,
 			version = version + 1, updated_at = ?, updated_by = ?
 		WHERE id = ?`,
-		columnID, rank, formatTime(now),
+		columnID, rank, columnID, formatTime(now),
 		nullableOrNull(newStarted), nullableOrNull(newDone),
 		formatTime(now), actor, id,
 	)

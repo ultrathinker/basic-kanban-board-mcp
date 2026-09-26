@@ -3,6 +3,7 @@ package service
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/ultrathinker/basic-kanban-board-mcp/internal/domain"
 )
@@ -33,6 +34,8 @@ func TestTaskUpdate_RankWithoutColumnMovesWithinCurrentColumn(t *testing.T) {
 		t.Fatal("setup: the newest card should start at the bottom")
 	}
 
+	entered := e.get(t, c).ColumnEnteredAt
+	time.Sleep(5 * time.Millisecond) // the store keeps milliseconds
 	it := e.update(t, e.actor, TaskPatch{Key: c, IfVersion: &vc, Rank: "top"})
 	if !it.OK {
 		t.Fatalf("rank:top without column refused: %v", it.Err)
@@ -45,6 +48,10 @@ func TestTaskUpdate_RankWithoutColumnMovesWithinCurrentColumn(t *testing.T) {
 	}
 	if !e.firstInColumn(t, c, a, b, c) {
 		t.Fatal("rank:top did not put the card first in its column")
+	}
+	// A reorder is not entering the column: time-in-column must survive it.
+	if got := e.get(t, c).ColumnEnteredAt; !got.Equal(entered) {
+		t.Fatalf("column_entered_at moved from %v to %v on a reorder", entered, got)
 	}
 
 	// bottom, and the executor key may do the same on its own card.
