@@ -688,6 +688,21 @@ func renderCases() []renderCase {
 			notWants: []string{"<no value>", "3/3", "wip"},
 		},
 		{
+			// A waiting column is parked on purpose and must not look like
+			// work in progress (KANB-52): it says so in words.
+			name:     "fragment/column-waiting",
+			template: "column",
+			data:     map[string]any{"Column": view.ColumnView{Name: "Parked", Kind: domain.KindWaiting}, "CSRF": "t", "Columns": board.Columns},
+			wants:    []string{`is-waiting`, `<span class="col-kind"`, `>waiting</span>`, `aria-label="Column Parked (waiting)"`},
+			notWants: []string{"<no value>"},
+		},
+		{
+			name:     "fragment/column-active-is-not-waiting",
+			template: "column",
+			data:     map[string]any{"Column": columnNamed(board, "Doing"), "CSRF": "t", "Columns": board.Columns},
+			notWants: []string{"is-waiting", "col-kind"},
+		},
+		{
 			name:     "fragment/column-empty",
 			template: "column",
 			data:     map[string]any{"Column": columnNamed(board, "Ready"), "CSRF": "t", "Columns": board.Columns},

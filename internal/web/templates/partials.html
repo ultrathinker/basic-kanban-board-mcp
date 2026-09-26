@@ -268,11 +268,14 @@
 {{define "column"}}
 {{- /* expects .Column (ColumnView); optional .CSRF and .Columns (all
        columns, so each card can build its move menu) */ -}}
-<section class="column {{if eq .Column.Kind "done"}}is-done{{end}}"
+<section class="column {{if eq .Column.Kind "done"}}is-done{{end}}{{if eq .Column.Kind "waiting"}}is-waiting{{end}}"
          id="column-{{.Column.Name}}"
-         aria-label="Column {{.Column.Name}}">
+         aria-label="Column {{.Column.Name}}{{if eq .Column.Kind "waiting"}} (waiting){{end}}">
   <header class="column-head">
     <span class="name caps">{{.Column.Name}}</span>
+    {{- if eq .Column.Kind "waiting"}}
+    <span class="col-kind" title="Parked on purpose: not offered by task_next and not counted as idle">waiting</span>
+    {{- end}}
     <span class="col-count">{{.Column.Count}}</span>
   </header>
   {{- if .Column.Hidden}}
