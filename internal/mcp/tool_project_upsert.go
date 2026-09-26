@@ -2,7 +2,6 @@ package mcp
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	gomcp "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -16,12 +15,6 @@ const opProjectUpsert = "project_upsert"
 type columnSpecIn struct {
 	Name string `json:"name" jsonschema:"unique within the project"`
 	Kind string `json:"kind"`
-	// WIPLimit is accepted only to be REFUSED with an explanation: limits were
-	// removed from the board on 26.09.2026 (KANB-59). Dropping the field from
-	// the schema would answer an old caller with the SDK's bare "unexpected
-	// property"; silently ignoring it would let the caller believe a limit is
-	// in force. Neither is acceptable, so it is a named, explained error.
-	WIPLimit *int `json:"wip_limit,omitempty" jsonschema:"REMOVED 26.09.2026: the board has no WIP limits; sending this is an error"`
 }
 
 type removeColumnIn struct {
@@ -134,19 +127,6 @@ func defaultColumnSummary() string {
 	return strings.Join(parts, ", ")
 }
 
-// refuseWIPLimit turns a column that still carries wip_limit into a loud,
-// explained error (see columnSpecIn.WIPLimit).
-func refuseWIPLimit(cols []columnSpecIn) *domain.Error {
-	for _, c := range cols {
-		if c.WIPLimit != nil {
-			return domain.Invalid("wip_limit",
-				fmt.Sprintf("column %q carries wip_limit, but the board has no WIP limits since 26.09.2026", c.Name),
-				"Drop wip_limit from every column. Stuck cards are surfaced by idle time instead of by a column limit.")
-		}
-	}
-	return nil
-}
-
 func columnSpecsToService(cols []columnSpecIn) []service.ColumnSpec {
 	if len(cols) == 0 {
 		return nil
@@ -188,9 +168,6 @@ func registerProjectUpsert(s *gomcp.Server, svc service.Service) {
 		actor, aerr := actorFromContext(ctx)
 		if aerr != nil {
 			return errorResult(opProjectUpsert, aerr), projectUpsertOutput{OK: false, Op: opProjectUpsert, Error: newErrorEnvelope(aerr)}, nil
-		}
-		if werr := refuseWIPLimit(in.Columns); werr != nil {
-			return errorResult(opProjectUpsert, werr), projectUpsertOutput{OK: false, Op: opProjectUpsert, Error: newErrorEnvelope(werr)}, nil
 		}
 
 		res, err := svc.ProjectUpsert(ctx, actor, service.ProjectUpsertInput{

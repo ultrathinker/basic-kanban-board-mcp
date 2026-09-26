@@ -65,6 +65,7 @@ func executorKeyIssueTool() *gomcp.Tool {
 	ttl := prop(s, "ttl_seconds")
 	setMin(ttl, 0)
 	setMax(ttl, domain.ExecutorKeyMaxTTL.Seconds())
+	setMax(ttl, domain.ExecutorKeyMaxTTL.Seconds())
 
 	return &gomcp.Tool{
 		Name:        opExecutorKeyIssue,

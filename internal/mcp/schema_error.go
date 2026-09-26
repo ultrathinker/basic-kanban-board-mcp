@@ -120,6 +120,7 @@ func schemaErrorEnvelope(next gomcp.MethodHandler) gomcp.MethodHandler {
 			Message:     schemaErrorMessage(ctr),
 			Remediation: schemaRemediation(op),
 		}
+		retiredFieldExplanation(derr)
 		ctr.Content = []gomcp.Content{&gomcp.TextContent{Text: jsonText(schemaErrorOutput{OK: false, Op: op, Error: newErrorEnvelope(derr)})}}
 		return ctr, nil
 	}
@@ -159,4 +160,27 @@ func schemaErrorMessage(ctr *gomcp.CallToolResult) string {
 		}
 	}
 	return "the arguments did not match this tool's input schema"
+}
+
+// retiredFields are properties that USED to exist. They are not in any
+// schema — an agent reading the schema must not be invited to send them —
+// but an agent working from an old schema or an old habit still will, and
+// the SDK's bare "unexpected additional property" does not say why. The
+// schema-error envelope names the reason instead.
+var retiredFields = map[string]struct{ message, remediation string }{
+	"wip_limit": {
+		message:     "wip_limit was removed: the board has no WIP limits since 26.09.2026",
+		remediation: "Drop wip_limit from every column. Stuck cards are surfaced by idle time (the attention line of board_get) instead of by a column limit.",
+	},
+}
+
+func retiredFieldExplanation(derr *domain.Error) {
+	for name, why := range retiredFields {
+		if strings.Contains(derr.Message, `"`+name+`"`) {
+			derr.Field = name
+			derr.Message = why.message + " (" + derr.Message + ")"
+			derr.Remediation = why.remediation
+			return
+		}
+	}
 }

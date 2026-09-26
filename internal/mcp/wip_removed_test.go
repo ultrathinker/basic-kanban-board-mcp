@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -12,10 +13,10 @@ import (
 )
 
 // TestProjectUpsert_WIPLimitIsRefusedWithTheReason (KANB-59): the board has
-// no WIP limits since 26.09.2026. A caller that still sends wip_limit must
-// learn that — neither a bare "unexpected property" from the schema nor a
-// silent success that lets it believe a limit is in force — and nothing may
-// reach the service.
+// no WIP limits since 26.09.2026. wip_limit is gone from the schema, so an
+// agent reading it is not invited to send it; one that sends it anyway (an
+// old schema, an old habit) must learn why — not a bare "unexpected
+// property", not a silent success — and nothing may reach the service.
 func TestProjectUpsert_WIPLimitIsRefusedWithTheReason(t *testing.T) {
 	t.Parallel()
 	cs, svc := roundtripServer(t, NewServer)
@@ -40,7 +41,7 @@ func TestProjectUpsert_WIPLimitIsRefusedWithTheReason(t *testing.T) {
 		t.Errorf("code = %v, want %v", env["code"], domain.CodeValidation)
 	}
 	msg, _ := env["message"].(string)
-	for _, want := range []string{"Doing", "no WIP limits"} {
+	for _, want := range []string{"wip_limit", "no WIP limits"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("message %q does not say %q", msg, want)
 		}
@@ -51,5 +52,20 @@ func TestProjectUpsert_WIPLimitIsRefusedWithTheReason(t *testing.T) {
 	}
 	if svc.LastProjectUpsert.Key != "" {
 		t.Errorf("service was invoked despite the refusal: %+v", svc.LastProjectUpsert)
+	}
+}
+
+func TestProjectUpsert_SchemaNoLongerOffersWIPLimit(t *testing.T) {
+	t.Parallel()
+	cs, _ := roundtripServer(t, NewServer)
+	res, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range res.Tools {
+		raw, _ := json.Marshal(tool.InputSchema)
+		if strings.Contains(string(raw), "wip_limit") {
+			t.Errorf("%s still publishes wip_limit in its input schema", tool.Name)
+		}
 	}
 }
