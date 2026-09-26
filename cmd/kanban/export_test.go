@@ -1220,3 +1220,148 @@ func TestExportImport_DoneOverflowRoundTrips(t *testing.T) {
 		t.Fatalf("imported board has %d done tasks, want %d", importedDone, doneCount)
 	}
 }
+
+// TestExportImport_ArchivedTaskRoundTrips is KANB-62's second defect: an
+// archived task (task_remove'd, tasks.archived_at set) never appears on the
+// live board board_get returns, but its own history — the journal entry
+// recording the archive, and any progress mark taken before it — still
+// names it by key. That used to make the resulting export unimportable:
+// "import journal entry: task ... not in document". Export must carry the
+// archived task too, and import must recreate then re-archive it before
+// replaying that history.
+func TestExportImport_ArchivedTaskRoundTrips(t *testing.T) {
+	dir1 := t.TempDir()
+	dir2 := t.TempDir()
+	ctx := context.Background()
+
+	st, err := openStore(ctx, dir1)
+	if err != nil {
+		t.Fatalf("openStore: %v", err)
+	}
+	svc := service.New(st, nil)
+	actor := service.Actor{
+		Name:   "tester",
+		Scopes: domain.Scopes{domain.ScopeAdmin, domain.ScopeWrite, domain.ScopeRead},
+	}
+	if _, err := svc.ProjectUpsert(ctx, actor, service.ProjectUpsertInput{
+		Mode: service.UpsertCreate, Key: "RKAR", Name: "Archived history",
+		Columns: []service.ColumnSpec{
+			{Name: "Backlog", Kind: domain.KindBacklog},
+			{Name: "Doing", Kind: domain.KindActive},
+			{Name: "Done", Kind: domain.KindDone},
+		},
+	}); err != nil {
+		t.Fatalf("ProjectUpsert: %v", err)
+	}
+
+	created, err := svc.TaskCreate(ctx, actor, service.TaskCreateInput{
+		Tasks: []service.NewTask{{ProjectKey: "RKAR", Column: "Backlog", Title: "will be archived", Type: domain.TypeTask}},
+	})
+	if err != nil {
+		t.Fatalf("TaskCreate: %v", err)
+	}
+	taskKey := created.Tasks[0].Key
+	taskID := created.Tasks[0].ID
+
+	if err := st.Write(ctx, func(tx store.Tx) error {
+		p, err := st.Projects().GetByKey(tx, "RKAR")
+		if err != nil {
+			return err
+		}
+		return st.Progress().Add(tx, &domain.ProgressMark{
+			ID: "mark-archived", ProjectID: p.ID, TaskID: &taskID,
+			Assessor: "tester", Percent: 50, CreatedAt: time.Now().UTC(),
+		})
+	}); err != nil {
+		t.Fatalf("seed progress mark: %v", err)
+	}
+
+	if _, err := svc.TaskRemove(ctx, actor, service.TaskRemoveInput{
+		Items: []service.RemoveItem{{Key: taskKey}},
+	}); err != nil {
+		t.Fatalf("TaskRemove (archive): %v", err)
+	}
+	st.Close()
+
+	exportFile := filepath.Join(t.TempDir(), "export.json")
+	if err := runExport([]string{"--data", dir1, "--out", exportFile}); err != nil {
+		t.Fatalf("runExport: %v", err)
+	}
+	raw, err := os.ReadFile(exportFile)
+	if err != nil {
+		t.Fatalf("read export: %v", err)
+	}
+	var doc exportDocument
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("parse export: %v", err)
+	}
+
+	foundArchived := false
+	for _, at := range doc.ArchivedTasks {
+		if at.Project == "RKAR" && at.Task.Key == taskKey {
+			foundArchived = true
+		}
+	}
+	if !foundArchived {
+		t.Fatalf("export dropped the archived task %s", taskKey)
+	}
+	foundJournal := false
+	for _, e := range doc.Journal {
+		if e.Project == "RKAR" && e.Task == taskKey && e.Kind == string(store.HistoryArchived) {
+			foundJournal = true
+		}
+	}
+	if !foundJournal {
+		t.Fatalf("export dropped the archive journal entry for %s", taskKey)
+	}
+
+	if err := runImport([]string{"--data", dir2, "--in", exportFile}); err != nil {
+		t.Fatalf("runImport: %v — an archived task must not make its own export unimportable", err)
+	}
+
+	st2, err := openStore(ctx, dir2)
+	if err != nil {
+		t.Fatalf("openStore dir2: %v", err)
+	}
+	defer st2.Close()
+
+	var (
+		gotArchivedAt *time.Time
+		gotJournal    int
+		gotProgress   int
+	)
+	if err := st2.Read(ctx, func(tx store.Tx) error {
+		task, err := st2.Tasks().GetByKey(tx, taskKey)
+		if err != nil {
+			return err
+		}
+		gotArchivedAt = task.ArchivedAt
+		entries, err := st2.TaskHistory().ListByProject(tx, task.ProjectID)
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			if e.TaskID != nil && *e.TaskID == task.ID && e.Kind == store.HistoryArchived {
+				gotJournal++
+			}
+		}
+		marks, err := st2.Progress().History(tx, task.ProjectID, &task.ID)
+		if err != nil {
+			return err
+		}
+		gotProgress = len(marks)
+		return nil
+	}); err != nil {
+		t.Fatalf("read imported task: %v", err)
+	}
+
+	if gotArchivedAt == nil {
+		t.Errorf("imported task %s is not archived", taskKey)
+	}
+	if gotJournal != 1 {
+		t.Errorf("imported journal has %d archive entries for %s, want 1", gotJournal, taskKey)
+	}
+	if gotProgress != 1 {
+		t.Errorf("imported progress marks for %s = %d, want 1", taskKey, gotProgress)
+	}
+}

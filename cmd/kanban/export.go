@@ -48,6 +48,26 @@ type exportDocument struct {
 	// re-imported board would report that its journal became trustworthy on
 	// the day it was moved, not the day it actually started.
 	HistoryStartsAt time.Time `json:"history_starts_at"`
+
+	// ArchivedTasks carries every archived (soft-deleted via task_remove)
+	// task of each exported project. board_get never returns one — it
+	// answers "what does the live board look like", and an archived card
+	// by definition is not on it — but the journal, a progress mark or a
+	// chat message may legitimately still reference one (KANB-62): the
+	// card was real and the history that names it is not retracted by
+	// archiving it. Re-keyed the same way ProgressMarks/ChatMessages/
+	// Journal are: a project KEY, not the internal id.
+	ArchivedTasks []exportArchivedTask `json:"archived_tasks,omitempty"`
+}
+
+// exportArchivedTask is one archived task, carried in the same shape
+// board_get uses for a live one (domain.TaskView) so import can recreate it
+// through the exact same service.TaskCreate call a live task goes through,
+// then archive it with service.TaskRemove — reusing the two calls that
+// already exist for every other task rather than a new write path.
+type exportArchivedTask struct {
+	Project string          `json:"project"`
+	Task    domain.TaskView `json:"task"`
 }
 
 // exportProgressMark carries the human-readable project and task keys so
@@ -128,6 +148,13 @@ func exportBoard(ctx context.Context, svc service.Service, st store.Store, actor
 
 	out := &exportDocument{Projects: board.Projects}
 
+	// archivedKeys is gathered inside the same read as the journal/progress/
+	// chat streams below (store.TaskFilter.IncludeArchived is the only way
+	// to see them at all), but hydrated through svc.TaskGet afterwards: a
+	// service call opens its own transaction, and nesting one inside the
+	// st.Read below would be a second read against the same connection.
+	archivedKeys := make(map[string][]string, len(board.Projects))
+
 	// The store is what the append-only tables live behind: pulling the
 	// whole history through service.ProgressHistory would still hit the
 	// right row set, but a paginated ChatList would cap each page at 100
@@ -149,7 +176,24 @@ func exportBoard(ctx context.Context, svc service.Service, st store.Store, actor
 			if err != nil {
 				return fmt.Errorf("export project %s: %w", bp.Key, err)
 			}
-			if err := collectProgress(tx, st, bp, p.ID, out); err != nil {
+			// Every task, archived included: board_get's own read (behind
+			// `board`) never surfaces an archived one, but a progress mark
+			// may name it, so collectProgress needs the list before it runs.
+			all, err := st.Tasks().List(tx, store.TaskFilter{
+				ProjectIDs:      []string{p.ID},
+				IncludeArchived: true,
+			})
+			if err != nil {
+				return fmt.Errorf("export archived tasks (project %s): %w", bp.Key, err)
+			}
+			var archivedTasks []*domain.Task
+			for _, t := range all {
+				if t.ArchivedAt != nil {
+					archivedTasks = append(archivedTasks, t)
+					archivedKeys[bp.Key] = append(archivedKeys[bp.Key], t.Key)
+				}
+			}
+			if err := collectProgress(tx, st, bp, p.ID, archivedTasks, out); err != nil {
 				return err
 			}
 			if err := collectChat(tx, st, p.ID, bp.Key, out); err != nil {
@@ -164,14 +208,38 @@ func exportBoard(ctx context.Context, svc service.Service, st store.Store, actor
 	if err != nil {
 		return nil, err
 	}
+
+	for _, bp := range board.Projects {
+		keys := archivedKeys[bp.Key]
+		if len(keys) == 0 {
+			continue
+		}
+		res, err := svc.TaskGet(ctx, actor, service.TaskGetInput{
+			Keys: keys,
+			Include: service.Includes{
+				service.IncludeBody,
+				service.IncludeAcceptance,
+				service.IncludeLinks,
+				service.IncludeMetadata,
+			},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("export archived tasks (project %s): %w", bp.Key, err)
+		}
+		for _, tv := range res.Tasks {
+			out.ArchivedTasks = append(out.ArchivedTasks, exportArchivedTask{Project: bp.Key, Task: tv})
+		}
+	}
 	return out, nil
 }
 
 // collectProgress reads every mark of one project — both the project-level
 // scope (task_id IS NULL) and every task scope — into the export document.
-// Tasks are looked up via the Board payload's keys so an export of a
-// project the actor can see never has to escape service-layer access checks.
-func collectProgress(tx store.Tx, st store.Store, bp service.BoardProject, projectID string, out *exportDocument) error {
+// Live tasks are looked up via the Board payload's keys so an export of a
+// project the actor can see never has to escape service-layer access
+// checks; archived is the caller's own store-level read (board_get never
+// returns one, so there is no board-payload key to walk for those).
+func collectProgress(tx store.Tx, st store.Store, bp service.BoardProject, projectID string, archived []*domain.Task, out *exportDocument) error {
 	projectMarks, err := st.Progress().History(tx, projectID, nil)
 	if err != nil {
 		return fmt.Errorf("export progress (project %s): %w", bp.Key, err)
@@ -207,6 +275,23 @@ func collectProgress(tx store.Tx, st store.Store, bp service.BoardProject, proje
 					CreatedAt: m.CreatedAt,
 				})
 			}
+		}
+	}
+	for _, t := range archived {
+		marks, err := st.Progress().History(tx, projectID, &t.ID)
+		if err != nil {
+			return fmt.Errorf("export progress (%s): %w", t.Key, err)
+		}
+		for _, m := range marks {
+			out.ProgressMarks = append(out.ProgressMarks, exportProgressMark{
+				ID:        m.ID,
+				Project:   bp.Key,
+				Task:      t.Key,
+				Assessor:  m.Assessor,
+				Percent:   m.Percent,
+				ETA:       m.ETA,
+				CreatedAt: m.CreatedAt,
+			})
 		}
 	}
 	return nil
@@ -501,6 +586,9 @@ func validateImportReferences(doc exportDocument) error {
 			}
 		}
 	}
+	for _, at := range doc.ArchivedTasks {
+		tasks[at.Project+"/"+at.Task.Key] = struct{}{}
+	}
 	for _, mark := range doc.ProgressMarks {
 		if _, ok := projects[mark.Project]; !ok {
 			return fmt.Errorf("import progress mark %s: project %q not in document", mark.ID, mark.Project)
@@ -549,92 +637,123 @@ func importProject(ctx context.Context, svc service.Service, actor service.Actor
 		return fmt.Errorf("import project %s: %w", bp.Key, err)
 	}
 
+	// entries is every task this project owns, live or archived, in one
+	// list: an archived task's ParentID or BlockedBy may point at a live
+	// one and vice versa, so both must exist in idToKey/keyMap before the
+	// reparent/link passes below run. An archived entry is created in the
+	// project's first column — irrelevant to where it lands, since the
+	// archive pass at the end removes it from the visible board anyway —
+	// and archived at the very end, once every task and relationship in
+	// the project exists.
+	type importEntry struct {
+		column   string
+		tv       domain.TaskView
+		archived bool
+	}
+	var entries []importEntry
+	for _, col := range bp.Columns {
+		for _, tv := range col.Tasks {
+			entries = append(entries, importEntry{column: col.Name, tv: tv})
+		}
+	}
+	firstColumn := ""
+	if len(bp.Columns) > 0 {
+		firstColumn = bp.Columns[0].Name
+	}
+	for _, at := range doc.ArchivedTasks {
+		if at.Project == bp.Key {
+			entries = append(entries, importEntry{column: firstColumn, tv: at.Task, archived: true})
+		}
+	}
+
 	// Original task IDs -> new task keys. The export side carries the
 	// original IDs so a round-trip can reconstruct ParentID and the
 	// link list, neither of which a freshly-minted key can be derived
 	// from.
-	idToKey := make(map[string]string, sumTaskCount(bp))
-	for _, col := range bp.Columns {
-		for _, tv := range col.Tasks {
-			idToKey[tv.ID] = tv.Key
-		}
+	idToKey := make(map[string]string, len(entries))
+	for _, e := range entries {
+		idToKey[e.tv.ID] = e.tv.Key
 	}
 
-	keyMap := make(map[string]string, sumTaskCount(bp))
-	versions := make(map[string]int, sumTaskCount(bp))
+	keyMap := make(map[string]string, len(entries))
+	versions := make(map[string]int, len(entries))
 	type linkReq struct{ srcKey, dstKey string }
 	var linksToCreate []linkReq
 	type reparentReq struct{ taskKey, parentKey string }
 	var reparents []reparentReq
+	var archivedKeys []string
 
-	for _, col := range bp.Columns {
-		for _, tv := range col.Tasks {
-			acceptanceStrings := make([]string, 0, len(tv.Acceptance))
-			for _, it := range tv.Acceptance {
-				acceptanceStrings = append(acceptanceStrings, it.Text)
+	for _, e := range entries {
+		tv := e.tv
+		acceptanceStrings := make([]string, 0, len(tv.Acceptance))
+		for _, it := range tv.Acceptance {
+			acceptanceStrings = append(acceptanceStrings, it.Text)
+		}
+		res, err := svc.TaskCreate(ctx, actor, service.TaskCreateInput{
+			Tasks: []service.NewTask{{
+				ProjectKey: bp.Key,
+				Column:     e.column,
+				Title:      tv.Title,
+				Body:       tv.Body,
+				Type:       tv.Type,
+				Priority:   tv.Priority,
+				Tags:       tv.Tags,
+				Estimate:   tv.Estimate,
+				Actual:     tv.Actual,
+				Assignee:   tv.Assignee,
+				Reviewer:   tv.Reviewer,
+				Acceptance: acceptanceStrings,
+				DueAt:      tv.DueAt,
+				Metadata:   tv.Metadata,
+			}},
+			// The cards existed before the export; their assignees are
+			// history, not new assignments to check against today's keys.
+			Restore: true,
+		})
+		if err != nil {
+			return fmt.Errorf("import task %s: %w", tv.Key, err)
+		}
+		if len(res.Tasks) == 0 {
+			return fmt.Errorf("import task %s: no task returned", tv.Key)
+		}
+		createdTask := res.Tasks[0]
+		keyMap[tv.Key] = createdTask.Key
+		versions[createdTask.Key] = createdTask.Version
+
+		hasDone := false
+		for _, it := range tv.Acceptance {
+			if it.Done {
+				hasDone = true
+				break
 			}
-			res, err := svc.TaskCreate(ctx, actor, service.TaskCreateInput{
-				Tasks: []service.NewTask{{
-					ProjectKey: bp.Key,
-					Column:     col.Name,
-					Title:      tv.Title,
-					Body:       tv.Body,
-					Type:       tv.Type,
-					Priority:   tv.Priority,
-					Tags:       tv.Tags,
-					Estimate:   tv.Estimate,
-					Actual:     tv.Actual,
-					Assignee:   tv.Assignee,
-					Reviewer:   tv.Reviewer,
-					Acceptance: acceptanceStrings,
-					DueAt:      tv.DueAt,
-					Metadata:   tv.Metadata,
-				}},
-				// The cards existed before the export; their assignees are
-				// history, not new assignments to check against today's keys.
-				Restore: true,
+		}
+		if hasDone {
+			updated, err := applyPatch(ctx, svc, actor, service.TaskPatch{
+				Key:        createdTask.Key,
+				IfVersion:  &createdTask.Version,
+				Acceptance: tv.Acceptance,
 			})
 			if err != nil {
-				return fmt.Errorf("import task %s: %w", tv.Key, err)
+				return fmt.Errorf("import acceptance of %s: %w", createdTask.Key, err)
 			}
-			if len(res.Tasks) == 0 {
-				return fmt.Errorf("import task %s: no task returned", tv.Key)
-			}
-			createdTask := res.Tasks[0]
-			keyMap[tv.Key] = createdTask.Key
-			versions[createdTask.Key] = createdTask.Version
+			versions[createdTask.Key] = updated.Version
+		}
 
-			hasDone := false
-			for _, it := range tv.Acceptance {
-				if it.Done {
-					hasDone = true
-					break
-				}
-			}
-			if hasDone {
-				updated, err := applyPatch(ctx, svc, actor, service.TaskPatch{
-					Key:        createdTask.Key,
-					IfVersion:  &createdTask.Version,
-					Acceptance: tv.Acceptance,
+		if tv.ParentID != nil {
+			if pKey, ok := idToKey[*tv.ParentID]; ok {
+				reparents = append(reparents, reparentReq{
+					taskKey:   createdTask.Key,
+					parentKey: pKey,
 				})
-				if err != nil {
-					return fmt.Errorf("import acceptance of %s: %w", createdTask.Key, err)
-				}
-				versions[createdTask.Key] = updated.Version
 			}
+		}
 
-			if tv.ParentID != nil {
-				if pKey, ok := idToKey[*tv.ParentID]; ok {
-					reparents = append(reparents, reparentReq{
-						taskKey:   createdTask.Key,
-						parentKey: pKey,
-					})
-				}
-			}
+		for _, blockerKey := range tv.BlockedBy {
+			linksToCreate = append(linksToCreate, linkReq{srcKey: blockerKey, dstKey: tv.Key})
+		}
 
-			for _, blockerKey := range tv.BlockedBy {
-				linksToCreate = append(linksToCreate, linkReq{srcKey: blockerKey, dstKey: tv.Key})
-			}
+		if e.archived {
+			archivedKeys = append(archivedKeys, createdTask.Key)
 		}
 	}
 
@@ -672,18 +791,31 @@ func importProject(ctx context.Context, svc service.Service, actor service.Actor
 			return fmt.Errorf("import links for %s: %w", bp.Key, err)
 		}
 	}
-	return nil
-}
 
-// sumTaskCount counts tasks across a board payload so the maps built
-// during import have the right size hint. The export document's task list
-// is the union of every column's tasks; one pass is enough.
-func sumTaskCount(bp service.BoardProject) int {
-	n := 0
-	for _, c := range bp.Columns {
-		n += len(c.Tasks)
+	// Archive last, once every task and relationship the project carries
+	// has been created: task_remove refuses a task that still holds the
+	// project's focus or a claim, both cleared by TaskCreate's own
+	// Restore:true path, so there is nothing left to race with here.
+	for start := 0; start < len(archivedKeys); start += domain.MaxBatchTasks {
+		end := start + domain.MaxBatchTasks
+		if end > len(archivedKeys) {
+			end = len(archivedKeys)
+		}
+		items := make([]service.RemoveItem, end-start)
+		for i, k := range archivedKeys[start:end] {
+			items[i] = service.RemoveItem{Key: k}
+		}
+		res, err := svc.TaskRemove(ctx, actor, service.TaskRemoveInput{Items: items})
+		if err != nil {
+			return fmt.Errorf("import archive tasks for %s: %w", bp.Key, err)
+		}
+		for _, item := range res.Items {
+			if !item.OK {
+				return fmt.Errorf("import archive task %s: %w", item.Key, item.Err)
+			}
+		}
 	}
-	return n
+	return nil
 }
 
 // importDated writes the progress marks and chat messages with their
@@ -719,6 +851,16 @@ func importDated(ctx context.Context, st store.Store, actor service.Actor, doc e
 					taskID[bp.Key+"/"+tv.Key] = t.ID
 				}
 			}
+		}
+		// Archived tasks resolve the same way: GetByKey does not filter on
+		// archived_at, and importProject has already created (then
+		// archived) every one of them by the time this runs.
+		for _, at := range doc.ArchivedTasks {
+			t, err := st.Tasks().GetByKey(tx, at.Task.Key)
+			if err != nil {
+				return fmt.Errorf("import resolve archived task %s: %w", at.Task.Key, err)
+			}
+			taskID[at.Project+"/"+at.Task.Key] = t.ID
 		}
 
 		for _, m := range doc.ProgressMarks {
@@ -821,6 +963,16 @@ func importJournal(ctx context.Context, st store.Store, doc exportDocument) erro
 					taskID[bp.Key+"/"+tv.Key] = t.ID
 				}
 			}
+		}
+		// Archived tasks are a journal's whole reason for existing here: an
+		// archived-at-the-source card is exactly what used to make a
+		// journal entry dangle on import (KANB-62).
+		for _, at := range doc.ArchivedTasks {
+			t, err := st.Tasks().GetByKey(tx, at.Task.Key)
+			if err != nil {
+				return fmt.Errorf("import journal resolve archived task %s: %w", at.Task.Key, err)
+			}
+			taskID[at.Project+"/"+at.Task.Key] = t.ID
 		}
 
 		// Every project this document describes gets its import-time noise
