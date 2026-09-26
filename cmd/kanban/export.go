@@ -748,8 +748,13 @@ func importProject(ctx context.Context, svc service.Service, actor service.Actor
 			}
 		}
 
-		for _, blockerKey := range tv.BlockedBy {
-			linksToCreate = append(linksToCreate, linkReq{srcKey: blockerKey, dstKey: tv.Key})
+		// Edges are rebuilt from the BLOCKER's side. TaskView.BlockedBy lists
+		// only blockers that are still open, so rebuilding from it silently
+		// dropped every edge whose blocker was already done — 111 of the live
+		// board's 115 links (found on a live round trip, KANB-62). Blocks lists
+		// every edge, whatever state either end is in.
+		for _, blockedKey := range tv.Blocks {
+			linksToCreate = append(linksToCreate, linkReq{srcKey: tv.Key, dstKey: blockedKey})
 		}
 
 		if e.archived {

@@ -1365,3 +1365,74 @@ func TestExportImport_ArchivedTaskRoundTrips(t *testing.T) {
 		t.Errorf("imported progress marks for %s = %d, want 1", taskKey, gotProgress)
 	}
 }
+
+// TestExportImport_LinksWithADoneBlockerSurvive: import used to rebuild
+// edges from TaskView.BlockedBy, which lists only OPEN blockers, so every
+// edge whose blocker was already done vanished from a restored board (111
+// of the live board's 115 links, KANB-62). The edge must survive whatever
+// state its blocker is in.
+func TestExportImport_LinksWithADoneBlockerSurvive(t *testing.T) {
+	dir1, dir2 := t.TempDir(), t.TempDir()
+	ctx := context.Background()
+	st, err := openStore(ctx, dir1)
+	if err != nil {
+		t.Fatalf("openStore: %v", err)
+	}
+	svc := service.New(st, nil)
+	actor := service.Actor{Name: "tester", Scopes: domain.Scopes{domain.ScopeAdmin, domain.ScopeWrite, domain.ScopeRead}}
+	if _, err := svc.ProjectUpsert(ctx, actor, service.ProjectUpsertInput{
+		Mode: service.UpsertCreate, Key: "RKLN", Name: "Links",
+		Columns: []service.ColumnSpec{
+			{Name: "Backlog", Kind: domain.KindBacklog},
+			{Name: "Doing", Kind: domain.KindActive},
+			{Name: "Done", Kind: domain.KindDone},
+		},
+	}); err != nil {
+		t.Fatalf("ProjectUpsert: %v", err)
+	}
+	created, err := svc.TaskCreate(ctx, actor, service.TaskCreateInput{Tasks: []service.NewTask{
+		{ProjectKey: "RKLN", Column: "Done", Title: "finished blocker", Type: domain.TypeTask, Ref: "a"},
+		{ProjectKey: "RKLN", Column: "Backlog", Title: "open blocker", Type: domain.TypeTask, Ref: "b"},
+		{ProjectKey: "RKLN", Column: "Backlog", Title: "blocked twice", Type: domain.TypeTask, BlockedBy: []string{"@a", "@b"}},
+	}})
+	if err != nil {
+		t.Fatalf("TaskCreate: %v", err)
+	}
+	st.Close()
+	_ = created
+
+	exportFile := filepath.Join(t.TempDir(), "export.json")
+	if err := runExport([]string{"--data", dir1, "--out", exportFile}); err != nil {
+		t.Fatalf("runExport: %v", err)
+	}
+	if err := runImport([]string{"--data", dir2, "--in", exportFile}); err != nil {
+		t.Fatalf("runImport: %v", err)
+	}
+
+	// Import renumbers keys, so count the project's distinct edges rather
+	// than looking a task up by its old key.
+	st2 := mustOpenStore(t, dir2)
+	edges := map[[2]string]bool{}
+	if err := st2.Read(ctx, func(tx store.Tx) error {
+		var ids []string
+		for i := 1; i <= 3; i++ {
+			task, err := st2.Tasks().GetByKey(tx, fmt.Sprintf("RKLN-%d", i))
+			if err != nil {
+				return err
+			}
+			ids = append(ids, task.ID)
+		}
+		links, err := st2.Links().ListForTasks(tx, ids)
+		for _, ls := range links {
+			for _, l := range ls {
+				edges[[2]string{l.BlockerID, l.BlockedID}] = true
+			}
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(edges) != 2 {
+		t.Fatalf("%d links after the round trip, want 2 (the edge from the done blocker must survive)", len(edges))
+	}
+}
