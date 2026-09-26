@@ -94,6 +94,14 @@ func renderProject(sb *strings.Builder, p *service.BoardProject, now time.Time) 
 	// It goes last so a reader scanning for the `Done …` segment, and any
 	// parser that stops there, is unaffected by its arrival.
 	fmt.Fprintf(sb, " · v%d\n", p.Version)
+	// The project description is printed only when the caller asked for it
+	// (include:["description"]): board_get zeroes it otherwise. It is the
+	// project's rulebook, thousands of characters that do not change between
+	// two reads, and it used to ride along with every single call, even one
+	// that matched no task at all (KANB-58).
+	if p.Description != "" {
+		fmt.Fprintf(sb, "description:\n%s\n", p.Description)
+	}
 
 	for i := range p.Columns {
 		col := &p.Columns[i]

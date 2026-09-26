@@ -44,8 +44,14 @@ func roundtripServer(t *testing.T, newServer func(svc service.Service, version s
 }
 
 // callTool is a small wrapper that calls cs.CallTool and returns the
-// result; the second return is the JSON-decoded structuredContent (typed
-// to map for assertions).
+// result; the second return is the JSON envelope decoded from the TEXT
+// content (typed to map for assertions).
+//
+// The text is the only representation on the wire (KANB-58): no tool sends
+// structuredContent, and a result that carries one is a regression — the
+// client would show the model that copy instead of the text. board_get's
+// default text is the compact grammar, not JSON, so a caller that inspects a
+// board through this helper passes format:"json".
 func callTool(t *testing.T, cs *gomcp.ClientSession, name string, args map[string]any) (*gomcp.CallToolResult, map[string]any) {
 	t.Helper()
 	res, err := cs.CallTool(context.Background(), &gomcp.CallToolParams{Name: name, Arguments: args})
@@ -55,21 +61,47 @@ func callTool(t *testing.T, cs *gomcp.ClientSession, name string, args map[strin
 	if res == nil {
 		t.Fatalf("CallTool(%s): nil result", name)
 	}
-	if len(res.Content) == 0 {
-		t.Fatalf("CallTool(%s): empty Content", name)
+	if res.StructuredContent != nil {
+		t.Fatalf("CallTool(%s): structuredContent is set — the client shows the model that instead of the text (KANB-58)", name)
 	}
-	if res.StructuredContent == nil {
-		t.Fatalf("CallTool(%s): nil StructuredContent", name)
-	}
-	raw, err := json.Marshal(res.StructuredContent)
-	if err != nil {
-		t.Fatalf("marshal structuredContent: %v", err)
+	text := resultText(res)
+	if text == "" {
+		t.Fatalf("CallTool(%s): no text content", name)
 	}
 	var sc map[string]any
-	if err := json.Unmarshal(raw, &sc); err != nil {
-		t.Fatalf("unmarshal structuredContent: %v", err)
+	if err := json.Unmarshal([]byte(text), &sc); err != nil {
+		t.Fatalf("CallTool(%s): text is not a JSON envelope (board_get needs format:\"json\" here): %v\n%s", name, err, text)
 	}
 	return res, sc
+}
+
+// callToolRaw calls a tool and returns the result WITHOUT decoding the text as
+// JSON — for board_get's compact grammar and the messages feed rendering. It
+// still enforces the one-representation rule.
+func callToolRaw(t *testing.T, cs *gomcp.ClientSession, name string, args map[string]any) *gomcp.CallToolResult {
+	t.Helper()
+	res, err := cs.CallTool(context.Background(), &gomcp.CallToolParams{Name: name, Arguments: args})
+	if err != nil {
+		t.Fatalf("CallTool(%s): %v", name, err)
+	}
+	if res == nil || len(res.Content) == 0 {
+		t.Fatalf("CallTool(%s): empty result", name)
+	}
+	if res.StructuredContent != nil {
+		t.Fatalf("CallTool(%s): structuredContent is set — the client shows the model that instead of the text (KANB-58)", name)
+	}
+	return res
+}
+
+// resultText concatenates a result's text content.
+func resultText(res *gomcp.CallToolResult) string {
+	var sb strings.Builder
+	for _, c := range res.Content {
+		if tc, ok := c.(*gomcp.TextContent); ok {
+			sb.WriteString(tc.Text)
+		}
+	}
+	return sb.String()
 }
 
 // expectOK asserts the envelope's happy-path markers. The MCP wire form
@@ -126,8 +158,7 @@ func TestRoundTrip_BoardGet_Success(t *testing.T) {
 		}},
 	}
 
-	res, sc := callTool(t, cs, "board_get", map[string]any{"project": "BMB"})
-	expectOK(t, sc, "board_get")
+	res := callToolRaw(t, cs, "board_get", map[string]any{"project": "BMB"})
 
 	// Compact format is the default; the text content must call into Render
 	// and start with the version header.
@@ -142,7 +173,10 @@ func TestRoundTrip_BoardGet_Success(t *testing.T) {
 		t.Errorf("compact text does not start with version header: %q", tc.Text)
 	}
 
-	// StructuredContent: projects[0].columns[0].tasks[0].key must round-trip.
+	// The same board as JSON (format:"json"): projects[0].columns[0].tasks[0].key
+	// must round-trip.
+	_, sc := callTool(t, cs, "board_get", map[string]any{"project": "BMB", "format": "json"})
+	expectOK(t, sc, "board_get")
 	projects, _ := sc["data"].(map[string]any)["projects"].([]any)
 	if len(projects) != 1 {
 		t.Fatalf("projects len = %d, want 1", len(projects))
@@ -870,9 +904,11 @@ func TestRoundTrip_ServiceDomainError_EnvelopesWithoutProtocolError(t *testing.T
 	if errObj["code"] != "blocked" {
 		t.Errorf("code = %v, want blocked", errObj["code"])
 	}
-	// StructuredContent MUST be set even on failure — the handover §5 trap #1.
-	if res.StructuredContent == nil {
-		t.Errorf("StructuredContent nil; envelope contract broken")
+	// The envelope MUST travel even on failure — the handover §5 trap #1. It
+	// travels as the text now (KANB-58); a structuredContent copy beside it
+	// would be what the client shows the model instead.
+	if res.StructuredContent != nil {
+		t.Errorf("structuredContent is set on a failure; the text is the only representation")
 	}
 }
 
@@ -942,12 +978,13 @@ func TestRoundTrip_NoActorOnConnectCtx_AllToolsForbidden(t *testing.T) {
 			if res == nil {
 				t.Fatalf("nil result")
 			}
-			if res.StructuredContent == nil {
-				t.Fatalf("StructuredContent nil; envelope contract broken")
+			if res.StructuredContent != nil {
+				t.Fatalf("structuredContent is set; the text is the only representation (KANB-58)")
 			}
-			raw, _ := json.Marshal(res.StructuredContent)
 			var sc map[string]any
-			_ = json.Unmarshal(raw, &sc)
+			if err := json.Unmarshal([]byte(resultText(res)), &sc); err != nil {
+				t.Fatalf("failure text is not the JSON envelope: %v; text=%s", err, resultText(res))
+			}
 			if sc["ok"] != false {
 				t.Fatalf("ok != false: %v", sc)
 			}

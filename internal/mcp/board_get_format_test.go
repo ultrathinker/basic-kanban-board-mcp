@@ -34,7 +34,7 @@ func TestBoardGet_CompactFormat_CallsRender(t *testing.T) {
 		{"project": "BMB"},
 		{"project": "BMB", "format": "compact"},
 	} {
-		res, _ := callTool(t, cs, "board_get", args)
+		res := callToolRaw(t, cs, "board_get", args)
 		tc, ok := res.Content[0].(*gomcp.TextContent)
 		if !ok {
 			t.Fatalf("args=%v: content[0] is %T", args, res.Content[0])

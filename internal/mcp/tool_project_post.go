@@ -119,7 +119,7 @@ func validateChatWireText(field, value string, allowLineFormatting bool) *domain
 
 func registerProjectPost(s *gomcp.Server, svc service.Service) {
 	tool := projectPostTool()
-	gomcp.AddTool(s, tool, func(ctx context.Context, req *gomcp.CallToolRequest, in projectPostInput) (*gomcp.CallToolResult, projectPostOutput, error) {
+	addTool(s, tool, func(ctx context.Context, req *gomcp.CallToolRequest, in projectPostInput) (*gomcp.CallToolResult, projectPostOutput, error) {
 		actor, aerr := actorFromContext(ctx)
 		if aerr != nil {
 			return errorResult(opProjectPost, aerr), projectPostOutput{OK: false, Op: opProjectPost, Error: newErrorEnvelope(aerr)}, nil

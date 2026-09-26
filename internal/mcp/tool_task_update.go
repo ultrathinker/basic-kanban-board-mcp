@@ -95,13 +95,18 @@ type taskPatchIn struct {
 type taskUpdateInput struct {
 	Patches []taskPatchIn `json:"patches"`
 	Atomic  bool          `json:"atomic,omitempty" jsonschema:"false (default) = per-item results; true = the whole batch commits or none of it does"`
+	Echo    string        `json:"echo,omitempty"`
 }
 
 type taskPatchResultOut struct {
-	Key   string         `json:"key"`
-	OK    bool           `json:"ok"`
-	Task  *taskOut       `json:"task,omitempty"`
-	Error *errorEnvelope `json:"error,omitempty"`
+	Key string `json:"key"`
+	OK  bool   `json:"ok"`
+	// Version and Column are the default acknowledgement; Task is filled only
+	// for echo:"full".
+	Version int            `json:"version,omitempty"`
+	Column  string         `json:"column,omitempty"`
+	Task    *taskOut       `json:"task,omitempty"`
+	Error   *errorEnvelope `json:"error,omitempty"`
 }
 
 type taskUpdateData struct {
@@ -118,6 +123,7 @@ type taskUpdateOutput struct {
 
 func taskUpdateTool() *gomcp.Tool {
 	s := schemaFor[taskUpdateInput]()
+	setEcho(s)
 	patches := prop(s, "patches")
 	setMinItems(patches, 1)
 	setMaxItems(patches, domain.MaxBatchTasks)
@@ -159,7 +165,7 @@ func taskUpdateTool() *gomcp.Tool {
 		Name: opTaskUpdate,
 		Description: "Update one or more tasks. Per-item results by default (atomic:false); set atomic:true to make the whole batch commit or none of it does. " +
 			"if_version is required for any replacement-style field. " +
-			"Returns `data.items[]`: one `{key, ok, task|error}` entry per patch, in request order. " +
+			"Returns `data.items[]`: one entry per patch, in request order — `{key, ok, version, column}` by default, the whole task too with `echo:\"full\"`, or `{key, ok:false, error}`. " +
 			versionEchoRule,
 		InputSchema: s,
 	}
@@ -351,7 +357,7 @@ func taskPatchToService(idx int, in taskPatchIn, raw map[string]json.RawMessage)
 
 func registerTaskUpdate(s *gomcp.Server, svc service.Service) {
 	tool := taskUpdateTool()
-	gomcp.AddTool(s, tool, func(ctx context.Context, req *gomcp.CallToolRequest, in taskUpdateInput) (*gomcp.CallToolResult, taskUpdateOutput, error) {
+	addTool(s, tool, func(ctx context.Context, req *gomcp.CallToolRequest, in taskUpdateInput) (*gomcp.CallToolResult, taskUpdateOutput, error) {
 		actor, aerr := actorFromContext(ctx)
 		if aerr != nil {
 			return errorResult(opTaskUpdate, aerr), taskUpdateOutput{OK: false, Op: opTaskUpdate, Error: newErrorEnvelope(aerr)}, nil
@@ -423,7 +429,14 @@ func registerTaskUpdate(s *gomcp.Server, svc service.Service) {
 		warnings := []string{}
 		for i, sl := range slots {
 			if sl.ok {
-				items[i] = taskPatchResultOut{Key: sl.key, OK: true, Task: sl.task}
+				item := taskPatchResultOut{Key: sl.key, OK: true}
+				if sl.task != nil {
+					item.Version, item.Column = sl.task.Version, sl.task.Column
+					if in.Echo == echoFull {
+						item.Task = sl.task
+					}
+				}
+				items[i] = item
 			} else {
 				items[i] = taskPatchResultOut{Key: sl.key, OK: false, Error: newErrorEnvelope(sl.err)}
 				warnings = append(warnings, fmt.Sprintf("%s: %s", sl.key, sl.err.Code))

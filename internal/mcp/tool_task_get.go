@@ -69,7 +69,7 @@ func taskGetTool() *gomcp.Tool {
 
 func registerTaskGet(s *gomcp.Server, svc service.Service) {
 	tool := taskGetTool()
-	gomcp.AddTool(s, tool, func(ctx context.Context, req *gomcp.CallToolRequest, in taskGetInput) (*gomcp.CallToolResult, taskGetOutput, error) {
+	addTool(s, tool, func(ctx context.Context, req *gomcp.CallToolRequest, in taskGetInput) (*gomcp.CallToolResult, taskGetOutput, error) {
 		actor, aerr := actorFromContext(ctx)
 		if aerr != nil {
 			return errorResult(opTaskGet, aerr), taskGetOutput{OK: false, Op: opTaskGet, Error: newErrorEnvelope(aerr)}, nil

@@ -36,18 +36,15 @@ func (c MCPFeedClient) Read(ctx context.Context, after string) (FeedPage, error)
 		return FeedPage{}, fmt.Errorf("connect to board MCP: %w", err)
 	}
 	defer session.Close()
-	result, err := session.CallTool(ctx, &gomcp.CallToolParams{Name: "board_get", Arguments: map[string]any{"project": c.Project, "view": "messages", "after": after, "limit": 100}})
+	// format:"json": the board answers in its text content only (KANB-58 —
+	// no structuredContent any more), and the default text of the messages
+	// view is a line rendering for models, not something to parse.
+	result, err := session.CallTool(ctx, &gomcp.CallToolParams{Name: "board_get", Arguments: map[string]any{"project": c.Project, "view": "messages", "after": after, "limit": 100, "format": "json"}})
 	if err != nil {
 		return FeedPage{}, fmt.Errorf("read board feed: %w", err)
 	}
 	if result.IsError {
 		return FeedPage{}, fmt.Errorf("board_get returned an error")
-	}
-	if result.StructuredContent != nil {
-		page, err := decodeFeed(result.StructuredContent)
-		if err == nil {
-			return page, nil
-		}
 	}
 	for _, content := range result.Content {
 		text, ok := content.(*gomcp.TextContent)
@@ -61,7 +58,7 @@ func (c MCPFeedClient) Read(ctx context.Context, after string) (FeedPage, error)
 			}
 		}
 	}
-	return FeedPage{}, fmt.Errorf("board_get response did not include structured messages")
+	return FeedPage{}, fmt.Errorf("board_get response carried no messages page in its JSON text")
 }
 
 func decodeFeed(value any) (FeedPage, error) {

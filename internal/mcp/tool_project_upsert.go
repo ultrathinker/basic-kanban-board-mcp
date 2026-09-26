@@ -170,7 +170,7 @@ func settingsToService(s *projectSettingsIn) *service.ProjectSettings {
 
 func registerProjectUpsert(s *gomcp.Server, svc service.Service) {
 	tool := projectUpsertTool()
-	gomcp.AddTool(s, tool, func(ctx context.Context, req *gomcp.CallToolRequest, in projectUpsertInput) (*gomcp.CallToolResult, projectUpsertOutput, error) {
+	addTool(s, tool, func(ctx context.Context, req *gomcp.CallToolRequest, in projectUpsertInput) (*gomcp.CallToolResult, projectUpsertOutput, error) {
 		actor, aerr := actorFromContext(ctx)
 		if aerr != nil {
 			return errorResult(opProjectUpsert, aerr), projectUpsertOutput{OK: false, Op: opProjectUpsert, Error: newErrorEnvelope(aerr)}, nil

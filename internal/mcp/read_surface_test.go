@@ -54,7 +54,7 @@ func TestBoardGet_PublishesProjectVersionAndSettings(t *testing.T) {
 	cs, svc := roundtripServer(t, NewServer)
 	svc.DefaultBoardGet = configuredBoard()
 
-	_, sc := callTool(t, cs, "board_get", map[string]any{"project": "BMB"})
+	_, sc := callTool(t, cs, "board_get", map[string]any{"project": "BMB", "format": "json"})
 	expectOK(t, sc, "board_get")
 
 	p := sc["data"].(map[string]any)["projects"].([]any)[0].(map[string]any)
@@ -65,11 +65,20 @@ func TestBoardGet_PublishesProjectVersionAndSettings(t *testing.T) {
 		"enforce_dependencies": true,
 		"strict_done":          true,
 		"claim_ttl_seconds":    float64(900),
-		"description":          "the board under test",
 	} {
 		if got := p[field]; got != want {
 			t.Errorf("projects[0].%s = %v, want %v", field, got, want)
 		}
+	}
+
+	// The description is the project's rulebook: it is NOT part of a default
+	// read any more (KANB-58), only of an explicit include.
+	if _, has := p["description"]; has {
+		t.Errorf("projects[0].description came back without include:[\"description\"]")
+	}
+	_, withDesc := callTool(t, cs, "board_get", map[string]any{"project": "BMB", "format": "json", "include": []any{"description"}})
+	if got := withDesc["data"].(map[string]any)["projects"].([]any)[0].(map[string]any)["description"]; got != "the board under test" {
+		t.Errorf("projects[0].description with include = %v, want the board under test", got)
 	}
 
 	// Full column configuration, not just the ones holding tasks.
@@ -92,7 +101,7 @@ func TestBoardGet_CompactCarriesProjectVersion(t *testing.T) {
 	cs, svc := roundtripServer(t, NewServer)
 	svc.DefaultBoardGet = configuredBoard()
 
-	res, _ := callTool(t, cs, "board_get", map[string]any{"project": "BMB"})
+	res := callToolRaw(t, cs, "board_get", map[string]any{"project": "BMB"})
 	text := res.Content[0].(*gomcp.TextContent).Text
 	header := strings.Split(text, "\n")[1]
 	if !strings.HasSuffix(header, " · v7") {
@@ -108,7 +117,7 @@ func TestBoardGet_CompactUsesConfiguredEstimateUnit(t *testing.T) {
 	cs, svc := roundtripServer(t, NewServer)
 	svc.DefaultBoardGet = configuredBoard()
 
-	res, _ := callTool(t, cs, "board_get", map[string]any{"project": "BMB"})
+	res := callToolRaw(t, cs, "board_get", map[string]any{"project": "BMB"})
 	text := res.Content[0].(*gomcp.TextContent).Text
 	if !strings.Contains(text, "est 3d") {
 		t.Errorf("estimate did not use the project's configured unit:\n%s", text)

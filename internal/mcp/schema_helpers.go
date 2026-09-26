@@ -59,6 +59,15 @@ func setMinLen(s *jsonschema.Schema, n int)        { s.MinLength = jsonschema.Pt
 func setMaxItems(s *jsonschema.Schema, n int)      { s.MaxItems = jsonschema.Ptr(n) }
 func setMinItems(s *jsonschema.Schema, n int)      { s.MinItems = jsonschema.Ptr(n) }
 
+// setEcho publishes a write tool's `echo` argument: short acknowledgement by
+// default, the whole task on request (KANB-58).
+func setEcho(s *jsonschema.Schema) {
+	e := prop(s, "echo")
+	setEnum(e, "ack", echoFull)
+	setDefault(e, "ack")
+	e.Description = echoSchemaNote
+}
+
 // dropRequired removes names from the schema's required list. We need it
 // when a struct field has no `omitempty` (so the inferrer marks it required)
 // but the handler wants to issue a domain-shaped validation error instead

@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -15,10 +16,9 @@ import (
 // its own copy unexported, so the middleware below carries one.
 const methodCallTool = "tools/call"
 
-// schemaErrorOutput is the envelope a schema rejection carries. It is the
-// {ok, op, error} subset every tool's declared output schema already allows
-// (every tool shares ok/op/data?/meta?/error?), so a client validating
-// structuredContent against the tool's outputSchema still accepts it.
+// schemaErrorOutput is the {ok:false, op, error} envelope every failure
+// carries as its text — a schema rejection here, and any handler failure via
+// errorResult — so a caller parses every error the same way.
 type schemaErrorOutput struct {
 	OK    bool           `json:"ok"`
 	Op    string         `json:"op"`
@@ -108,7 +108,7 @@ func schemaErrorEnvelope(next gomcp.MethodHandler) gomcp.MethodHandler {
 		ctr, ok := res.(*gomcp.CallToolResult)
 		// A non-error result, or one that already carries an envelope, is a
 		// handler's own answer: leave it exactly as it is.
-		if !ok || ctr == nil || !ctr.IsError || ctr.StructuredContent != nil {
+		if !ok || ctr == nil || !ctr.IsError || hasErrorEnvelope(ctr) {
 			return res, err
 		}
 		op := "tool_call"
@@ -120,10 +120,30 @@ func schemaErrorEnvelope(next gomcp.MethodHandler) gomcp.MethodHandler {
 			Message:     schemaErrorMessage(ctr),
 			Remediation: schemaRemediation(op),
 		}
-		ctr.Content = []gomcp.Content{&gomcp.TextContent{Text: errorText(op, derr)}}
-		ctr.StructuredContent = schemaErrorOutput{OK: false, Op: op, Error: newErrorEnvelope(derr)}
+		ctr.Content = []gomcp.Content{&gomcp.TextContent{Text: jsonText(schemaErrorOutput{OK: false, Op: op, Error: newErrorEnvelope(derr)})}}
 		return ctr, nil
 	}
+}
+
+// hasErrorEnvelope reports whether a failed result already carries the
+// {ok:false, op, error} envelope in its text — i.e. a handler answered, and
+// this middleware must leave it alone. The envelope used to be recognised by
+// structuredContent being set; that is gone (KANB-58), so the text is the
+// only place left to look.
+func hasErrorEnvelope(ctr *gomcp.CallToolResult) bool {
+	for _, c := range ctr.Content {
+		tc, ok := c.(*gomcp.TextContent)
+		if !ok {
+			continue
+		}
+		var probe struct {
+			Error *errorEnvelope `json:"error"`
+		}
+		if json.Unmarshal([]byte(tc.Text), &probe) == nil && probe.Error != nil && probe.Error.Code != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // schemaErrorMessage recovers the validator's sentence: SetError stashes the

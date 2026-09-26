@@ -63,7 +63,7 @@ func linkPairsToService(field string, pairs []linkPairIn) ([]service.LinkPair, *
 
 func registerTaskLink(s *gomcp.Server, svc service.Service) {
 	tool := taskLinkTool()
-	gomcp.AddTool(s, tool, func(ctx context.Context, req *gomcp.CallToolRequest, in taskLinkInput) (*gomcp.CallToolResult, taskLinkOutput, error) {
+	addTool(s, tool, func(ctx context.Context, req *gomcp.CallToolRequest, in taskLinkInput) (*gomcp.CallToolResult, taskLinkOutput, error) {
 		actor, aerr := actorFromContext(ctx)
 		if aerr != nil {
 			return errorResult(opTaskLink, aerr), taskLinkOutput{OK: false, Op: opTaskLink, Error: newErrorEnvelope(aerr)}, nil

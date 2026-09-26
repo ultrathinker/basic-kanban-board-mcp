@@ -47,6 +47,7 @@ func TestBoardGet_MessagesView(t *testing.T) {
 	}
 
 	res, sc := callTool(t, cs, "board_get", map[string]any{
+		"format":  "json",
 		"project": "kanb", "view": "messages", "after": "2026-09-14T09:59:00.000Z/msg-0", "limit": 30,
 	})
 	if res.IsError {
@@ -105,8 +106,12 @@ func TestBoardGet_MessagesView(t *testing.T) {
 		t.Errorf("messages[1].reply_to = %v, want msg-1", second["reply_to"])
 	}
 
-	// The text form is line-oriented and carries the cursor so a text-only
-	// consumer can page.
+	// The text form (the default, no format) is line-oriented and carries the
+	// cursor so a text-only consumer can page. It is a separate call now: the
+	// JSON above IS the text of a format:"json" call (KANB-58).
+	res = callToolRaw(t, cs, "board_get", map[string]any{
+		"project": "kanb", "view": "messages", "after": "2026-09-14T09:59:00.000Z/msg-0", "limit": 30,
+	})
 	tc, ok := res.Content[0].(*gomcp.TextContent)
 	if !ok {
 		t.Fatalf("content[0] is %T, want TextContent", res.Content[0])
@@ -167,6 +172,7 @@ func TestBoardGet_MessagesViewEmptyPageKeepsCursor(t *testing.T) {
 			NextCursor: "echoed-position",
 		}
 		_, sc := callTool(t, cs, "board_get", map[string]any{
+			"format":  "json",
 			"project": "kanb", "view": "messages", "after": "held-position", "limit": 30,
 		})
 		expectOK(t, sc, "board_get")
@@ -187,7 +193,7 @@ func TestBoardGet_MessagesViewEmptyPageKeepsCursor(t *testing.T) {
 		t.Parallel()
 		cs, svc := roundtripServer(t, NewServer)
 		svc.DefaultChatFeed = &service.ChatFeedResult{Messages: []service.ChatFeedMessage{}}
-		res, sc := callTool(t, cs, "board_get", map[string]any{"project": "kanb", "view": "messages"})
+		res, sc := callTool(t, cs, "board_get", map[string]any{"project": "kanb", "view": "messages", "format": "json"})
 		expectOK(t, sc, "board_get")
 		msgsBlock, ok := sc["messages"].(map[string]any)
 		if !ok {
@@ -202,6 +208,7 @@ func TestBoardGet_MessagesViewEmptyPageKeepsCursor(t *testing.T) {
 		}
 		// The text form has no position to print here (nothing exists yet);
 		// it must not crash and must still announce the empty feed.
+		res = callToolRaw(t, cs, "board_get", map[string]any{"project": "kanb", "view": "messages"})
 		tc, ok := res.Content[0].(*gomcp.TextContent)
 		if !ok {
 			t.Fatalf("content[0] is %T, want TextContent", res.Content[0])
@@ -241,6 +248,7 @@ func TestBoardGet_MessagesViewCursorErrors(t *testing.T) {
 		"Use the next_cursor returned by a previous page of this project's feed, or omit after to read from the beginning.")
 
 	res, sc := callTool(t, cs, "board_get", map[string]any{
+		"format":  "json",
 		"project": "kanb", "view": "messages", "after": "2026-09-14T10:00:00.000Z/foreign",
 	})
 	if !res.IsError {

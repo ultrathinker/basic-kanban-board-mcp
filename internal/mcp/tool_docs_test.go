@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"sort"
 	"strings"
@@ -37,50 +38,40 @@ func schemaNode(t *testing.T, root any, path ...string) map[string]any {
 	return node
 }
 
-// TestVersionSemantics_PinnedInOutputSchema is LIVE-FINDINGS §6. The behaviour
-// was always correct — the response carries the post-write version — but the
-// rule was written down nowhere a model looks, so a dogfooding agent could not
-// tell "sent 2, got 2" (a note, which by design does not bump) from a stale
-// echo. It defended itself with a task_get before every versioned write and
-// doubled its write cost for a whole session.
+// TestVersionSemantics_PinnedInWriteDescriptions is LIVE-FINDINGS §6. The
+// behaviour was always correct — the response carries the post-write version
+// — but the rule was written down nowhere a model looks, so a dogfooding agent
+// could not tell "sent 2, got 2" (a note, which by design does not bump) from
+// a stale echo. It defended itself with a task_get before every versioned
+// write and doubled its write cost for a whole session.
 //
-// The description is the fix, so the description is what gets pinned.
-func TestVersionSemantics_PinnedInOutputSchema(t *testing.T) {
+// The rule used to be pinned in each tool's output schema. Output schemas are
+// gone (KANB-58: a client that finds structuredContent shows the model that
+// copy instead of the text), so the rule now has to live in the description
+// of every tool that WRITES and returns a version — and no tool may publish an
+// output schema again, or the one-representation rule is broken.
+func TestVersionSemantics_PinnedInWriteDescriptions(t *testing.T) {
 	t.Parallel()
 	cs, _ := roundtripServer(t, NewServer)
 
-	// Every tool that returns a task shares taskOut, so the same sentence has
-	// to reach the schema through each of the two result shapes.
-	cases := []struct {
-		tool string
-		path []string
-	}{
-		{"task_update", []string{"properties", "data", "properties", "items", "items", "properties", "task", "properties", "version"}},
-		{"task_get", []string{"properties", "data", "properties", "items", "items", "properties", "task", "properties", "version"}},
-		{"task_next", []string{"properties", "data", "properties", "tasks", "items", "properties", "version"}},
-		{"task_create", []string{"properties", "data", "properties", "tasks", "items", "properties", "version"}},
+	for _, name := range []string{"task_update", "task_create"} {
+		tool := toolByName(t, cs, name)
+		if !strings.Contains(tool.Description, versionEchoRule) {
+			t.Errorf("%s description does not carry versionEchoRule; with no output schema it is the only place a model reads it", name)
+		}
 	}
-	for _, tc := range cases {
-		t.Run(tc.tool, func(t *testing.T) {
-			t.Parallel()
-			tool := toolByName(t, cs, tc.tool)
-			if tool.OutputSchema == nil {
-				t.Fatalf("%s publishes no output schema", tc.tool)
-			}
-			node := schemaNode(t, tool.OutputSchema, tc.path...)
-			got, _ := node["description"].(string)
-			if got != taskVersionDoc {
-				t.Errorf("%s version description drifted from taskVersionDoc:\n got: %q\nwant: %q", tc.tool, got, taskVersionDoc)
-			}
-		})
+
+	tools, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	for _, tool := range tools.Tools {
+		if tool.OutputSchema != nil {
+			t.Errorf("%s publishes an output schema: the SDK then sends structuredContent, and the client shows the model that instead of the text (KANB-58)", tool.Name)
+		}
 	}
 }
 
-// TestVersionSemantics_StatedInProse pins the same two facts on the surfaces
-// that carry sentences: the initialize instructions and the task_update
-// description. Both must survive independently — an agent that skims the
-// instructions and one that reads only the tool it is about to call are both
-// real.
 func TestVersionSemantics_StatedInProse(t *testing.T) {
 	t.Parallel()
 	cs, _ := roundtripServer(t, NewServer)

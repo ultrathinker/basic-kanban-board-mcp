@@ -48,7 +48,7 @@ func taskClaimTool() *gomcp.Tool {
 
 func registerTaskClaim(s *gomcp.Server, svc service.Service) {
 	tool := taskClaimTool()
-	gomcp.AddTool(s, tool, func(ctx context.Context, req *gomcp.CallToolRequest, in taskClaimInput) (*gomcp.CallToolResult, taskClaimOutput, error) {
+	addTool(s, tool, func(ctx context.Context, req *gomcp.CallToolRequest, in taskClaimInput) (*gomcp.CallToolResult, taskClaimOutput, error) {
 		actor, aerr := actorFromContext(ctx)
 		if aerr != nil {
 			return errorResult(opTaskClaim, aerr), taskClaimOutput{OK: false, Op: opTaskClaim, Error: newErrorEnvelope(aerr)}, nil

@@ -30,8 +30,8 @@ type boardGetInput struct {
 	View      string         `json:"view,omitempty" jsonschema:"tasks = full board, summary = counts only, messages = the communication feed read forward from the beginning; default depends on whether project is set"`
 	DoneLimit int            `json:"done_limit,omitempty" jsonschema:"how many done tasks to include, most recently done first"`
 	Filter    *boardFilterIn `json:"filter,omitempty"`
-	Include   []string       `json:"include,omitempty" jsonschema:"widen the per-task fields returned"`
-	Format    string         `json:"format,omitempty" jsonschema:"compact = the token-cheap text grammar, json = pretty JSON text (structuredContent is always JSON either way)"`
+	Include   []string       `json:"include,omitempty" jsonschema:"widen what is returned: per-task fields, and description for the project's own description (omitted by default)"`
+	Format    string         `json:"format,omitempty" jsonschema:"compact = the token-cheap text grammar, json = the same board as compact JSON text"`
 	// After pages the messages view FORWARD: it is the opaque next_cursor a
 	// previous page returned. Without it the feed starts at the OLDEST
 	// message, never at "now" — a consumer must not miss commands written
@@ -126,7 +126,7 @@ func boardGetTool() *gomcp.Tool {
 	setMin(prop(s, "done_limit"), 0)
 	setMax(prop(s, "done_limit"), float64(domain.MaxDoneLimit))
 	inc := prop(s, "include")
-	setEnum(inc.Items, includeEnumValues...)
+	setEnum(inc.Items, append(append([]string{}, includeEnumValues...), includeDescription)...)
 	setDefault(inc, []string{})
 	setEnum(prop(s, "format"), "compact", "json")
 	setDefault(prop(s, "format"), "compact")
@@ -143,11 +143,31 @@ func boardGetTool() *gomcp.Tool {
 
 	return &gomcp.Tool{
 		Name: opBoardGet,
-		Description: "Read the board. Compact text by default — about 1,000 tokens for 30 active tasks, roughly 90% smaller than the same board as indented JSON, so it is cheap enough to call at the start of every session. structuredContent is always full JSON.\n" +
+		Description: "Read the board. Compact text by default — about 1,000 tokens for 30 active tasks, roughly 90% smaller than the same board as JSON, so it is cheap enough to call at the start of every session. `format:\"json\"` returns the same board as JSON text instead. The project's description — its rulebook — is NOT returned unless asked for: add `include:[\"description\"]` once per session, or again after your context was compacted.\n" +
 			"`view:\"messages\"` reads one project's communication feed forward through history instead of the board: `messages[]` in chronological order (each with `id`, `created_at`, `author`, `author_token_id` — the authorized source, which the caller never chooses — `kind`, `recipient`/`recipient_name`, `resolved_executor`/`resolved_executor_name`, `reply_to`, `body`, and the `task_keys` created by accepting that command), plus `next_cursor` and `has_more`. The board itself and task bodies are NOT part of that response. Chat history is never pruned, so a cursor never goes stale; a cursor from another project, a cursor naming a message that does not exist, or an unparseable cursor is refused with an actionable error rather than a silent empty page.\n" +
 			"Feed participants and the project's coordinator are published by `view:\"summary\"` as `projects[].participants[]` and `projects[].coordinator` — token ids and display names only, never secrets.",
 		InputSchema: s,
 	}
+}
+
+// includeDescription widens board_get's PROJECT with its description. It is
+// not a task field, so it lives outside includeEnumValues: task_get and
+// task_next have no project to widen.
+const includeDescription = "description"
+
+// splitDescriptionInclude separates board_get's project-level include from
+// the per-task ones the service understands.
+func splitDescriptionInclude(vals []string) (bool, []string) {
+	want := false
+	rest := make([]string, 0, len(vals))
+	for _, v := range vals {
+		if v == includeDescription {
+			want = true
+			continue
+		}
+		rest = append(rest, v)
+	}
+	return want, rest
 }
 
 // includeEnumValues is the full include enum PLAN §6 defines for board_get
@@ -200,7 +220,7 @@ func boardFilterToService(f *boardFilterIn) (service.BoardFilter, *domain.Error)
 
 func registerBoardGet(s *gomcp.Server, svc service.Service) {
 	tool := boardGetTool()
-	gomcp.AddTool(s, tool, func(ctx context.Context, req *gomcp.CallToolRequest, in boardGetInput) (*gomcp.CallToolResult, boardGetOutput, error) {
+	addTool(s, tool, func(ctx context.Context, req *gomcp.CallToolRequest, in boardGetInput) (*gomcp.CallToolResult, boardGetOutput, error) {
 		actor, aerr := actorFromContext(ctx)
 		if aerr != nil {
 			return errorResult(opBoardGet, aerr), boardGetOutput{OK: false, Op: opBoardGet, Error: newErrorEnvelope(aerr)}, nil
@@ -259,12 +279,15 @@ func registerBoardGet(s *gomcp.Server, svc service.Service) {
 			return &gomcp.CallToolResult{Content: []gomcp.Content{&gomcp.TextContent{Text: text}}}, mout, nil
 		}
 
+		// "description" widens the PROJECT, not the tasks, so it is split off
+		// before the per-task includes reach the service.
+		wantDescription, taskIncludes := splitDescriptionInclude(in.Include)
 		board, err := svc.BoardGet(ctx, actor, service.BoardGetInput{
 			ProjectKey: in.Project,
 			View:       view,
 			DoneLimit:  in.DoneLimit,
 			Filter:     filter,
-			Include:    toIncludes(in.Include),
+			Include:    toIncludes(taskIncludes),
 		})
 		if err != nil {
 			derr := asDomainError(err)
@@ -273,7 +296,22 @@ func registerBoardGet(s *gomcp.Server, svc service.Service) {
 
 		// board_get returns whatever `include` selected, whole: it has no
 		// bounded tier, so the projection is the include set as-is.
-		proj := service.FullProjection(toIncludes(in.Include))
+		proj := service.FullProjection(toIncludes(taskIncludes))
+		// The description is thousands of characters that do not change
+		// between two reads, and it used to ride along with every call — even
+		// one that matched no task at all (KANB-58). Zeroing it here drops it
+		// from both renderings at once.
+		if !wantDescription {
+			// Work on a copy: the board belongs to the service, which may hand
+			// the same value to another caller (the test fakes do exactly
+			// that, and a guard caught the first version of this mutating it).
+			shown := *board
+			shown.Projects = append([]service.BoardProject(nil), board.Projects...)
+			for i := range shown.Projects {
+				shown.Projects[i].Description = ""
+			}
+			board = &shown
+		}
 		data := boardGetData{Projects: make([]boardProjectOut, len(board.Projects))}
 		total := 0
 		for i := range board.Projects {

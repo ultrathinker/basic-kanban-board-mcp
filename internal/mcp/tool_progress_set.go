@@ -73,7 +73,7 @@ func progressSetTool() *gomcp.Tool {
 
 func registerProgressSet(s *gomcp.Server, svc service.Service) {
 	tool := progressSetTool()
-	gomcp.AddTool(s, tool, func(ctx context.Context, req *gomcp.CallToolRequest, in progressSetInput) (*gomcp.CallToolResult, progressSetOutput, error) {
+	addTool(s, tool, func(ctx context.Context, req *gomcp.CallToolRequest, in progressSetInput) (*gomcp.CallToolResult, progressSetOutput, error) {
 		actor, aerr := actorFromContext(ctx)
 		if aerr != nil {
 			return errorResult(opProgressSet, aerr), progressSetOutput{OK: false, Op: opProgressSet, Error: newErrorEnvelope(aerr)}, nil

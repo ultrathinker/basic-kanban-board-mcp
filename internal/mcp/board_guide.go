@@ -214,7 +214,7 @@ Errors: every failure is {ok:false, error:{code, message, remediation}} with isE
 // never calls a mutating method.
 func registerBoardGuide(s *gomcp.Server, svc service.Service, specs []boardGuideToolSpec) {
 	tool := boardGuideTool()
-	gomcp.AddTool(s, tool, func(ctx context.Context, req *gomcp.CallToolRequest, in boardGuideInput) (*gomcp.CallToolResult, boardGuideOutput, error) {
+	addTool(s, tool, func(ctx context.Context, req *gomcp.CallToolRequest, in boardGuideInput) (*gomcp.CallToolResult, boardGuideOutput, error) {
 		actor, aerr := actorFromContext(ctx)
 		if aerr != nil {
 			return errorResult(opBoardGuide, aerr), boardGuideOutput{OK: false, Op: opBoardGuide, Error: newErrorEnvelope(aerr)}, nil

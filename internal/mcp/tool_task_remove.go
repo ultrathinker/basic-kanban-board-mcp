@@ -52,7 +52,7 @@ func taskRemoveTool() *gomcp.Tool {
 
 func registerTaskRemove(s *gomcp.Server, svc service.Service) {
 	tool := taskRemoveTool()
-	gomcp.AddTool(s, tool, func(ctx context.Context, req *gomcp.CallToolRequest, in taskRemoveInput) (*gomcp.CallToolResult, taskRemoveOutput, error) {
+	addTool(s, tool, func(ctx context.Context, req *gomcp.CallToolRequest, in taskRemoveInput) (*gomcp.CallToolResult, taskRemoveOutput, error) {
 		actor, aerr := actorFromContext(ctx)
 		if aerr != nil {
 			return errorResult(opTaskRemove, aerr), taskRemoveOutput{OK: false, Op: opTaskRemove, Error: newErrorEnvelope(aerr)}, nil

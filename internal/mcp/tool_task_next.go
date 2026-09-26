@@ -115,7 +115,7 @@ func taskNextTool() *gomcp.Tool {
 // claim/start to peek.
 func registerTaskNext(s *gomcp.Server, svc service.Service, readOnly bool) {
 	tool := taskNextTool()
-	gomcp.AddTool(s, tool, func(ctx context.Context, req *gomcp.CallToolRequest, in taskNextInput) (*gomcp.CallToolResult, taskNextOutput, error) {
+	addTool(s, tool, func(ctx context.Context, req *gomcp.CallToolRequest, in taskNextInput) (*gomcp.CallToolResult, taskNextOutput, error) {
 		actor, aerr := actorFromContext(ctx)
 		if aerr != nil {
 			return errorResult(opTaskNext, aerr), taskNextOutput{OK: false, Op: opTaskNext, Error: newErrorEnvelope(aerr)}, nil

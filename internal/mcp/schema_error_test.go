@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -29,26 +30,27 @@ func toolByName(t *testing.T, cs *gomcp.ClientSession, name string) *gomcp.Tool 
 }
 
 // errorEnvelopeOf pulls the {code, message, remediation} envelope out of a
-// failed call's structuredContent, failing the test if there is none — the
-// envelope is a contract, not a best effort (PLAN §6).
+// failed call's TEXT, failing the test if there is none — the envelope is a
+// contract, not a best effort (PLAN §6). It lives in the text since KANB-58:
+// the text is the only representation on the wire.
 func errorEnvelopeOf(t *testing.T, res *gomcp.CallToolResult) map[string]any {
 	t.Helper()
 	if !res.IsError {
 		t.Fatalf("IsError = false, want true")
 	}
-	if res.StructuredContent == nil {
-		t.Fatalf("structuredContent is nil; every failure must carry the envelope")
+	if res.StructuredContent != nil {
+		t.Fatalf("structuredContent is set on a failure — the client would show the model that instead of the text (KANB-58)")
 	}
-	sc, ok := res.StructuredContent.(map[string]any)
-	if !ok {
-		t.Fatalf("structuredContent is %T, want an object", res.StructuredContent)
+	var sc map[string]any
+	if err := json.Unmarshal([]byte(resultText(res)), &sc); err != nil {
+		t.Fatalf("failure text is not the JSON envelope: %v\n%s", err, resultText(res))
 	}
 	if ok, _ := sc["ok"].(bool); ok {
 		t.Errorf("ok = true on a failure: %v", sc)
 	}
 	env, ok := sc["error"].(map[string]any)
 	if !ok {
-		t.Fatalf("no error envelope in structuredContent: %v", sc)
+		t.Fatalf("no error envelope in the failure text: %v", sc)
 	}
 	return env
 }

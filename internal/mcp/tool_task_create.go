@@ -47,10 +47,14 @@ type taskCreateInput struct {
 	// meta.already_accepted=true and creates nothing. The whole batch must
 	// belong to the command's project.
 	SourceMessage string `json:"source_message,omitempty" jsonschema:"id of a kind:command message you (its resolved_executor) are accepting; omit for an ordinary create"`
+	Echo          string `json:"echo,omitempty"`
 }
 
 type taskCreateData struct {
-	Tasks []taskOut `json:"tasks"`
+	// Tasks holds taskAckOut by default and taskOut for echo:"full" — no
+	// output schema is published any more (KANB-58), so the element type is
+	// free to follow the caller's choice.
+	Tasks []any `json:"tasks"`
 }
 
 type taskCreateOutput struct {
@@ -63,6 +67,7 @@ type taskCreateOutput struct {
 
 func taskCreateTool() *gomcp.Tool {
 	s := schemaFor[taskCreateInput]()
+	setEcho(s)
 	tasks := prop(s, "tasks")
 	setMinItems(tasks, 1)
 	setMaxItems(tasks, domain.MaxBatchTasks)
@@ -99,7 +104,8 @@ func taskCreateTool() *gomcp.Tool {
 			"NOTE: this acceptance guarantee is about the BOARD only — it does not prevent an external command, deploy or " +
 			"side effect from running twice; guard those separately. " +
 			"A pure question needs no task at all — answer it with `project_post(reply_to: ...)`.\n" +
-			"Returns `data.tasks[]`: the created tasks, in request order, each carrying its assigned `key` and `version`.",
+			"Returns `data.tasks[]`, in request order: `{key, version, column}` per created task by default, the whole task with `echo:\"full\"`. " +
+			versionEchoRule,
 		InputSchema: s,
 	}
 }
@@ -189,7 +195,7 @@ func newTaskToService(in newTaskIn) (service.NewTask, *domain.Error) {
 
 func registerTaskCreate(s *gomcp.Server, svc service.Service) {
 	tool := taskCreateTool()
-	gomcp.AddTool(s, tool, func(ctx context.Context, req *gomcp.CallToolRequest, in taskCreateInput) (*gomcp.CallToolResult, taskCreateOutput, error) {
+	addTool(s, tool, func(ctx context.Context, req *gomcp.CallToolRequest, in taskCreateInput) (*gomcp.CallToolResult, taskCreateOutput, error) {
 		actor, aerr := actorFromContext(ctx)
 		if aerr != nil {
 			return errorResult(opTaskCreate, aerr), taskCreateOutput{OK: false, Op: opTaskCreate, Error: newErrorEnvelope(aerr)}, nil
@@ -225,9 +231,18 @@ func registerTaskCreate(s *gomcp.Server, svc service.Service) {
 		}
 
 		includes := service.Includes{service.IncludeBody, service.IncludeAcceptance}
+		full := taskViewOutList(res.Tasks, service.FullProjection(includes))
+		created := make([]any, len(full))
+		for i := range full {
+			if in.Echo == echoFull {
+				created[i] = full[i]
+			} else {
+				created[i] = ackOf(full[i])
+			}
+		}
 		out := taskCreateOutput{
 			OK: true, Op: opTaskCreate,
-			Data: &taskCreateData{Tasks: taskViewOutList(res.Tasks, service.FullProjection(includes))},
+			Data: &taskCreateData{Tasks: created},
 			Meta: &toolMeta{Count: len(res.Tasks), Replayed: res.Replayed && !res.AlreadyAccepted, AlreadyAccepted: res.AlreadyAccepted},
 		}
 		return &gomcp.CallToolResult{Content: []gomcp.Content{&gomcp.TextContent{Text: jsonText(out)}}}, out, nil

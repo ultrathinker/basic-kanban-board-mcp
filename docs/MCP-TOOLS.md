@@ -145,7 +145,7 @@ compact_version=1
 
 ### 1. `board_get`
 
-Read the board. Compact text by default — about 1,000 tokens for 30 active tasks, roughly 90% smaller than the same board as indented JSON, so it is cheap enough to call at the start of every session. structuredContent is always full JSON.
+Read the board. Compact text by default — about 1,000 tokens for 30 active tasks, roughly 90% smaller than the same board as JSON, so it is cheap enough to call at the start of every session. `format:"json"` returns the same board as JSON text instead. The project's description — its rulebook — is NOT returned unless asked for: add `include:["description"]` once per session, or again after your context was compacted.
 `view:"messages"` reads one project's communication feed forward through history instead of the board: `messages[]` in chronological order (each with `id`, `created_at`, `author`, `author_token_id` — the authorized source, which the caller never chooses — `kind`, `recipient`/`recipient_name`, `resolved_executor`/`resolved_executor_name`, `reply_to`, `body`, and the `task_keys` created by accepting that command), plus `next_cursor` and `has_more`. The board itself and task bodies are NOT part of that response. Chat history is never pruned, so a cursor never goes stale; a cursor from another project, a cursor naming a message that does not exist, or an unparseable cursor is refused with an actionable error rather than a silent empty page.
 Feed participants and the project's coordinator are published by `view:"summary"` as `projects[].participants[]` and `projects[].coordinator` — token ids and display names only, never secrets.
 
@@ -156,8 +156,8 @@ Feed participants and the project's coordinator are published by `view:"summary"
 | `after` | string | Optional | messages view only: the next_cursor of a previous page; omit to read the feed from the beginning |
 | `done_limit` | integer | Optional | how many done tasks to include, most recently done first |
 | `filter` | any | Optional |  |
-| `format` | string | Optional | compact = the token-cheap text grammar, json = pretty JSON text (structuredContent is always JSON either way) |
-| `include` | any | Optional | widen the per-task fields returned |
+| `format` | string | Optional | compact = the token-cheap text grammar, json = the same board as compact JSON text |
+| `include` | any | Optional | widen what is returned: per-task fields, and description for the project's own description (omitted by default) |
 | `limit` | integer | Optional | messages view only: page size |
 | `project` | string | Optional | project key; omitted = every accessible project; REQUIRED for view:messages |
 | `view` | string | Optional | tasks = full board, summary = counts only, messages = the communication feed read forward from the beginning; default depends on whether project is set |
@@ -218,12 +218,13 @@ task_get({ "keys": <value> })
 
 Create one or more tasks in a single atomic batch (all-or-nothing). To link items of the same batch, give one a `ref` and point at it from another by prefixing that name with a single @: an item created as `{"ref": "scaffold", ...}` is referenced as `"blocked_by": ["@scaffold"]`.
 Pass `source_message` to ACCEPT a command from the project feed: only the command's resolved_executor may, the tasks and the acceptance link commit atomically, and a repeat returns the original task keys with meta.already_accepted=true instead of creating a second batch. NOTE: this acceptance guarantee is about the BOARD only — it does not prevent an external command, deploy or side effect from running twice; guard those separately. A pure question needs no task at all — answer it with `project_post(reply_to: ...)`.
-Returns `data.tasks[]`: the created tasks, in request order, each carrying its assigned `key` and `version`.
+Returns `data.tasks[]`, in request order: `{key, version, column}` per created task by default, the whole task with `echo:"full"`. The `version` on every returned task is the value AFTER the call and is authoritative — chain your next `if_version` from it and never re-read a task just to learn its version. `note`, lease operations and `focus` do not move a task's version by design, so a result echoing the same version you sent means the write landed and the version legitimately did not change.
 
 #### Parameters
 
 | Name | Type | Required | Description |
 |---|---|---|---|
+| `echo` | string | Optional | ack (default) = key, version and column per task — the version is the AFTER-value, chain your next if_version from it; full = the whole task, body and checklist included |
 | `project` | any | Optional | do NOT set this: project is a per-item field — put it inside each element of tasks[] |
 | `source_message` | string | Optional | id of a kind:command message you (its resolved_executor) are accepting; omit for an ordinary create |
 | `tasks` | any | Required | all-or-nothing: either every task is created, or none are |
@@ -238,13 +239,14 @@ task_create({ "tasks": <value> })
 
 ### 5. `task_update`
 
-Update one or more tasks. Per-item results by default (atomic:false); set atomic:true to make the whole batch commit or none of it does. if_version is required for any replacement-style field. Returns `data.items[]`: one `{key, ok, task|error}` entry per patch, in request order. The `version` on every returned task is the value AFTER the call and is authoritative — chain your next `if_version` from it and never re-read a task just to learn its version. `note`, lease operations and `focus` do not move a task's version by design, so a result echoing the same version you sent means the write landed and the version legitimately did not change.
+Update one or more tasks. Per-item results by default (atomic:false); set atomic:true to make the whole batch commit or none of it does. if_version is required for any replacement-style field. Returns `data.items[]`: one entry per patch, in request order — `{key, ok, version, column}` by default, the whole task too with `echo:"full"`, or `{key, ok:false, error}`. The `version` on every returned task is the value AFTER the call and is authoritative — chain your next `if_version` from it and never re-read a task just to learn its version. `note`, lease operations and `focus` do not move a task's version by design, so a result echoing the same version you sent means the write landed and the version legitimately did not change.
 
 #### Parameters
 
 | Name | Type | Required | Description |
 |---|---|---|---|
 | `atomic` | boolean | Optional | false (default) = per-item results; true = the whole batch commits or none of it does |
+| `echo` | string | Optional | ack (default) = key, version and column per task — the version is the AFTER-value, chain your next if_version from it; full = the whole task, body and checklist included |
 | `patches` | any | Required |  |
 
 #### Example Call

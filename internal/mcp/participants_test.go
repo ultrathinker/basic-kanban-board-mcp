@@ -26,7 +26,7 @@ func TestBoardGet_CoordinatorAndParticipantsPublished(t *testing.T) {
 		},
 	}}}
 
-	_, sc := callTool(t, cs, "board_get", map[string]any{"project": "kanb", "view": "summary"})
+	_, sc := callTool(t, cs, "board_get", map[string]any{"project": "kanb", "view": "summary", "format": "json"})
 	expectOK(t, sc, "board_get")
 
 	data, _ := sc["data"].(map[string]any)

@@ -72,7 +72,7 @@ func progressHistoryTool() *gomcp.Tool {
 // result to the most recent `limit` marks.
 func registerProgressHistory(s *gomcp.Server, svc service.Service) {
 	tool := progressHistoryTool()
-	gomcp.AddTool(s, tool, func(ctx context.Context, req *gomcp.CallToolRequest, in progressHistoryInput) (*gomcp.CallToolResult, progressHistoryOutput, error) {
+	addTool(s, tool, func(ctx context.Context, req *gomcp.CallToolRequest, in progressHistoryInput) (*gomcp.CallToolResult, progressHistoryOutput, error) {
 		actor, aerr := actorFromContext(ctx)
 		if aerr != nil {
 			return errorResult(opProgressHistory, aerr), progressHistoryOutput{OK: false, Op: opProgressHistory, Error: newErrorEnvelope(aerr)}, nil
