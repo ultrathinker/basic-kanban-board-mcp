@@ -627,6 +627,13 @@ type acceptanceItemContent struct {
 	Metadata       map[string]any  `json:"metadata"`
 	Ref            string          `json:"ref"`
 	IdempotencyKey string          `json:"idempotency_key"`
+	// Added with KANB-59; omitempty keeps the hash of an acceptance that
+	// does not use them identical to the one recorded before they existed.
+	// Leaving them out would repeat review D10: a replay that changed only
+	// the verdict or a blocks edge would silently reuse the original batch.
+	Blocks     []string        `json:"blocks,omitempty"`
+	Outcome    *domain.Outcome `json:"outcome,omitempty"`
+	Conclusion string          `json:"conclusion,omitempty"`
 }
 
 // hashAcceptanceItem projects one item into acceptanceItemContent and hashes
@@ -647,10 +654,16 @@ func hashAcceptanceItem(n NewTask) (string, error) {
 		Metadata:       sortedMetadata(n.Metadata),
 		Ref:            n.Ref,
 		IdempotencyKey: n.IdempotencyKey,
+		Outcome:        n.Outcome,
+		Conclusion:     n.Conclusion,
 	}
 	if n.Tags != nil {
 		item.Tags = append([]string(nil), n.Tags...)
 		sort.Strings(item.Tags)
+	}
+	if len(n.Blocks) > 0 {
+		item.Blocks = append([]string(nil), n.Blocks...)
+		sort.Strings(item.Blocks)
 	}
 	if n.BlockedBy != nil {
 		item.BlockedBy = append([]string(nil), n.BlockedBy...)

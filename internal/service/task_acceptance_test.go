@@ -391,6 +391,9 @@ func TestTaskCreate_AcceptanceReplayIsStrictContent(t *testing.T) {
 		{"changed per-item idempotency key", func(n *NewTask) { n.IdempotencyKey = "item-key-2" }},
 		{"cleared reviewer", func(n *NewTask) { n.Reviewer = nil }},
 		{"reordered acceptance checks", func(n *NewTask) { n.Acceptance = []string{"report reviewed", "report exists"} }},
+		{"added outcome", func(n *NewTask) { o := domain.OutcomeHolds; n.Outcome = &o }},
+		{"added conclusion", func(n *NewTask) { n.Conclusion = "it held" }},
+		{"added blocks edge", func(n *NewTask) { n.Blocks = []string{"@nowhere"} }},
 	}
 	for _, tc := range mutations {
 		t.Run(tc.name, func(t *testing.T) {
